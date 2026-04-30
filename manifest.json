@@ -1,0 +1,21 @@
+{
+  "name": "СтройСмета — Сметы для ремонта",
+  "short_name": "СтройСмета",
+  "description": "Профессиональные сметы для ремонта. Расчёт, экспорт PDF, учёт оплат.",
+  "start_url": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0d0f14",
+  "theme_color": "#7c6fff",
+  "lang": "ru",
+  "scope": "/",
+  "categories": ["business", "productivity"],
+  "icons": [
+    { "src": "/icons/icon-48.png",  "sizes": "48x48",   "type": "image/png" },
+    { "src": "/icons/icon-72.png",  "sizes": "72x72",   "type": "image/png" },
+    { "src": "/icons/icon-96.png",  "sizes": "96x96",   "type": "image/png" },
+    { "src": "/icons/icon-144.png", "sizes": "144x144", "type": "image/png" },
+    { "src": "/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" }
+  ]
+}

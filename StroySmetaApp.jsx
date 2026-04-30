@@ -1,0 +1,13551 @@
+import React, { useState, useReducer, useCallback, useEffect, useRef, useContext, useMemo } from "react";
+
+
+// Safe localStorage for Claude artifact sandbox
+var _memLS = {};
+var localStorage = (function() {
+  try { window.localStorage.setItem('_t','1'); window.localStorage.removeItem('_t'); return window.localStorage; }
+  catch(e) { return { getItem:function(k){return _memLS[k]||null;}, setItem:function(k,v){_memLS[k]=String(v);}, removeItem:function(k){delete _memLS[k];}, clear:function(){_memLS={};} }; }
+})();
+
+// --- Global Context ---------------------------------------------------------
+const AppCtx = React.createContext({ lang:"ru", currency:"ru" });
+const useApp = () => React.useContext(AppCtx);
+const useLang = useApp;
+
+const _jsxFileName = ""; function _nullishCoalesce(lhs, rhsFn) { if (lhs != null) { return lhs; } else { return rhsFn(); } } function _optionalChain(ops) { let lastAccessLHS = undefined; let value = ops[0]; let i = 1; while (i < ops.length) { const op = ops[i]; const fn = ops[i + 1]; i += 2; if ((op === 'optionalAccess' || op === 'optionalCall') && value == null) { return undefined; } if (op === 'access' || op === 'optionalAccess') { lastAccessLHS = value; value = fn(value); } else if (op === 'call' || op === 'optionalCall') { value = fn((...args) => value.call(lastAccessLHS, ...args)); lastAccessLHS = undefined; } } return value; }
+// ==================== PRICE BOOK (глобальный справочник цен) ====================
+// Ключ: нормализованное имя позиции -> зафиксированная цена пользователя
+const DEFAULT_PRICE_BOOK = {
+  // -- Подготовка / prep --------------------------------------
+  "Демонтаж покрытия пола":        { price: 300,  unit: "м²",   sections: ["prep"] },
+  "Демонтаж плитки":               { price: 450,  unit: "м²",   sections: ["prep"] },
+  "Демонтаж перегородки":          { price: 1200, unit: "м²",   sections: ["prep"] },
+  "Демонтаж дверного блока":       { price: 1500, unit: "шт",   sections: ["prep"] },
+  "Вынос мусора":                  { price: 1500, unit: "м³",   sections: ["prep"] },
+  "Грунтовка поверхности":         { price: 80,   unit: "м²",   sections: ["prep","walls","ceiling"] },
+  "Выравнивание стен (черновое)":  { price: 350,  unit: "м²",   sections: ["prep","walls"] },
+
+  // -- Полы / floor ------------------------------------------
+  "Стяжка цементная":              { price: 600,  unit: "м²",   sections: ["floor"] },
+  "Стяжка полусухая":              { price: 750,  unit: "м²",   sections: ["floor"] },
+  "Наливной пол":                  { price: 800,  unit: "м²",   sections: ["floor"] },
+  "Укладка ламината":              { price: 500,  unit: "м²",   sections: ["floor"] },
+  "Укладка паркетной доски":       { price: 700,  unit: "м²",   sections: ["floor"] },
+  "Укладка плитки (пол)":          { price: 1500, unit: "м²",   sections: ["floor"] },
+  "Укладка тёплого пола":          { price: 600,  unit: "м²",   sections: ["floor"] },
+  "Монтаж плинтуса":               { price: 120,  unit: "м.п.", sections: ["floor","finish"] },
+
+  // -- Стены / walls -----------------------------------------
+  "Штукатурка гипсовая":           { price: 500,  unit: "м²",   sections: ["walls"] },
+  "Штукатурка цементная":          { price: 420,  unit: "м²",   sections: ["walls"] },
+  "Шпаклёвка финишная":            { price: 350,  unit: "м²",   sections: ["walls","finish"] },
+  "Поклейка обоев":                { price: 280,  unit: "м²",   sections: ["walls","finish"] },
+  "Укладка плитки (стены)":        { price: 1600, unit: "м²",   sections: ["walls"] },
+  "Покраска стен":                 { price: 200,  unit: "м²",   sections: ["walls","finish"] },
+  "Монтаж гипсокартона (стены)":   { price: 900,  unit: "м²",   sections: ["walls"] },
+  "Устройство перегородки ГКЛ":    { price: 1100, unit: "м²",   sections: ["walls"] },
+
+  // -- Потолок / ceiling -------------------------------------
+  "Шпаклёвка потолка":             { price: 400,  unit: "м²",   sections: ["ceiling"] },
+  "Натяжной потолок":              { price: 900,  unit: "м²",   sections: ["ceiling"] },
+  "Гипсокартон потолок":           { price: 1200, unit: "м²",   sections: ["ceiling"] },
+  "Покраска потолка":              { price: 180,  unit: "м²",   sections: ["ceiling"] },
+  "Монтаж подвесного потолка":     { price: 1400, unit: "м²",   sections: ["ceiling"] },
+  "Побелка потолка":               { price: 120,  unit: "м²",   sections: ["ceiling"] },
+  "Монтаж потолочного плинтуса":   { price: 100,  unit: "м.п.", sections: ["ceiling","finish"] },
+
+  // -- Сантехника / plumbing ---------------------------------
+  "Монтаж смесителя":              { price: 1200, unit: "шт",   sections: ["plumbing"] },
+  "Прокладка труб водоснабжения":  { price: 550,  unit: "м.п.", sections: ["plumbing"] },
+  "Монтаж унитаза":                { price: 2500, unit: "шт",   sections: ["plumbing"] },
+  "Монтаж ванны":                  { price: 3500, unit: "шт",   sections: ["plumbing"] },
+  "Монтаж душевой кабины":         { price: 4500, unit: "шт",   sections: ["plumbing"] },
+  "Монтаж полотенцесушителя":      { price: 2000, unit: "шт",   sections: ["plumbing"] },
+  "Монтаж канализации":            { price: 650,  unit: "м.п.", sections: ["plumbing"] },
+
+  // -- Электрика / electric ----------------------------------
+  "Монтаж розетки":                { price: 800,  unit: "шт",   sections: ["electric"] },
+  "Монтаж выключателя":            { price: 700,  unit: "шт",   sections: ["electric"] },
+  "Прокладка кабеля":              { price: 150,  unit: "м.п.", sections: ["electric"] },
+  "Монтаж распределительного щита":{ price: 8000, unit: "шт",   sections: ["electric"] },
+  "Монтаж светильника":            { price: 600,  unit: "шт",   sections: ["electric"] },
+  "Монтаж тёплого пола (эл.)":     { price: 500,  unit: "м²",   sections: ["electric","floor"] },
+  "Разводка электропроводки":      { price: 350,  unit: "м.п.", sections: ["electric"] },
+
+  // -- Двери и окна / doors ----------------------------------
+  "Установка межкомнатной двери":  { price: 4500, unit: "шт",   sections: ["doors"] },
+  "Установка входной двери":       { price: 6000, unit: "шт",   sections: ["doors"] },
+  "Монтаж оконного блока":         { price: 3500, unit: "шт",   sections: ["doors"] },
+  "Отделка откосов":               { price: 1200, unit: "м.п.", sections: ["doors"] },
+  "Монтаж наличников":             { price: 600,  unit: "м.п.", sections: ["doors","finish"] },
+  "Монтаж подоконника":            { price: 1500, unit: "шт",   sections: ["doors"] },
+  "Регулировка фурнитуры":         { price: 500,  unit: "шт",   sections: ["doors"] },
+
+  // -- Финишная отделка / finish -----------------------------
+  "Покраска финишная (стены)":     { price: 250,  unit: "м²",   sections: ["finish"] },
+  "Монтаж плинтуса напольного":    { price: 130,  unit: "м.п.", sections: ["finish","floor"] },
+  "Монтаж молдинга":               { price: 150,  unit: "м.п.", sections: ["finish"] },
+  "Затирка швов плитки":           { price: 180,  unit: "м²",   sections: ["finish","walls","floor"] },
+  "Чистовая уборка":               { price: 100,  unit: "м²",   sections: ["finish"] },
+  "Монтаж карнизов":               { price: 400,  unit: "м.п.", sections: ["finish"] },
+  "Декоративная штукатурка":       { price: 650,  unit: "м²",   sections: ["finish","walls"] },
+};
+
+// ==================== DATA / STORE ====================
+const initialData = {
+  customMaterials: [],
+  userMatGroups: [],       // user-created material groups [{id,name,icon,desc,areaField,items:[{name,unit,qtyPer,note,price}]}]
+  deletedCatalogIds: [],
+  catalogPriceOverrides: {},
+  priceOrder: [],
+  priceBook: Object.fromEntries(Object.entries(DEFAULT_PRICE_BOOK).map(([k,v]) => [k, typeof v === 'object' ? { price: v.price, unit: v.unit || 'м²', sections: v.sections || [] } : { price: v, unit: 'м²', sections: [] }])),
+  workGroups: [
+    {
+      id: "wg1",
+      name: "Черновые полы",
+      icon: "🔨",
+      color: "#f97316",
+      items: [
+        { id: "wgi1", name: "Демонтаж покрытия",      unit: "м²",   price: 300,  qty: 1 },
+        { id: "wgi2", name: "Стяжка цементная",        unit: "м²",   price: 600,  qty: 1 },
+        { id: "wgi3", name: "Грунтовка поверхности",   unit: "м²",   price: 80,   qty: 1 },
+      ],
+    },
+    {
+      id: "wg2",
+      name: "Укладка плитки",
+      icon: "🟦",
+      color: "var(--acc2)",
+      items: [
+        { id: "wgi4", name: "Грунтовка поверхности",   unit: "м²",   price: 80,   qty: 1 },
+        { id: "wgi5", name: "Укладка плитки",           unit: "м²",   price: 1500, qty: 1 },
+        { id: "wgi6", name: "Затирка швов",             unit: "м²",   price: 150,  qty: 1 },
+      ],
+    },
+    {
+      id: "wg3",
+      name: "Отделка стен",
+      icon: "🖌️",
+      color: "#8b5cf6",
+      items: [
+        { id: "wgi7",  name: "Штукатурка гипсовая",    unit: "м²",   price: 500,  qty: 1 },
+        { id: "wgi8",  name: "Шпаклёвка финишная",     unit: "м²",   price: 350,  qty: 1 },
+        { id: "wgi9",  name: "Грунтовка поверхности",  unit: "м²",   price: 80,   qty: 1 },
+        { id: "wgi10", name: "Покраска стен",           unit: "м²",   price: 200,  qty: 1 },
+      ],
+    },
+    {
+      id: "wg4",
+      name: "Ванная под ключ",
+      icon: "🚿",
+      color: "var(--green)",
+      items: [
+        { id: "wgi11", name: "Демонтаж покрытия",      unit: "м²",   price: 300,  qty: 1 },
+        { id: "wgi12", name: "Гидроизоляция",          unit: "м²",   price: 350,  qty: 1 },
+        { id: "wgi13", name: "Укладка плитки (стены)", unit: "м²",   price: 1600, qty: 1 },
+        { id: "wgi14", name: "Укладка плитки",         unit: "м²",   price: 1500, qty: 1 },
+        { id: "wgi15", name: "Монтаж смесителя",       unit: "шт",   price: 1200, qty: 1 },
+        { id: "wgi16", name: "Монтаж унитаза",         unit: "шт",   price: 2500, qty: 1 },
+      ],
+    },
+  ],
+  projects: [
+    {
+      id: "p1",
+      name: "Ремонт ванной комнаты",
+      address: "ул. Ленина, 42, кв. 15",
+      area: 8,
+      date: "2025-03-01",
+      totalAmount: 0,
+      progress: 35,
+      rooms: [],
+      mode: "estimate",
+      sections: [
+        {
+          id: "s1",
+          name: "Черновые работы",
+          collapsed: true,
+          _explicit: true,
+          items: [
+            { id: "i1", type: "work", name: "Демонтаж плитки", unit: "м²", qty: 8, price: 400, paid: 3200 },
+            { id: "i2", type: "material", name: "Цемент М500", unit: "мешок", qty: 10, price: 350, paid: 3500 },
+          ],
+        },
+        {
+          id: "s2",
+          name: "Сантехника",
+          collapsed: true,
+          _explicit: true,
+          items: [
+            { id: "i3", type: "work", name: "Монтаж смесителя", unit: "шт", qty: 2, price: 1200, paid: 0 },
+            { id: "i4", type: "material", name: "Смеситель Grohe", unit: "шт", qty: 1, price: 8500, paid: 8500 },
+          ],
+        },
+      ],
+    },
+    {
+      id: "p2",
+      name: "Кухня — полный ремонт",
+      address: "пр. Мира, 10",
+      area: 14,
+      date: "2025-02-20",
+      totalAmount: 0,
+      progress: 70,
+      rooms: [],
+      mode: "materials",
+      sections: [
+        {
+          id: "s3",
+          name: "Отделка",
+          collapsed: true,
+          _explicit: true,
+          items: [
+            { id: "i5", type: "work", name: "Поклейка обоев", unit: "м²", qty: 40, price: 250, paid: 10000 },
+            { id: "i6", type: "material", name: "Обои виниловые", unit: "рул.", qty: 8, price: 1200, paid: 9600 },
+          ],
+        },
+      ],
+    },
+  ],
+};
+
+// Maps room work stage id -> project section name
+const STAGE_SECTION_MAP = {
+  prep:     "Подготовка",
+  floor:    "Полы",
+  walls:    "Стены",
+  ceiling:  "Потолок",
+  plumbing: "Сантехника",
+  electric: "Электрика",
+  doors:    "Двери и окна",
+  finish:   "Финишная отделка",
+  other:    "Прочее",
+};
+
+// Syncs all room works into project sections grouped by stage.
+// Called from reducer whenever rooms change.
+function syncRoomsToSections(project) {
+  if (!project) return project;
+  const rooms = project.rooms || [];
+
+  // Gather all works from all rooms, keyed by stageId
+  const byStage = {}; // stageId -> [ {roomName, work} ]
+  rooms.forEach(function(room) {
+    (room.works || []).forEach(function(work) {
+      const sid = work.stageId || "other";
+      if (!byStage[sid]) byStage[sid] = [];
+      byStage[sid].push({ roomName: room.name, work });
+    });
+  });
+
+  // FIX: Do NOT return early when byStage is empty —
+  // we still need to clean up synced items from sections below.
+  let sections = [...(project.sections || [])];
+
+  // Build a map of existing paid amounts keyed by _roomWorkId so they survive re-sync
+  const existingPaid = {};
+  sections.forEach(function(sec) {
+    (sec.items || []).forEach(function(item) {
+      if (item._roomWorkId) {
+        existingPaid[item._roomWorkId] = item.paid || 0;
+      }
+    });
+  });
+
+  // For each stage that has works, ensure a section exists and sync items
+  Object.entries(byStage).forEach(function([stageId, roomWorks]) {
+    const sectionName = STAGE_SECTION_MAP[stageId] || "Прочее";
+
+    // Find existing section by _stageId marker or by name (case-insensitive)
+    let secIdx = sections.findIndex(function(s) { return s._stageId === stageId; });
+    if (secIdx < 0) {
+      secIdx = sections.findIndex(function(s) { return s.name.toLowerCase() === sectionName.toLowerCase(); });
+    }
+
+    // Build the synced items list — FIX: preserve existing paid amounts
+    const syncedItems = roomWorks.map(function({ roomName, work }) {
+      return {
+        id: "sync_" + work.id,       // stable id tied to room work
+        _roomWorkId: work.id,
+        _roomName: roomName,
+        type: "work",
+        name: work.name,
+        unit: work.unit,
+        price: work.price,
+        qty: work.qty,
+        paid: existingPaid[work.id] || 0,  // FIX: keep paid amount, don't reset to 0
+      };
+    });
+
+    if (secIdx < 0) {
+      // Only auto-create section if there's no _explicit section for this stage
+      const hasExplicit = sections.some(function(s) { return s._stageId === stageId && s._explicit; });
+      if (!hasExplicit) {
+        const stageInfo = WORK_STAGES.find(function(s) { return s.id === stageId; }) || {};
+        sections.push({
+          id: uid(),
+          _stageId: stageId,
+          name: ((stageInfo.icon || "") + " " + sectionName).trim(),
+          collapsed: true,
+          items: syncedItems,
+        });
+      } else {
+        // Merge synced items into the explicit section
+        const explicitIdx = sections.findIndex(function(s) { return s._stageId === stageId && s._explicit; });
+        if (explicitIdx >= 0) {
+          const existing = sections[explicitIdx];
+          const manualItems = (existing.items || []).filter(function(i) { return !i._roomWorkId; });
+          sections[explicitIdx] = {
+            ...existing,
+            items: [...syncedItems, ...manualItems],
+          };
+        }
+      }
+    } else {
+      // Update existing section: replace synced items, keep manually added ones
+      const existing = sections[secIdx];
+      const manualItems = (existing.items || []).filter(function(i) { return !i._roomWorkId; });
+      sections[secIdx] = {
+        ...existing,
+        _stageId: stageId,
+        items: [...syncedItems, ...manualItems],
+      };
+    }
+  });
+
+  // FIX: Always clean up synced items from stages that no longer have any room works
+  // (this runs even when byStage is empty — that's why we removed the early return above)
+  sections = sections.map(function(sec) {
+    if (!sec._stageId) return sec;
+    if (byStage[sec._stageId]) return sec;
+    // This stage has no room works anymore — remove synced items, keep manual
+    const manualItems = (sec.items || []).filter(function(i) { return !i._roomWorkId; });
+    return { ...sec, items: manualItems };
+  });
+
+  return { ...project, sections };
+}
+
+function calcTotal(sections) {
+  return (sections || []).reduce((sum, sec) =>
+    sum + (sec.items || []).reduce((s, item) => s + (item.qty || 0) * (item.price || 0), 0), 0);
+}
+
+function calcPaid(sections) {
+  return (sections || []).reduce((sum, sec) =>
+    sum + (sec.items || []).reduce((s, item) => s + (item.paid || 0), 0), 0);
+}
+
+const CATALOG = [
+  // -- Подготовка ----------------------------------------------
+  { id:"prep1",  stageId:"prep",     category:"Подготовка",  name:"Пакеты строительные 120л (10шт)",         unit:"упак.", price:189,  type:"material" },
+  { id:"prep2",  stageId:"prep",     category:"Подготовка",  name:"Перфоратор аренда (день)",                unit:"шт",    price:800,  type:"material" },
+  { id:"prep3",  stageId:"prep",     category:"Подготовка",  name:"Болгарка аренда (день)",                  unit:"шт",    price:600,  type:"material" },
+  { id:"prep4",  stageId:"prep",     category:"Подготовка",  name:"Грунтовка глубокого проникновения (10л)", unit:"шт",    price:590,  type:"material" },
+  { id:"prep5",  stageId:"prep",     category:"Подготовка",  name:"Грунтовка бетоноконтакт (5кг)",           unit:"шт",    price:750,  type:"material" },
+  { id:"prep6",  stageId:"prep",     category:"Подготовка",  name:"Малярный скотч (50м)",                    unit:"шт",    price:89,   type:"material" },
+  { id:"prep7",  stageId:"prep",     category:"Подготовка",  name:"Плёнка защитная 4×5м",                    unit:"шт",    price:149,  type:"material" },
+  { id:"prep8",  stageId:"prep",     category:"Подготовка",  name:"Диск алмазный 125мм",                     unit:"шт",    price:390,  type:"material" },
+  { id:"prep9",  stageId:"prep",     category:"Подготовка",  name:"Пескобетон М300 (40кг)",                  unit:"мешок", price:179,  type:"material" },
+  { id:"prep10", stageId:"prep",     category:"Подготовка",  name:"Цемент М500 Lafarge (50кг)",              unit:"мешок", price:449,  type:"material" },
+  { id:"prep11", stageId:"prep",     category:"Подготовка",  name:"Дюбель-гвоздь 8×80 (50шт)",              unit:"упак.", price:120,  type:"material" },
+  { id:"prep12", stageId:"prep",     category:"Подготовка",  name:"Шпатель 100мм",                           unit:"шт",    price:149,  type:"material" },
+  { id:"prep13", stageId:"prep",     category:"Подготовка",  name:"Ведро строительное 12л",                  unit:"шт",    price:199,  type:"material" },
+  // -- Полы ----------------------------------------------------
+  { id:"fl1",   stageId:"floor",    category:"Полы",         name:"Стяжка Knauf Убо (25кг)",                 unit:"мешок", price:520,  type:"material" },
+  { id:"fl2",   stageId:"floor",    category:"Полы",         name:"Самовыравнивающаяся смесь (25кг)",        unit:"мешок", price:590,  type:"material" },
+  { id:"fl3",   stageId:"floor",    category:"Полы",         name:"Плитка керамическая 30×30 (м²)",          unit:"м²",    price:890,  type:"material" },
+  { id:"fl4",   stageId:"floor",    category:"Полы",         name:"Плитка керамогранит 60×60 (м²)",          unit:"м²",    price:1650, type:"material" },
+  { id:"fl5",   stageId:"floor",    category:"Полы",         name:"Ламинат 33 класс (м²)",                   unit:"м²",    price:790,  type:"material" },
+  { id:"fl6",   stageId:"floor",    category:"Полы",         name:"Паркетная доска дуб (м²)",                unit:"м²",    price:2890, type:"material" },
+  { id:"fl7",   stageId:"floor",    category:"Полы",         name:"Клей для плитки Ceresit CM11 (25кг)",     unit:"мешок", price:520,  type:"material" },
+  { id:"fl8",   stageId:"floor",    category:"Полы",         name:"Затирка Ceresit CE33 (2кг)",              unit:"шт",    price:290,  type:"material" },
+  { id:"fl9",   stageId:"floor",    category:"Полы",         name:"Подложка под ламинат 3мм (10м²)",         unit:"рул.",  price:390,  type:"material" },
+  { id:"fl10",  stageId:"floor",    category:"Полы",         name:"Плинтус напольный МДФ (2.4м)",            unit:"шт",    price:290,  type:"material" },
+  { id:"fl11",  stageId:"floor",    category:"Полы",         name:"Угол для плинтуса внутр.",                unit:"шт",    price:49,   type:"material" },
+  { id:"fl12",  stageId:"floor",    category:"Полы",         name:"Гидроизоляция обмазочная (4кг)",          unit:"шт",    price:1490, type:"material" },
+  { id:"fl13",  stageId:"floor",    category:"Полы",         name:"Нагревательный мат тёплый пол (м²)",      unit:"м²",    price:2200, type:"material" },
+  { id:"fl14",  stageId:"floor",    category:"Полы",         name:"Терморегулятор для тёплого пола",         unit:"шт",    price:1890, type:"material" },
+  { id:"fl15",  stageId:"floor",    category:"Полы",         name:"Крестики для плитки 3мм (100шт)",         unit:"упак.", price:59,   type:"material" },
+  // -- Стены ----------------------------------------------------
+  { id:"wa1",   stageId:"walls",    category:"Стены",        name:"Штукатурка гипсовая Knauf Rotband (30кг)",unit:"мешок", price:890,  type:"material" },
+  { id:"wa2",   stageId:"walls",    category:"Стены",        name:"Штукатурка цементная M75 (25кг)",         unit:"мешок", price:340,  type:"material" },
+  { id:"wa3",   stageId:"walls",    category:"Стены",        name:"Шпаклёвка финишная Knauf Finish (25кг)",  unit:"мешок", price:650,  type:"material" },
+  { id:"wa4",   stageId:"walls",    category:"Стены",        name:"Сетка штукатурная 1×50м",                 unit:"рул.",  price:490,  type:"material" },
+  { id:"wa5",   stageId:"walls",    category:"Стены",        name:"Маяк штукатурный 3м",                     unit:"шт",    price:49,   type:"material" },
+  { id:"wa6",   stageId:"walls",    category:"Стены",        name:"Гипсокартон стеновой 12.5мм (лист)",      unit:"лист",  price:480,  type:"material" },
+  { id:"wa7",   stageId:"walls",    category:"Стены",        name:"Профиль CD 60×27 (3м)",                   unit:"шт",    price:120,  type:"material" },
+  { id:"wa8",   stageId:"walls",    category:"Стены",        name:"Профиль UD 27×28 (3м)",                   unit:"шт",    price:85,   type:"material" },
+  { id:"wa9",   stageId:"walls",    category:"Стены",        name:"Плитка для стен 25×40 (м²)",              unit:"м²",    price:750,  type:"material" },
+  { id:"wa10",  stageId:"walls",    category:"Стены",        name:"Клей для плитки Ceresit CM17 (25кг)",     unit:"мешок", price:690,  type:"material" },
+  { id:"wa11",  stageId:"walls",    category:"Стены",        name:"Обои виниловые (рул.)",                   unit:"рул.",  price:890,  type:"material" },
+  { id:"wa12",  stageId:"walls",    category:"Стены",        name:"Обои флизелиновые (рул.)",                unit:"рул.",  price:1250, type:"material" },
+  { id:"wa13",  stageId:"walls",    category:"Стены",        name:"Клей для обоев Quelyd (250г)",            unit:"шт",    price:290,  type:"material" },
+  { id:"wa14",  stageId:"walls",    category:"Стены",        name:"Саморезы по металлу 3.5×25 (200шт)",      unit:"упак.", price:85,   type:"material" },
+  { id:"wa15",  stageId:"walls",    category:"Стены",        name:"Дюбель-гвоздь 6×40 (100шт)",              unit:"упак.", price:95,   type:"material" },
+  // -- Потолок -------------------------------------------------
+  { id:"ce1",   stageId:"ceiling",  category:"Потолок",      name:"Гипсокартон потолочный 9.5мм (лист)",     unit:"лист",  price:430,  type:"material" },
+  { id:"ce2",   stageId:"ceiling",  category:"Потолок",      name:"Профиль CD 60×27 потолочный (4м)",        unit:"шт",    price:160,  type:"material" },
+  { id:"ce3",   stageId:"ceiling",  category:"Потолок",      name:"Подвес прямой для ГКЛ",                   unit:"шт",    price:22,   type:"material" },
+  { id:"ce4",   stageId:"ceiling",  category:"Потолок",      name:"Шпаклёвка потолочная Knauf (25кг)",       unit:"мешок", price:680,  type:"material" },
+  { id:"ce5",   stageId:"ceiling",  category:"Потолок",      name:"Серпянка (50м)",                          unit:"рул.",  price:149,  type:"material" },
+  { id:"ce6",   stageId:"ceiling",  category:"Потолок",      name:"Потолочный плинтус ПВХ (2м)",             unit:"шт",    price:89,   type:"material" },
+  { id:"ce7",   stageId:"ceiling",  category:"Потолок",      name:"Краска для потолка белая (5л)",           unit:"шт",    price:690,  type:"material" },
+  { id:"ce8",   stageId:"ceiling",  category:"Потолок",      name:"Грунтовка для потолка (10л)",             unit:"шт",    price:490,  type:"material" },
+  { id:"ce9",   stageId:"ceiling",  category:"Потолок",      name:"Дюбель-бабочка для ГКЛ (50шт)",          unit:"упак.", price:190,  type:"material" },
+  { id:"ce10",  stageId:"ceiling",  category:"Потолок",      name:"Клей жидкие гвозди (300мл)",              unit:"шт",    price:249,  type:"material" },
+  // -- Сантехника ----------------------------------------------
+  { id:"pl1",   stageId:"plumbing", category:"Сантехника",   name:"Труба ПП 20мм (м.п.)",                   unit:"м.п.", price:45,   type:"material" },
+  { id:"pl2",   stageId:"plumbing", category:"Сантехника",   name:"Труба ПП 25мм (м.п.)",                   unit:"м.п.", price:65,   type:"material" },
+  { id:"pl3",   stageId:"plumbing", category:"Сантехника",   name:"Труба канализационная 50мм (м.п.)",       unit:"м.п.", price:120,  type:"material" },
+  { id:"pl4",   stageId:"plumbing", category:"Сантехника",   name:"Труба канализационная 110мм (м.п.)",      unit:"м.п.", price:290,  type:"material" },
+  { id:"pl5",   stageId:"plumbing", category:"Сантехника",   name:"Уголок ПП 20мм 90 градусов",                     unit:"шт",   price:18,   type:"material" },
+  { id:"pl6",   stageId:"plumbing", category:"Сантехника",   name:"Тройник ПП 20мм",                        unit:"шт",   price:25,   type:"material" },
+  { id:"pl7",   stageId:"plumbing", category:"Сантехника",   name:"Шаровый кран 1/2 Valtec",              unit:"шт",   price:390,  type:"material" },
+  { id:"pl8",   stageId:"plumbing", category:"Сантехника",   name:"Фум-лента (10м)",                        unit:"шт",   price:29,   type:"material" },
+  { id:"pl9",   stageId:"plumbing", category:"Сантехника",   name:"Силикон санитарный прозрачный",           unit:"шт",   price:290,  type:"material" },
+  { id:"pl10",  stageId:"plumbing", category:"Сантехника",   name:"Гофра для унитаза",                      unit:"шт",   price:249,  type:"material" },
+  // -- Электрика -----------------------------------------------
+  { id:"el1",   stageId:"electric", category:"Электрика",    name:"Кабель ВВГнг 3×2.5 (м.п.)",              unit:"м.п.", price:98,   type:"material" },
+  { id:"el2",   stageId:"electric", category:"Электрика",    name:"Кабель ВВГнг 3×1.5 (м.п.)",              unit:"м.п.", price:68,   type:"material" },
+  { id:"el3",   stageId:"electric", category:"Электрика",    name:"Кабель NYM 3×2.5 (м.п.)",                unit:"м.п.", price:115,  type:"material" },
+  { id:"el4",   stageId:"electric", category:"Электрика",    name:"Розетка Legrand Valena",                  unit:"шт",   price:420,  type:"material" },
+  { id:"el5",   stageId:"electric", category:"Электрика",    name:"Выключатель Legrand одинарный",           unit:"шт",   price:380,  type:"material" },
+  { id:"el6",   stageId:"electric", category:"Электрика",    name:"Распредкоробка 100×100мм",               unit:"шт",   price:89,   type:"material" },
+  { id:"el7",   stageId:"electric", category:"Электрика",    name:"Кабель-канал 20×10мм (2м)",              unit:"шт",   price:69,   type:"material" },
+  { id:"el8",   stageId:"electric", category:"Электрика",    name:"Автоматический выключатель 16А",          unit:"шт",   price:290,  type:"material" },
+  { id:"el9",   stageId:"electric", category:"Электрика",    name:"Изолента (20м)",                         unit:"шт",   price:49,   type:"material" },
+  { id:"el10",  stageId:"electric", category:"Электрика",    name:"Гофра ПВХ 16мм (50м)",                   unit:"рул.", price:390,  type:"material" },
+  // -- Двери и окна ---------------------------------------------
+  { id:"do1",   stageId:"doors",    category:"Двери и окна", name:"Монтажная пена (750мл)",                  unit:"шт",   price:390,  type:"material" },
+  { id:"do2",   stageId:"doors",    category:"Двери и окна", name:"Наличник телескопический (2.2м)",         unit:"шт",   price:290,  type:"material" },
+  { id:"do3",   stageId:"doors",    category:"Двери и окна", name:"Откосная панель ПВХ 250×3000мм",          unit:"шт",   price:590,  type:"material" },
+  { id:"do4",   stageId:"doors",    category:"Двери и окна", name:"Подоконник ПВХ 200×600мм",               unit:"шт",   price:890,  type:"material" },
+  { id:"do5",   stageId:"doors",    category:"Двери и окна", name:"Петля для двери (пара)",                  unit:"шт",   price:290,  type:"material" },
+  { id:"do6",   stageId:"doors",    category:"Двери и окна", name:"Ручка дверная нажимная",                  unit:"шт",   price:690,  type:"material" },
+  { id:"do7",   stageId:"doors",    category:"Двери и окна", name:"Замок защёлка врезной",                   unit:"шт",   price:490,  type:"material" },
+  { id:"do8",   stageId:"doors",    category:"Двери и окна", name:"Уплотнитель дверной (6м)",                unit:"шт",   price:149,  type:"material" },
+  // -- Финишная отделка -----------------------------------------
+  { id:"fi1",   stageId:"finish",   category:"Финишная",     name:"Краска интерьерная белая (10л)",          unit:"шт",   price:890,  type:"material" },
+  { id:"fi2",   stageId:"finish",   category:"Финишная",     name:"Колер для краски",                        unit:"шт",   price:190,  type:"material" },
+  { id:"fi3",   stageId:"finish",   category:"Финишная",     name:"Валик малярный 250мм",                    unit:"шт",   price:290,  type:"material" },
+  { id:"fi4",   stageId:"finish",   category:"Финишная",     name:"Кисть малярная 75мм",                     unit:"шт",   price:149,  type:"material" },
+  { id:"fi5",   stageId:"finish",   category:"Финишная",     name:"Молдинг МДФ 2.4м",                        unit:"шт",   price:390,  type:"material" },
+  { id:"fi6",   stageId:"finish",   category:"Финишная",     name:"Жидкие гвозди монтажные (300мл)",         unit:"шт",   price:249,  type:"material" },
+  { id:"fi7",   stageId:"finish",   category:"Финишная",     name:"Декоративная штукатурка (15кг)",          unit:"ведро",price:1890, type:"material" },
+  { id:"fi8",   stageId:"finish",   category:"Финишная",     name:"Лак паркетный (2.5л)",                    unit:"шт",   price:1290, type:"material" },
+  // -- Крепёж --------------------------------------------------
+  { id:"cr1",   stageId:null,       category:"Крепёж",       name:"Дюбель-гвоздь 6×40 (100шт)",             unit:"упак.", price:95,   type:"material" },
+  { id:"cr2",   stageId:null,       category:"Крепёж",       name:"Саморезы по ГКЛ 3.5×25 (200шт)",         unit:"упак.", price:85,   type:"material" },
+  { id:"cr3",   stageId:null,       category:"Крепёж",       name:"Анкер болт M8×80 (10шт)",                 unit:"упак.", price:149,  type:"material" },
+  { id:"cr4",   stageId:null,       category:"Крепёж",       name:"Шуруп универсальный 4×50 (100шт)",        unit:"упак.", price:79,   type:"material" },
+
+  // -- Подготовка доп. ------------------------------------------------------
+  { id:"prep14", stageId:"prep",    category:"Подготовка",   name:"Демпферная лента 150мм (25м)",            unit:"рул.",  price:349,  type:"material" },
+  { id:"prep15", stageId:"prep",    category:"Подготовка",   name:"Полиэтиленовая плёнка 200мкм (50м²)",     unit:"рул.",  price:290,  type:"material" },
+  { id:"prep16", stageId:"prep",    category:"Подготовка",   name:"Уровень строительный 1200мм",             unit:"шт",    price:890,  type:"material" },
+  { id:"prep17", stageId:"prep",    category:"Подготовка",   name:"Рулетка 5м Stanley",                      unit:"шт",    price:490,  type:"material" },
+  { id:"prep18", stageId:"prep",    category:"Подготовка",   name:"Монтажная пена 750мл Soudal",             unit:"шт",    price:390,  type:"material" },
+  { id:"prep19", stageId:"prep",    category:"Подготовка",   name:"Правило алюминиевое 2м",                  unit:"шт",    price:1490, type:"material" },
+  { id:"prep20", stageId:"prep",    category:"Подготовка",   name:"Перфорированный уголок 3м",               unit:"шт",    price:89,   type:"material" },
+  { id:"prep21", stageId:"prep",    category:"Подготовка",   name:"Растворитель 646 (1л)",                   unit:"шт",    price:190,  type:"material" },
+  { id:"prep22", stageId:"prep",    category:"Подготовка",   name:"Мастерок 200мм",                          unit:"шт",    price:249,  type:"material" },
+  { id:"prep23", stageId:"prep",    category:"Подготовка",   name:"Пузырьковый уровень 600мм",               unit:"шт",    price:390,  type:"material" },
+  { id:"prep24", stageId:"prep",    category:"Подготовка",   name:"Угольник строительный 300мм",             unit:"шт",    price:290,  type:"material" },
+  { id:"prep25", stageId:"prep",    category:"Подготовка",   name:"Наждачная бумага P80 (5шт)",              unit:"упак.", price:89,   type:"material" },
+  { id:"prep26", stageId:"prep",    category:"Подготовка",   name:"Фибра полипропиленовая (900г)",           unit:"шт",    price:190,  type:"material" },
+  { id:"prep27", stageId:"prep",    category:"Подготовка",   name:"Ведро строительное 20л",                  unit:"шт",    price:249,  type:"material" },
+  { id:"prep28", stageId:"prep",    category:"Подготовка",   name:"Шпатель угловой 100мм",                   unit:"шт",    price:190,  type:"material" },
+
+  // -- Полы доп. -----------------------------------------------------------
+  { id:"fl16",  stageId:"floor",   category:"Полы",          name:"Кварцвиниловая плитка SPC (м²)",          unit:"м²",    price:1290, type:"material" },
+  { id:"fl17",  stageId:"floor",   category:"Полы",          name:"Ламинат 32 класс (м²)",                   unit:"м²",    price:590,  type:"material" },
+  { id:"fl18",  stageId:"floor",   category:"Полы",          name:"Клинкерная плитка 30×30 (м²)",            unit:"м²",    price:2190, type:"material" },
+  { id:"fl19",  stageId:"floor",   category:"Полы",          name:"Мозаика на сетке 30×30 (лист)",           unit:"лист",  price:490,  type:"material" },
+  { id:"fl20",  stageId:"floor",   category:"Полы",          name:"Эпоксидная затирка Litokol (2кг)",        unit:"шт",    price:890,  type:"material" },
+  { id:"fl21",  stageId:"floor",   category:"Полы",          name:"Порог алюминиевый 90см",                  unit:"шт",    price:249,  type:"material" },
+  { id:"fl22",  stageId:"floor",   category:"Полы",          name:"Подложка хвойная 5мм (5м²)",              unit:"упак.", price:490,  type:"material" },
+  { id:"fl23",  stageId:"floor",   category:"Полы",          name:"Пробковая подложка 3мм (10м²)",           unit:"рул.",  price:690,  type:"material" },
+  { id:"fl24",  stageId:"floor",   category:"Полы",          name:"Фиброволокно в стяжку (900г)",            unit:"шт",    price:190,  type:"material" },
+  { id:"fl25",  stageId:"floor",   category:"Полы",          name:"Маяки для стяжки 3м (20шт)",              unit:"упак.", price:290,  type:"material" },
+  { id:"fl26",  stageId:"floor",   category:"Полы",          name:"Клей паркетный 2К (5кг)",                 unit:"шт",    price:1890, type:"material" },
+  { id:"fl27",  stageId:"floor",   category:"Полы",          name:"Паркетный лак матовый (2.5л)",            unit:"шт",    price:1490, type:"material" },
+  { id:"fl28",  stageId:"floor",   category:"Полы",          name:"Разделительная лента для стяжки (50м)",   unit:"рул.",  price:149,  type:"material" },
+  { id:"fl29",  stageId:"floor",   category:"Полы",          name:"Ковролин коммерческий (м²)",              unit:"м²",    price:890,  type:"material" },
+  { id:"fl30",  stageId:"floor",   category:"Полы",          name:"Силиконовый герметик для пола (300мл)",   unit:"шт",    price:290,  type:"material" },
+
+  // -- Стены доп. ----------------------------------------------------------
+  { id:"wa16",  stageId:"walls",   category:"Стены",         name:"Декоративная штукатурка короед (15кг)",   unit:"ведро", price:1890, type:"material" },
+  { id:"wa17",  stageId:"walls",   category:"Стены",         name:"Венецианская штукатурка (5кг)",           unit:"ведро", price:3490, type:"material" },
+  { id:"wa18",  stageId:"walls",   category:"Стены",         name:"Гипсокартон влагостойкий ГКЛВ (лист)",    unit:"лист",  price:590,  type:"material" },
+  { id:"wa19",  stageId:"walls",   category:"Стены",         name:"Шпаклёвка Knauf Uniflott (5кг)",          unit:"шт",    price:890,  type:"material" },
+  { id:"wa20",  stageId:"walls",   category:"Стены",         name:"Стекловолоконные обои (рул.)",             unit:"рул.",  price:1290, type:"material" },
+  { id:"wa21",  stageId:"walls",   category:"Стены",         name:"Панели ПВХ 25×3000мм",                    unit:"шт",    price:290,  type:"material" },
+  { id:"wa22",  stageId:"walls",   category:"Стены",         name:"МДФ панели 2700×600мм",                   unit:"шт",    price:890,  type:"material" },
+  { id:"wa23",  stageId:"walls",   category:"Стены",         name:"Плитка метро 7.5×15 (м²)",                unit:"м²",    price:990,  type:"material" },
+  { id:"wa24",  stageId:"walls",   category:"Стены",         name:"Анкер химический М10 (10шт)",             unit:"упак.", price:490,  type:"material" },
+  { id:"wa25",  stageId:"walls",   category:"Стены",         name:"Шпаклёвка Ceresit CT 29 (25кг)",          unit:"мешок", price:590,  type:"material" },
+  { id:"wa26",  stageId:"walls",   category:"Стены",         name:"Гидроизоляционная лента 10см (10м)",      unit:"рул.",  price:390,  type:"material" },
+  { id:"wa27",  stageId:"walls",   category:"Стены",         name:"Клей для стеклохолста (5кг)",             unit:"ведро", price:590,  type:"material" },
+  { id:"wa28",  stageId:"walls",   category:"Стены",         name:"Маяк штукатурный 6мм/3м",                 unit:"шт",    price:59,   type:"material" },
+  { id:"wa29",  stageId:"walls",   category:"Стены",         name:"Армировочная сетка 5×5мм (1×50м)",        unit:"рул.",  price:890,  type:"material" },
+  { id:"wa30",  stageId:"walls",   category:"Стены",         name:"Уголки монтажные 100×100мм (50шт)",       unit:"упак.", price:290,  type:"material" },
+
+  // -- Потолок доп. --------------------------------------------------------
+  { id:"ce11",  stageId:"ceiling", category:"Потолок",       name:"Акустическая панель для потолка (м²)",    unit:"м²",    price:2890, type:"material" },
+  { id:"ce12",  stageId:"ceiling", category:"Потолок",       name:"Подвес виброгасящий (шт)",                unit:"шт",    price:89,   type:"material" },
+  { id:"ce13",  stageId:"ceiling", category:"Потолок",       name:"Краска для потолка Dulux (10л)",          unit:"шт",    price:1490, type:"material" },
+  { id:"ce14",  stageId:"ceiling", category:"Потолок",       name:"Профиль углозащитный 3м",                 unit:"шт",    price:79,   type:"material" },
+  { id:"ce15",  stageId:"ceiling", category:"Потолок",       name:"Пенопластовый потолочный плинтус (2м)",   unit:"шт",    price:89,   type:"material" },
+  { id:"ce16",  stageId:"ceiling", category:"Потолок",       name:"Шпаклёвка водостойкая для потолка (5кг)",unit:"шт",    price:590,  type:"material" },
+  { id:"ce17",  stageId:"ceiling", category:"Потолок",       name:"Грунтовка Knauf Tiefengrund (5л)",        unit:"шт",    price:490,  type:"material" },
+  { id:"ce18",  stageId:"ceiling", category:"Потолок",       name:"Подвес регулируемый прямой (10шт)",       unit:"упак.", price:190,  type:"material" },
+  { id:"ce19",  stageId:"ceiling", category:"Потолок",       name:"Соединитель CD-профиля (20шт)",           unit:"упак.", price:99,   type:"material" },
+  { id:"ce20",  stageId:"ceiling", category:"Потолок",       name:"Армировочная сетка для потолка 50м",      unit:"рул.",  price:490,  type:"material" },
+  { id:"ce21",  stageId:"ceiling", category:"Потолок",       name:"Декоративный молдинг потолочный 2м",      unit:"шт",    price:149,  type:"material" },
+  { id:"ce22",  stageId:"ceiling", category:"Потолок",       name:"Угловой профиль 3м",                      unit:"шт",    price:89,   type:"material" },
+  { id:"ce23",  stageId:"ceiling", category:"Потолок",       name:"Потолочная розетка декоративная",         unit:"шт",    price:290,  type:"material" },
+  { id:"ce24",  stageId:"ceiling", category:"Потолок",       name:"Лоток для краски 300мм",                  unit:"шт",    price:149,  type:"material" },
+  { id:"ce25",  stageId:"ceiling", category:"Потолок",       name:"Плита OSB 9мм лист 2440×1220мм",          unit:"лист",  price:890,  type:"material" },
+
+  // -- Сантехника доп. -----------------------------------------------------
+  { id:"pl11",  stageId:"plumbing",category:"Сантехника",    name:"Полотенцесушитель водяной 50×80",         unit:"шт",    price:4900, type:"material" },
+  { id:"pl12",  stageId:"plumbing",category:"Сантехника",    name:"Счётчик воды 1/2 дюйма",                  unit:"шт",    price:890,  type:"material" },
+  { id:"pl13",  stageId:"plumbing",category:"Сантехника",    name:"Фильтр грубой очистки 1/2",               unit:"шт",    price:490,  type:"material" },
+  { id:"pl14",  stageId:"plumbing",category:"Сантехника",    name:"Коллектор на 2 выхода с кранами",         unit:"шт",    price:1490, type:"material" },
+  { id:"pl15",  stageId:"plumbing",category:"Сантехника",    name:"Колено ПВХ 110мм 87 градусов",            unit:"шт",    price:290,  type:"material" },
+  { id:"pl16",  stageId:"plumbing",category:"Сантехника",    name:"Ревизия канализационная 110мм",           unit:"шт",    price:490,  type:"material" },
+  { id:"pl17",  stageId:"plumbing",category:"Сантехника",    name:"Сифон для ванны",                         unit:"шт",    price:690,  type:"material" },
+  { id:"pl18",  stageId:"plumbing",category:"Сантехника",    name:"Сифон для раковины",                      unit:"шт",    price:390,  type:"material" },
+  { id:"pl19",  stageId:"plumbing",category:"Сантехника",    name:"Трубка гофрированная 1/2×50см",           unit:"шт",    price:190,  type:"material" },
+  { id:"pl20",  stageId:"plumbing",category:"Сантехника",    name:"Кран Маевского",                          unit:"шт",    price:149,  type:"material" },
+  { id:"pl21",  stageId:"plumbing",category:"Сантехника",    name:"Паста уплотнительная Unipak 360г",        unit:"шт",    price:290,  type:"material" },
+  { id:"pl22",  stageId:"plumbing",category:"Сантехника",    name:"Душевой поддон акриловый 90×90",          unit:"шт",    price:8900, type:"material" },
+  { id:"pl23",  stageId:"plumbing",category:"Сантехника",    name:"Клей для труб ПВХ (250мл)",               unit:"шт",    price:290,  type:"material" },
+  { id:"pl24",  stageId:"plumbing",category:"Сантехника",    name:"Муфта ПП 20мм (10шт)",                    unit:"упак.", price:89,   type:"material" },
+  { id:"pl25",  stageId:"plumbing",category:"Сантехника",    name:"Тройник ПП 20×20×20 (5шт)",               unit:"упак.", price:99,   type:"material" },
+
+  // -- Электрика доп. ------------------------------------------------------
+  { id:"el11",  stageId:"electric",category:"Электрика",     name:"Кабель ВВГнг 2×1.5 (м.п.)",               unit:"м.п.", price:45,   type:"material" },
+  { id:"el12",  stageId:"electric",category:"Электрика",     name:"Автомат двухполюсный 25А",                 unit:"шт",   price:590,  type:"material" },
+  { id:"el13",  stageId:"electric",category:"Электрика",     name:"УЗО 2п 40А 30мА",                          unit:"шт",   price:1490, type:"material" },
+  { id:"el14",  stageId:"electric",category:"Электрика",     name:"Дифавтомат 16А 30мА",                      unit:"шт",   price:1890, type:"material" },
+  { id:"el15",  stageId:"electric",category:"Электрика",     name:"Шкаф навесной 8 модулей",                  unit:"шт",   price:890,  type:"material" },
+  { id:"el16",  stageId:"electric",category:"Электрика",     name:"Розетка двойная Schneider Electric",       unit:"шт",   price:690,  type:"material" },
+  { id:"el17",  stageId:"electric",category:"Электрика",     name:"Диммер поворотный 500Вт",                  unit:"шт",   price:890,  type:"material" },
+  { id:"el18",  stageId:"electric",category:"Электрика",     name:"Клеммник WAGO 222 (5шт упак.)",            unit:"упак.",price:290,  type:"material" },
+  { id:"el19",  stageId:"electric",category:"Электрика",     name:"Подрозетник Legrand (5шт)",                unit:"упак.",price:190,  type:"material" },
+  { id:"el20",  stageId:"electric",category:"Электрика",     name:"Лоток кабельный 100×60мм (2м)",            unit:"шт",   price:390,  type:"material" },
+  { id:"el21",  stageId:"electric",category:"Электрика",     name:"Светодиодная лента 5м 24Вт",               unit:"шт",   price:1490, type:"material" },
+  { id:"el22",  stageId:"electric",category:"Электрика",     name:"Блок питания для LED 12В 60Вт",            unit:"шт",   price:890,  type:"material" },
+  { id:"el23",  stageId:"electric",category:"Электрика",     name:"Гофра металлическая 16мм (25м)",           unit:"рул.", price:590,  type:"material" },
+  { id:"el24",  stageId:"electric",category:"Электрика",     name:"Заглушка для кабель-канала",               unit:"шт",   price:29,   type:"material" },
+  { id:"el25",  stageId:"electric",category:"Электрика",     name:"Соединитель кабель-канала угловой",        unit:"шт",   price:49,   type:"material" },
+
+  // -- Двери и окна доп. ---------------------------------------------------
+  { id:"do9",   stageId:"doors",   category:"Двери и окна",  name:"Дверная коробка МДФ телескоп компл.",     unit:"компл.",price:2490, type:"material" },
+  { id:"do10",  stageId:"doors",   category:"Двери и окна",  name:"Доборная планка 200мм 2.2м",              unit:"шт",    price:490,  type:"material" },
+  { id:"do11",  stageId:"doors",   category:"Двери и окна",  name:"Доводчик дверной верхний",                unit:"шт",    price:1890, type:"material" },
+  { id:"do12",  stageId:"doors",   category:"Двери и окна",  name:"Оконная ручка с замком",                  unit:"шт",    price:690,  type:"material" },
+  { id:"do13",  stageId:"doors",   category:"Двери и окна",  name:"Москитная сетка на окно (м²)",            unit:"м²",    price:690,  type:"material" },
+  { id:"do14",  stageId:"doors",   category:"Двери и окна",  name:"Подоконник искусственный мрамор 30см",    unit:"м.п.", price:1890, type:"material" },
+  { id:"do15",  stageId:"doors",   category:"Двери и окна",  name:"Нащельник ПВХ 70мм 2.5м",                unit:"шт",    price:190,  type:"material" },
+  { id:"do16",  stageId:"doors",   category:"Двери и окна",  name:"Клинья монтажные пластик 100шт",          unit:"упак.", price:149,  type:"material" },
+  { id:"do17",  stageId:"doors",   category:"Двери и окна",  name:"Акриловый герметик белый 300мл",          unit:"шт",    price:190,  type:"material" },
+  { id:"do18",  stageId:"doors",   category:"Двери и окна",  name:"Уплотнитель силиконовый самоклей 6м",     unit:"шт",    price:149,  type:"material" },
+  { id:"do19",  stageId:"doors",   category:"Двери и окна",  name:"Защёлка магнитная для двери",             unit:"шт",    price:390,  type:"material" },
+  { id:"do20",  stageId:"doors",   category:"Двери и окна",  name:"Порог скрытый алюминиевый 90см",          unit:"шт",    price:490,  type:"material" },
+  { id:"do21",  stageId:"doors",   category:"Двери и окна",  name:"Пена монтажная профессиональная 750мл",   unit:"шт",    price:490,  type:"material" },
+  { id:"do22",  stageId:"doors",   category:"Двери и окна",  name:"Профиль оконный примыкания 6мм 2.5м",     unit:"шт",    price:190,  type:"material" },
+  { id:"do23",  stageId:"doors",   category:"Двери и окна",  name:"Отлив оконный алюминий 20см 1.5м",        unit:"шт",    price:390,  type:"material" },
+
+  // -- Финишная доп. -------------------------------------------------------
+  { id:"fi9",   stageId:"finish",  category:"Финишная",      name:"Краска Dulux Velvet Touch (10л)",          unit:"шт",    price:3490, type:"material" },
+  { id:"fi10",  stageId:"finish",  category:"Финишная",      name:"Краска Tikkurila Pesto (10л)",             unit:"шт",    price:4290, type:"material" },
+  { id:"fi11",  stageId:"finish",  category:"Финишная",      name:"Грунт под покраску Knauf (10л)",           unit:"шт",    price:790,  type:"material" },
+  { id:"fi12",  stageId:"finish",  category:"Финишная",      name:"Валик полиамидный 250мм",                  unit:"шт",    price:390,  type:"material" },
+  { id:"fi13",  stageId:"finish",  category:"Финишная",      name:"Кисть радиаторная 50мм",                   unit:"шт",    price:190,  type:"material" },
+  { id:"fi14",  stageId:"finish",  category:"Финишная",      name:"Плинтус МДФ 80мм (2.4м)",                 unit:"шт",    price:390,  type:"material" },
+  { id:"fi15",  stageId:"finish",  category:"Финишная",      name:"Плинтус ПВХ гибкий 60мм (2.5м)",          unit:"шт",    price:190,  type:"material" },
+  { id:"fi16",  stageId:"finish",  category:"Финишная",      name:"Жидкие обои Silk Plaster (1кг)",           unit:"шт",    price:890,  type:"material" },
+  { id:"fi17",  stageId:"finish",  category:"Финишная",      name:"Воск защитный для дерева (0.5л)",          unit:"шт",    price:490,  type:"material" },
+  { id:"fi18",  stageId:"finish",  category:"Финишная",      name:"Морилка для дерева (0.5л)",                unit:"шт",    price:390,  type:"material" },
+  { id:"fi19",  stageId:"finish",  category:"Финишная",      name:"Паркетный лак глянец (2.5л)",              unit:"шт",    price:1290, type:"material" },
+  { id:"fi20",  stageId:"finish",  category:"Финишная",      name:"Шпаклёвка акриловая финишная (1.5кг)",     unit:"шт",    price:390,  type:"material" },
+  { id:"fi21",  stageId:"finish",  category:"Финишная",      name:"Галтель из полиуретана 2м",                unit:"шт",    price:249,  type:"material" },
+  { id:"fi22",  stageId:"finish",  category:"Финишная",      name:"Декор-накладка на розетку",                unit:"шт",    price:89,   type:"material" },
+  { id:"fi23",  stageId:"finish",  category:"Финишная",      name:"Лоток для краски 300мм",                   unit:"шт",    price:149,  type:"material" },
+
+  // -- Крепёж доп. ---------------------------------------------------------
+  { id:"cr5",   stageId:null,      category:"Крепёж",        name:"Нагель строительный 120мм (50шт)",         unit:"упак.", price:149,  type:"material" },
+  { id:"cr6",   stageId:null,      category:"Крепёж",        name:"Саморез по дереву 4×50 (200шт)",           unit:"упак.", price:89,   type:"material" },
+  { id:"cr7",   stageId:null,      category:"Крепёж",        name:"Гвоздь строительный 3.5×90 (1кг)",         unit:"шт",    price:129,  type:"material" },
+  { id:"cr8",   stageId:null,      category:"Крепёж",        name:"Хомут монтажный 20-32мм (50шт)",           unit:"упак.", price:99,   type:"material" },
+  { id:"cr9",   stageId:null,      category:"Крепёж",        name:"Шпилька резьбовая М8×1м",                  unit:"шт",    price:149,  type:"material" },
+  { id:"cr10",  stageId:null,      category:"Крепёж",        name:"Скоба металлическая 100мм (10шт)",         unit:"упак.", price:89,   type:"material" },
+];
+
+// -- Автоматические материалы для работ --------------------------
+// workName -> [ { catalogId, qtyPerUnit, unit } ]
+
+// Material consumption rates: per m² per mm of thickness (where applicable)
+// Format: catalogId -> { perM2: kg_per_m2_per_mm, bag: kg_per_bag, note: string }
+const MATERIAL_CONSUMPTION = {
+  // -- Штукатурки (расход кг/м² при 1мм толщины) --
+  "wa1":   { perM2mm: 0.85, bag: 30,  unit: "мешок", note: "Гипс Rotband, типовой слой 10-20мм" },   // Штукатурка гипсовая
+  "wa2":   { perM2mm: 1.8,  bag: 25,  unit: "мешок", note: "Цем. штукатурка, слой 10-30мм" },        // Штукатурка цементная
+  "wa3":   { perM2mm: 0.9,  bag: 20,  unit: "мешок", note: "Шпаклёвка, слой 1-3мм" },               // Шпаклёвка финишная
+  "wa19":  { perM2mm: 0.85, bag: 5,   unit: "шт",    note: "Uniflott, слой 1-5мм" },                 // Knauf Uniflott
+  "wa25":  { perM2mm: 1.8,  bag: 25,  unit: "мешок", note: "Ceresit CT29, слой 5-30мм" },            // Ceresit CT29
+  "ce4":   { perM2mm: 0.9,  bag: 20,  unit: "мешок", note: "Шпаклёвка потолочная, 1-3мм" },          // Шпаклёвка потолка
+  // -- Стяжки --
+  "prep9": { perM2mm: 2.0,  bag: 40,  unit: "мешок", note: "Пескобетон М300, слой 30-100мм" },
+  "fl1":   { perM2mm: 1.2,  bag: 25,  unit: "мешок", note: "Knauf Убо, слой 30-80мм" },
+  "fl2":   { perM2mm: 1.6,  bag: 25,  unit: "мешок", note: "Наливной пол, слой 5-30мм" },
+  // -- Клеи для плитки --
+  "fl7":   { perM2mm: 1.3,  bag: 25,  unit: "мешок", note: "Ceresit CM11, слой 4-10мм" },
+  "wa10":  { perM2mm: 1.3,  bag: 25,  unit: "мешок", note: "Клей для плитки стен, 4-8мм" },
+  // -- Декоративные штукатурки --
+  "fi7":   { perM2mm: 1.1,  bag: 15,  unit: "ведро", note: "Декор. штукатурка, слой 2-5мм" },
+  "wa16":  { perM2mm: 1.2,  bag: 15,  unit: "ведро", note: "Короед, слой 2-4мм" },
+};
+
+// How to use: bags = ceil( area_m2 * thickness_mm * perM2mm / bag_weight )
+function calcMaterialByThickness(matId, areaM2, thicknessMm) {
+  const c = MATERIAL_CONSUMPTION[matId];
+  if (!c || !thicknessMm || !areaM2) return null;
+  const totalKg = areaM2 * thicknessMm * c.perM2mm;
+  const bags = Math.ceil(totalKg / c.bag);
+  return { totalKg: Math.round(totalKg * 10) / 10, bags, unit: c.unit, bag: c.bag, note: c.note };
+}
+
+const WORK_MATERIALS_MAP = {};
+
+function uid() {
+  return Math.random().toString(36).slice(2, 9);
+}
+
+// ==================== REDUCER ====================
+function appReducer(state, action) {
+  switch (action.type) {
+    case "ADD_PROJECT":
+      return { ...state, projects: [{ ...action.project, rooms: action.project.rooms || [] }, ...state.projects] };
+    case "DELETE_PROJECT":
+      return { ...state, projects: state.projects.filter(p => p.id !== action.id) };
+    case "UPDATE_PROJECT":
+      return {
+        ...state,
+        projects: state.projects.map(p => {
+          if (action.project && p.id === action.project.id) return action.project;
+          if (action.pid && p.id === action.pid) return { ...p, ...action.data };
+          return p;
+        }),
+      };
+    case "UPDATE_ROOM_WORK": {
+      // Edit a specific work inside a room (propagates through sync to section)
+      return {
+        ...state,
+        projects: state.projects.map(p => {
+          if (p.id !== action.pid) return p;
+          const updatedRooms = (p.rooms || []).map(r => {
+            if (r.id !== action.rid) return r;
+            return { ...r, works: (r.works || []).map(w => w.id === action.work.id ? { ...w, ...action.work } : w) };
+          });
+          return syncRoomsToSections({ ...p, rooms: updatedRooms });
+        }),
+      };
+    }
+    case "DELETE_ROOM_WORK": {
+      // Delete a specific work from a room (propagates through sync to section)
+      return {
+        ...state,
+        projects: state.projects.map(p => {
+          if (p.id !== action.pid) return p;
+          const updatedRooms = (p.rooms || []).map(r => {
+            if (r.id !== action.rid) return r;
+            return { ...r, works: (r.works || []).filter(w => w.id !== action.wid) };
+          });
+          return syncRoomsToSections({ ...p, rooms: updatedRooms });
+        }),
+      };
+    }
+    case "ADD_ROOM":
+      return {
+        ...state,
+        projects: state.projects.map(p =>
+          p.id === action.pid
+            ? { ...p, rooms: [...(p.rooms || []), action.room] }
+            : p
+        ),
+      };
+    case "UPDATE_ROOM":
+      return {
+        ...state,
+        projects: state.projects.map(p => {
+          if (p.id !== action.pid) return p;
+          const updatedRooms = (p.rooms || []).map(r => r.id === action.room.id ? action.room : r);
+          return syncRoomsToSections({ ...p, rooms: updatedRooms });
+        }),
+      };
+    case "DELETE_ROOM":
+      return {
+        ...state,
+        projects: state.projects.map(p => {
+          if (p.id !== action.pid) return p;
+          const updatedRooms = (p.rooms || []).filter(r => r.id !== action.rid);
+          return syncRoomsToSections({ ...p, rooms: updatedRooms });
+        }),
+      };
+    case "RENAME_SECTION": {
+      return {
+        ...state,
+        projects: state.projects.map(p =>
+          p.id === action.pid
+            ? { ...p, sections: p.sections.map(s => s.id === action.sid ? { ...s, name: action.name } : s) }
+            : p
+        ),
+      };
+    }
+    case "TOGGLE_SECTION": {
+      return {
+        ...state,
+        projects: state.projects.map(p =>
+          p.id === action.pid
+            ? { ...p, sections: p.sections.map(s => s.id === action.sid ? { ...s, collapsed: !s.collapsed } : s) }
+            : p
+        ),
+      };
+    }
+    case "ADD_SECTION": {
+      // Sort initial items by SECTION_WORKS_MAP order for this stage
+      let items = action.items || [];
+      if (items.length > 0 && action.stageId) {
+        const order = SECTION_WORKS_MAP[action.stageId] || [];
+        if (order.length > 0) {
+          items = [...items].sort((a, b) => {
+            const ai = order.indexOf(a.name);
+            const bi = order.indexOf(b.name);
+            if (ai !== -1 && bi !== -1) return ai - bi;
+            if (ai !== -1) return -1;
+            if (bi !== -1) return 1;
+            return 0;
+          });
+        }
+      }
+      return {
+        ...state,
+        projects: state.projects.map(p =>
+          p.id === action.pid
+            ? { ...p, sections: [...p.sections, { id: action.sid || uid(), name: action.name, collapsed: false, _explicit: true, _stageId: action.stageId || null, items }] }
+            : p
+        ),
+      };
+    }
+    case "DELETE_SECTION": {
+      return {
+        ...state,
+        projects: state.projects.map(p => {
+          if (p.id !== action.pid) return p;
+          // Find the section being deleted
+          const sec = p.sections.find(s => s.id === action.sid);
+          // Collect work names that were synced FROM rooms (via _roomWorkId)
+          const syncedWorkIds = new Set((_optionalChain([sec, 'optionalAccess', _2 => _2.items]) || []).filter(i => i._roomWorkId).map(i => i._roomWorkId));
+          // Also collect names of manual work items to remove from rooms
+          const workNames = new Set((_optionalChain([sec, 'optionalAccess', _3 => _3.items]) || []).filter(i => i.type === "work").map(i => i.name));
+          // Remove matching works from all rooms
+          const updatedRooms = (p.rooms || []).map(room => ({
+            ...room,
+            works: (room.works || []).filter(w => !syncedWorkIds.has(w.id) && !workNames.has(w.name)),
+          }));
+          const updatedSections = p.sections.filter(s => s.id !== action.sid);
+          return syncRoomsToSections({ ...p, rooms: updatedRooms, sections: updatedSections });
+        }),
+      };
+    }
+    case "DELETE_ITEM": {
+      return {
+        ...state,
+        projects: state.projects.map(p =>
+          p.id === action.pid
+            ? {
+              ...p, sections: p.sections.map(s =>
+                s.id === action.sid
+                  ? { ...s, items: s.items.filter(i => i.id !== action.iid) }
+                  : s
+              )
+            }
+            : p
+        ),
+      };
+    }
+    case "REORDER_SECTION_ITEMS": {
+      // action: { pid, sid, fromIdx, toIdx }
+      return {
+        ...state,
+        projects: state.projects.map(p => {
+          if (p.id !== action.pid) return p;
+          return {
+            ...p, sections: p.sections.map(s => {
+              if (s.id !== action.sid) return s;
+              const items = [...s.items];
+              const [moved] = items.splice(action.fromIdx, 1);
+              items.splice(action.toIdx, 0, moved);
+              return { ...s, items };
+            })
+          };
+        }),
+      };
+    }
+    // Сохранить/обновить цену работы в справочнике
+    case "UPDATE_PRICE_BOOK": {
+      const newPb = { ...state.priceBook, [action.name]: { price: action.price, unit: action.unit || "м²", sections: action.sections || [] } };
+      const curOrder = state.priceOrder || [];
+      const newOrder = curOrder.includes(action.name) ? curOrder : [...curOrder, action.name];
+      return { ...state, priceBook: newPb, priceOrder: newOrder };
+    }
+    case "DELETE_PRICE_BOOK": {
+      const nb = { ...state.priceBook };
+      delete nb[action.name];
+      return { ...state, priceBook: nb, priceOrder: (state.priceOrder || []).filter(k => k !== action.name) };
+    }
+    case "REORDER_PRICE": {
+      const order = [...(state.priceOrder || [])];
+      const [item] = order.splice(action.from, 1);
+      order.splice(action.to, 0, item);
+      return { ...state, priceOrder: order };
+    }
+    // Сохранить цену при редактировании/добавлении позиции (автофиксация)
+    case "ADD_ITEM": {
+      const newPriceBook = (action.item.price && action.item.type === "work")
+        ? { ...state.priceBook, [action.item.name]: { price: action.item.price, unit: action.item.unit || "м²" } }
+        : state.priceBook;
+      return {
+        ...state,
+        priceBook: newPriceBook,
+        projects: state.projects.map(p =>
+          p.id === action.pid
+            ? {
+              ...p, sections: p.sections.map(s =>
+                s.id === action.sid
+                  ? { ...s, items: [...s.items, action.item] }
+                  : s
+              )
+            }
+            : p
+        ),
+      };
+    }
+    case "UPDATE_ITEM": {
+      const updatedPriceBook = (action.item.price && action.item.type === "work")
+        ? { ...state.priceBook, [action.item.name]: { price: action.item.price, unit: action.item.unit || "м²" } }
+        : state.priceBook;
+      return {
+        ...state,
+        priceBook: updatedPriceBook,
+        projects: state.projects.map(p =>
+          p.id === action.pid
+            ? {
+              ...p, sections: p.sections.map(s =>
+                s.id === action.sid
+                  ? { ...s, items: s.items.map(i => i.id === action.item.id ? action.item : i) }
+                  : s
+              )
+            }
+            : p
+        ),
+      };
+    }
+    case "ADD_WORK_GROUP": {
+      const pb1 = { ...state.priceBook };
+      (action.group.items || []).forEach(item => {
+        if (item.name && item.price > 0) pb1[item.name] = { price: item.price, unit: item.unit || "м²" };
+      });
+      return { ...state, workGroups: [...(state.workGroups || []), action.group], priceBook: pb1 };
+    }
+    case "UPDATE_WORK_GROUP": {
+      const pb2 = { ...state.priceBook };
+      (action.group.items || []).forEach(item => {
+        if (item.name && item.price > 0) pb2[item.name] = { price: item.price, unit: item.unit || "м²" };
+      });
+      return { ...state, workGroups: (state.workGroups || []).map(g => g.id === action.group.id ? action.group : g), priceBook: pb2 };
+    }
+    case "DELETE_WORK_GROUP": {
+      return { ...state, workGroups: (state.workGroups || []).filter(g => g.id !== action.id) };
+    }
+    case "ADD_CUSTOM_MATERIAL": {
+      return { ...state, customMaterials: [...(state.customMaterials || []), action.material] };
+    }
+    case "DELETE_CUSTOM_MATERIAL": {
+      return { ...state, customMaterials: (state.customMaterials || []).filter(m => m.id !== action.id) };
+    }
+    case "DELETE_CUSTOM_MATERIALS_BULK": {
+      return { ...state, customMaterials: (state.customMaterials || []).filter(m => !action.ids.includes(m.id)) };
+    }
+    case "ADD_USER_MAT_GROUP":
+      return { ...state, userMatGroups: [...(state.userMatGroups||[]), action.group] };
+    case "UPDATE_USER_MAT_GROUP":
+      return { ...state, userMatGroups: (state.userMatGroups||[]).map(g => g.id===action.group.id ? action.group : g) };
+    case "DELETE_USER_MAT_GROUP":
+      return { ...state, userMatGroups: (state.userMatGroups||[]).filter(g => g.id !== action.id) };
+    case "DELETE_CATALOG_MATERIAL": {
+      return { ...state, deletedCatalogIds: [...(state.deletedCatalogIds || []), action.id] };
+    }
+    case "DELETE_CATALOG_MATERIALS": {
+      return { ...state, deletedCatalogIds: [...(state.deletedCatalogIds || []), ...action.ids] };
+    }
+    case "EDIT_CATALOG_MATERIAL_PRICE": {
+      return { ...state, catalogPriceOverrides: { ...(state.catalogPriceOverrides || {}), [action.id]: action.price } };
+    }
+    case "ADD_WORKS_BULK": {
+      // Atomically appends multiple works (with stageId) to a room, then syncs to project sections
+      const newPb = { ...state.priceBook };
+      (action.works || []).forEach(w => {
+        if (w._saveToBook && w.name && w.price > 0)
+          newPb[w.name] = { price: w.price, unit: w.unit || "м²" };
+      });
+      return {
+        ...state,
+        priceBook: newPb,
+        projects: state.projects.map(p => {
+          if (p.id !== action.pid) return p;
+          const updatedRooms = (p.rooms || []).map(r =>
+            r.id === action.rid ? {
+              ...r, works: [...(r.works || []), ...action.works.map(w => {
+                const { _saveToBook, ...clean } = w; return clean;
+              })]
+            } : r
+          );
+          return syncRoomsToSections({ ...p, rooms: updatedRooms });
+        }),
+      };
+    }
+    case "ADD_ITEMS_BULK": {
+      // Adds multiple items to a section at once (from work group)
+      return {
+        ...state,
+        projects: state.projects.map(p =>
+          p.id === action.pid
+            ? {
+              ...p, sections: p.sections.map(s =>
+                s.id === action.sid
+                  ? { ...s, items: [...s.items, ...action.items] }
+                  : s
+              )
+            }
+            : p
+        ),
+      };
+    }
+    case "_FB_LOAD_STATE": {
+      // Merge Firestore state with current state (Firestore wins for projects/priceBook)
+      const remote = action.payload;
+      if (!remote || typeof remote !== "object") return state;
+      return {
+        ...state,
+        ...remote,
+        priceBook: remote.priceBook ? { ...state.priceBook, ...remote.priceBook } : state.priceBook,
+        projects:        Array.isArray(remote.projects)        ? remote.projects        : state.projects,
+        workGroups:      Array.isArray(remote.workGroups)      ? remote.workGroups      : state.workGroups,
+        customMaterials: Array.isArray(remote.customMaterials) ? remote.customMaterials : state.customMaterials,
+        userMatGroups:   Array.isArray(remote.userMatGroups)   ? remote.userMatGroups   : state.userMatGroups,
+        priceOrder:      Array.isArray(remote.priceOrder)      ? remote.priceOrder      : state.priceOrder,
+        deletedCatalogIds: Array.isArray(remote.deletedCatalogIds) ? remote.deletedCatalogIds : state.deletedCatalogIds,
+        catalogPriceOverrides: (remote.catalogPriceOverrides && typeof remote.catalogPriceOverrides === "object")
+          ? remote.catalogPriceOverrides : state.catalogPriceOverrides,
+      };
+    }
+    default:
+      return state;
+  }
+}
+
+// ==================== HELPERS ====================
+function fmt(n) {
+  const lang = (typeof window !== "undefined" && window.__appLang) || "ru";
+  return fmtCurrency(Math.round(n)||0, lang);
+}
+
+// ==================== ICONS ====================
+const Icon = ({ name, size = 20, color = "currentColor" }) => {
+  const icons = {
+    plus: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2.5", strokeLinecap: "round"}, React.createElement('line', { x1: "12", y1: "5", x2: "12", y2: "19"} ), React.createElement('line', { x1: "5", y1: "12", x2: "19", y2: "12"} )),
+    trash: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('polyline', { points: "3,6 5,6 21,6"  } ), React.createElement('path', { d: "M19,6l-1,14H6L5,6"} ), React.createElement('path', { d: "M10,11v6M14,11v6"} ), React.createElement('path', { d: "M9,6V4h6v2"} )),
+    edit: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('path', { d: "M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"                 } ), React.createElement('path', { d: "M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"           } )),
+    chevronDown: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2.5", strokeLinecap: "round"}, React.createElement('polyline', { points: "6,9 12,15 18,9"  } )),
+    chevronRight: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2.5", strokeLinecap: "round"}, React.createElement('polyline', { points: "9,18 15,12 9,6"  } )),
+    back: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2.5", strokeLinecap: "round"}, React.createElement('polyline', { points: "15,18 9,12 15,6"  } )),
+    home: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('path', { d: "M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"            } ), React.createElement('polyline', { points: "9,22 9,12 15,12 15,22"   } )),
+    book: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('path', { d: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20"       } ), React.createElement('path', { d: "M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"             } )),
+    calc: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('rect', { x: "4", y: "2", width: "16", height: "20", rx: "2"} ), React.createElement('line', { x1: "8", y1: "6", x2: "16", y2: "6"} ), React.createElement('line', { x1: "8", y1: "10", x2: "8", y2: "10", strokeWidth: "3"} ), React.createElement('line', { x1: "12", y1: "10", x2: "12", y2: "10", strokeWidth: "3"} ), React.createElement('line', { x1: "16", y1: "10", x2: "16", y2: "10", strokeWidth: "3"} ), React.createElement('line', { x1: "8", y1: "14", x2: "8", y2: "14", strokeWidth: "3"} ), React.createElement('line', { x1: "12", y1: "14", x2: "12", y2: "14", strokeWidth: "3"} ), React.createElement('line', { x1: "16", y1: "14", x2: "16", y2: "14", strokeWidth: "3"} ), React.createElement('line', { x1: "8", y1: "18", x2: "12", y2: "18"} )),
+    share: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('circle', { cx: "18", cy: "5", r: "3"} ), React.createElement('circle', { cx: "6", cy: "12", r: "3"} ), React.createElement('circle', { cx: "18", cy: "19", r: "3"} ), React.createElement('line', { x1: "8.59", y1: "13.51", x2: "15.42", y2: "17.49"} ), React.createElement('line', { x1: "15.41", y1: "6.51", x2: "8.59", y2: "10.49"} )),
+    close: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2.5", strokeLinecap: "round"}, React.createElement('line', { x1: "18", y1: "6", x2: "6", y2: "18"} ), React.createElement('line', { x1: "6", y1: "6", x2: "18", y2: "18"} )),
+    check: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2.5", strokeLinecap: "round"}, React.createElement('polyline', { points: "20,6 9,17 4,12"  } )),
+    ruble: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('path', { d: "M6 4h8a4 4 0 0 1 0 8H6"       } ), React.createElement('line', { x1: "6", y1: "12", x2: "16", y2: "12"} ), React.createElement('line', { x1: "6", y1: "16", x2: "14", y2: "16"} ), React.createElement('line', { x1: "6", y1: "4", x2: "6", y2: "20"} )),
+    tile: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('rect', { x: "3", y: "3", width: "8", height: "8"} ), React.createElement('rect', { x: "13", y: "3", width: "8", height: "8"} ), React.createElement('rect', { x: "3", y: "13", width: "8", height: "8"} ), React.createElement('rect', { x: "13", y: "13", width: "8", height: "8"} )),
+    paint: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('path', { d: "M19 3H5a2 2 0 0 0-2 2v4a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z"                     } ), React.createElement('path', { d: "M12 11v4" } ), React.createElement('path', { d: "M8 11v2" } ), React.createElement('path', { d: "M16 11v2" } ), React.createElement('rect', { x: "10", y: "15", width: "4", height: "6", rx: "2"} )),
+    pricetag: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('path', { d: "M20.59 13.41l-7.17 7.17a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82z"               }), React.createElement('line', { x1: "7", y1: "7", x2: "7.01", y2: "7"})),
+    lock: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('rect', { x: "3", y: "11", width: "18", height: "11", rx: "2"}), React.createElement('path', { d: "M7 11V7a5 5 0 0 1 10 0v4"       })),
+    user: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('path', { d: "M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"          }), React.createElement('circle', { cx: "12", cy: "7", r: "4"})),
+    sun: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('circle', { cx: "12", cy: "12", r: "5"}), React.createElement('line', { x1: "12", y1: "1", x2: "12", y2: "3"}), React.createElement('line', { x1: "12", y1: "21", x2: "12", y2: "23"}), React.createElement('line', { x1: "4.22", y1: "4.22", x2: "5.64", y2: "5.64"}), React.createElement('line', { x1: "18.36", y1: "18.36", x2: "19.78", y2: "19.78"}), React.createElement('line', { x1: "1", y1: "12", x2: "3", y2: "12"}), React.createElement('line', { x1: "21", y1: "12", x2: "23", y2: "12"}), React.createElement('line', { x1: "4.22", y1: "19.78", x2: "5.64", y2: "18.36"}), React.createElement('line', { x1: "18.36", y1: "5.64", x2: "19.78", y2: "4.22"})),
+    moon: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('path', { d: "M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"              })),
+    phone: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('path', { d: "M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.61 3.41 2 2 0 0 1 3.6 1h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.6a16 16 0 0 0 6.29 6.29l.96-.96a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z"                                                                })),
+    mail: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('path', { d: "M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z"           }), React.createElement('polyline', { points: "22,6 12,13 2,6"  })),
+    building: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('rect', { x: "2", y: "7", width: "20", height: "14", rx: "2"}), React.createElement('path', { d: "M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"          })),
+    card: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('rect', { x: "1", y: "4", width: "22", height: "16", rx: "2"}), React.createElement('line', { x1: "1", y1: "10", x2: "23", y2: "10"})),
+    logout: React.createElement('svg', { width: size, height: size, viewBox: "0 0 24 24"   , fill: "none", stroke: color, strokeWidth: "2", strokeLinecap: "round"}, React.createElement('path', { d: "M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"          }), React.createElement('polyline', { points: "16,17 21,12 16,7"  }), React.createElement('line', { x1: "21", y1: "12", x2: "9", y2: "12"})),
+  };
+  return icons[name] || null;
+};
+
+// ==================== MODAL ====================
+// -- Global confirm bottom sheet ---------------------------------
+const TRANS_EN = {};
+
+const TRANS_KZ = {};
+
+function TT(lang, ruStr) { return ruStr || ""; }
+
+// --- Error Boundary ---------------------------------------------------------
+class ErrorBoundary extends React.Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+  static getDerivedStateFromError(error) {
+    return { hasError: true, error };
+  }
+  render() {
+    if (this.state.hasError) {
+      const errMsg = this.state.error ? (this.state.error.message || String(this.state.error)) : 'Unknown';
+      const errStack = this.state.error && this.state.error.stack ? this.state.error.stack.split('\n').slice(0,4).join('\n') : '';
+      return React.createElement('div', {
+        style: { padding: 24, textAlign: 'center', color: 'var(--tx2)', background: 'var(--bg)', minHeight: '100vh', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 12 }
+      },
+        React.createElement('div', { style: { fontSize: 40 } }, '⚠️'),
+        React.createElement('div', { style: { fontWeight: 700, fontSize: 16, color: 'var(--tx)' } }, 'Произошла ошибка'),
+        React.createElement('div', { style: { fontSize: 13, color: '#ef4444', maxWidth: 340, lineHeight: 1.5, fontFamily: 'monospace', background: 'rgba(239,68,68,0.08)', padding: '10px 14px', borderRadius: 10, textAlign: 'left', wordBreak: 'break-all' } }, errMsg),
+        errStack && React.createElement('div', { style: { fontSize: 10, color: 'var(--tx3)', maxWidth: 340, lineHeight: 1.4, fontFamily: 'monospace', textAlign: 'left', whiteSpace: 'pre-wrap', wordBreak: 'break-all' } }, errStack),
+        React.createElement('button', {
+          onClick: () => {
+            try { localStorage.clear(); } catch(e) {}
+            window.location.reload();
+          },
+          style: { marginTop: 8, padding: '12px 24px', borderRadius: 12, border: 'none', background: '#ef4444', color: '#fff', fontWeight: 700, cursor: 'pointer', fontFamily: 'inherit', fontSize: 14 }
+        }, '🔄 Сбросить и перезагрузить'),
+        React.createElement('button', {
+          onClick: () => this.setState({ hasError: false, error: null }),
+          style: { padding: '10px 20px', borderRadius: 10, border: '1px solid var(--b1)', background: 'transparent', color: 'var(--tx3)', fontWeight: 600, cursor: 'pointer', fontFamily: 'inherit', fontSize: 13 }
+        }, 'Попробовать снова')
+      );
+    }
+    return this.props.children;
+  }
+}
+
+function ConfirmSheet({ open, title, subtitle, danger, onConfirm, onCancel }) {
+  if (!open) return null;
+  return (
+    React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", zIndex:600, display:"flex", alignItems:"flex-end", justifyContent:"center" },
+      onClick: onCancel}
+      , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", padding:"20px 16px 32px", width:"100%", maxWidth: "min(480px, 95vw)", animation:"slideUp 0.22s ease" },
+        onClick: e => e.stopPropagation()}
+        , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"0 auto 18px" }} )
+        , React.createElement('div', { style: { fontSize:18, textAlign:"center", marginBottom:6 }}, danger ? "🗑️" : "⚠️")
+        , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:800, color:"var(--tx)", textAlign:"center", marginBottom:6 }}, title)
+        , subtitle && React.createElement('div', { style: { fontSize:12, color:"var(--tx3)", textAlign:"center", marginBottom:20, lineHeight:1.5 }}, subtitle)
+        , !subtitle && React.createElement('div', { style: { marginBottom:20 }} )
+        , React.createElement('div', { style: { display:"flex", gap:10 }}
+          , React.createElement('button', { onClick: onCancel, style: { flex:1, padding:"13px", borderRadius:13, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx3)", fontWeight:700, fontSize:14, cursor:"pointer", fontFamily:"inherit" }}, "Отмена"
+
+          )
+          , React.createElement('button', { onClick: onConfirm, style: { flex:1, padding:"13px", borderRadius:13, border:"none", background: danger?"#ef4444":"var(--acc)", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit" }}
+            , danger ? "Удалить" : "OK"
+          )
+        )
+      )
+    )
+  );
+}
+
+function Modal({ open, onClose, title, children }) {
+  if (!open) return null;
+  return (
+    React.createElement('div', { style: {
+      position: "absolute", inset: 0, zIndex: 1000,
+      background: "rgba(0,0,0,0.75)", backdropFilter: "blur(8px)",
+      display: "flex", alignItems: "flex-end", justifyContent: "center",
+    }, onClick: e => e.target === e.currentTarget && onClose()}
+      , React.createElement('div', { style: {
+        background: "var(--s1)", border: "1px solid var(--b2)",
+        borderRadius: "24px 24px 0 0",
+        width: "100%", maxWidth: "min(480px, 95vw)", maxHeight: "88vh",
+        overflow: "auto", padding: "24px 20px 36px",
+        boxShadow: "0 -12px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05)",
+        animation: "slideUp 0.3s cubic-bezier(0.34,1.56,0.64,1)",
+      }}
+        , React.createElement('div', { style: { width: 36, height: 4, background: "var(--surface3)", borderRadius: 2, margin: "0 auto 20px" }} )
+        , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}
+          , React.createElement('span', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 700, color: "var(--tx)" }}, title)
+          , React.createElement('button', { onClick: onClose, style: { background: "var(--s2)", border: "1px solid var(--b1)", borderRadius: 10, padding: 7, cursor: "pointer", display:"flex", alignItems:"center", justifyContent:"center" }}
+            , React.createElement(Icon, { name: "close", size: 15, color: "var(--tx2)"} )
+          )
+        )
+        , children
+      )
+    )
+  );
+}
+
+function Input({ label, value, onChange, type = "text", placeholder = "" }) {
+  return (
+    React.createElement('div', { style: { marginBottom: 14 }}
+      , label && React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 600, color: "var(--tx2)", marginBottom: 6, letterSpacing: "0.08em", textTransform: "uppercase" }}, label)
+      , React.createElement('input', {
+        type: type, value: value, onChange: e => onChange(e.target.value), placeholder: placeholder,
+        style: {
+          width: "100%", padding: "12px 14px", borderRadius: "var(--rs)", border: "1.5px solid var(--b1)",
+          fontSize: 14, color: "var(--tx)", outline: "none", boxSizing: "border-box",
+          fontFamily: "inherit", background: "var(--s2)", transition: "border-color 0.2s, box-shadow 0.2s",
+        },
+        onFocus: e => { e.target.style.borderColor = "var(--acc)"; e.target.style.boxShadow = "0 0 0 3px rgba(108,99,255,0.15)"; },
+        onBlur: e => { e.target.style.borderColor = "var(--b1)"; e.target.style.boxShadow = "none"; }}
+      )
+    )
+  );
+}
+
+function Btn({ children, onClick, variant = "primary", full = false, disabled = false }) {
+  const base = {
+    border: "none", borderRadius: "var(--rs)", padding: "12px 20px",
+    cursor: disabled ? "not-allowed" : "pointer", fontFamily: "inherit",
+    fontWeight: 700, fontSize: 14, transition: "all 0.18s", opacity: disabled ? 0.45 : 1,
+    width: full ? "100%" : "auto", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6,
+  };
+  const styles = {
+    primary: { ...base, background: "linear-gradient(135deg, #6c63ff, #a78bfa)", color: "#fff", boxShadow: "0 4px 16px rgba(108,99,255,0.35)" },
+    secondary: { ...base, background: "var(--s2)", color: "var(--tx2)", border: "1px solid var(--b1)" },
+    danger: { ...base, background: "rgba(239,68,68,0.15)", color: "var(--red)", border: "1px solid rgba(239,68,68,0.3)" },
+    ghost: { ...base, background: "transparent", color: "var(--acc2)", border: "1px solid var(--b1)" },
+  };
+  return (
+    React.createElement('button', { onClick: disabled ? undefined : onClick, style: styles[variant] || styles.primary,
+      onMouseEnter: e => { if(!disabled) e.currentTarget.style.transform = "translateY(-1px)"; },
+      onMouseLeave: e => e.currentTarget.style.transform = "translateY(0)"}
+, children)
+  );
+}
+
+
+// ==================== LOGO ====================
+function Logo({ size = 32 }) {
+  return (
+    React.createElement('svg', { width: size, height: size, viewBox: "0 0 40 40"   , fill: "none"}
+      , React.createElement('rect', { width: "40", height: "40", rx: "10", fill: "url(#lg)"} )
+      , React.createElement('defs', {}
+        , React.createElement('linearGradient', { id: "lg", x1: "0", y1: "0", x2: "40", y2: "40", gradientUnits: "userSpaceOnUse"}
+          , React.createElement('stop', { offset: "0%", stopColor: "#7c6fff"})
+          , React.createElement('stop', { offset: "100%", stopColor: "#06b6d4"})
+        )
+      )
+      /* house outline */
+      , React.createElement('path', { d: "M10 22 L20 12 L30 22"     , stroke: "rgba(255,255,255,0.5)", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round"})
+      /* walls */
+      , React.createElement('path', { d: "M12 22 L12 31 L28 31 L28 22"       , stroke: "#fff", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round"})
+      /* door */
+      , React.createElement('rect', { x: "17", y: "24", width: "6", height: "7", rx: "1", fill: "rgba(255,255,255,0.3)", stroke: "rgba(255,255,255,0.7)", strokeWidth: "1.5"})
+      /* ruler accent */
+      , React.createElement('line', { x1: "8", y1: "34", x2: "32", y2: "34", stroke: "rgba(255,255,255,0.25)", strokeWidth: "1"})
+      , React.createElement('line', { x1: "8", y1: "32", x2: "8", y2: "36", stroke: "rgba(255,255,255,0.4)", strokeWidth: "1.5"})
+      , React.createElement('line', { x1: "32", y1: "32", x2: "32", y2: "36", stroke: "rgba(255,255,255,0.4)", strokeWidth: "1.5"})
+      , React.createElement('line', { x1: "14", y1: "33", x2: "14", y2: "35", stroke: "rgba(255,255,255,0.3)", strokeWidth: "1"})
+      , React.createElement('line', { x1: "20", y1: "33", x2: "20", y2: "35", stroke: "rgba(255,255,255,0.3)", strokeWidth: "1"})
+      , React.createElement('line', { x1: "26", y1: "33", x2: "26", y2: "35", stroke: "rgba(255,255,255,0.3)", strokeWidth: "1"})
+    )
+  );
+}
+
+
+// ═══════════════════════════════════════════════════════
+//  FabButton — всегда снизу справа, position:fixed
+//  position:fixed сам по себе выходит из overflow-контейнеров
+// ═══════════════════════════════════════════════════════
+function FabButton({ visible, onClick, color, shadow, icon, label }) {
+  if (!visible) return null;
+  return React.createElement('button', {
+    onClick: onClick,
+    'aria-label': label || "Добавить",
+    style: {
+      position: "fixed",
+      bottom: 88,
+      right: 16,
+      zIndex: 9999,
+      width: 58,
+      height: 58,
+      borderRadius: "50%",
+      border: "none",
+      background: color || "linear-gradient(135deg,#7c6fff,#06b6d4)",
+      cursor: "pointer",
+      display: "flex",
+      alignItems: "center",
+      justifyContent: "center",
+      boxShadow: shadow || "0 6px 28px rgba(108,99,255,0.55)",
+      fontSize: 28,
+      color: "#fff",
+      fontWeight: 300,
+      WebkitTapHighlightColor: "transparent",
+      transition: "transform 0.15s, box-shadow 0.15s",
+    },
+    onPointerDown: function(e) { e.currentTarget.style.transform = "scale(0.9)"; },
+    onPointerUp:   function(e) { e.currentTarget.style.transform = "scale(1)"; },
+    onPointerLeave:function(e) { e.currentTarget.style.transform = "scale(1)"; },
+  },
+    icon || React.createElement('svg', { width:24, height:24, viewBox:"0 0 24 24", fill:"none", stroke:"#fff", strokeWidth:"2.5", strokeLinecap:"round" },
+      React.createElement('line', { x1:"12", y1:"5", x2:"12", y2:"19" }),
+      React.createElement('line', { x1:"5",  y1:"12", x2:"19", y2:"12" })
+    )
+  );
+}
+
+// -- Reusable swipe row (left=delete, right=edit) --------------------
+function SwipeRow({ children, onSwipeLeft, threshold = 80, style = {} }) {
+  const [tx, setTx] = useState(0);
+  const startX = useRef(0);
+
+  const handleTouchStart = (e) => { startX.current = e.touches[0].clientX; setTx(0); };
+  const handleTouchMove = (e) => {
+    const dx = e.touches[0].clientX - startX.current;
+    if (dx < 0) setTx(Math.max(-threshold - 20, dx)); // only left swipe
+  };
+  const handleTouchEnd = () => {
+    if (tx < -threshold && onSwipeLeft) onSwipeLeft();
+    setTx(0);
+  };
+
+  const showDel = tx < -(threshold * 0.5);
+
+  return (
+    React.createElement('div', { style: { position:"relative", overflow:"hidden", borderRadius:"var(--r)", ...style }}
+      , React.createElement('div', { style: { position:"absolute", inset:0, display:"flex", justifyContent:"flex-end", pointerEvents:"none" }}
+        , React.createElement('div', { style: { background:"#ef4444", width:80, display:"flex", alignItems:"center", justifyContent:"center", borderRadius:"0 var(--r) var(--r) 0", opacity: showDel ? 1 : 0, transition:"opacity 0.15s" }}
+          , React.createElement(Icon, { name: "trash", size: 22, color: "#fff"} )
+        )
+      )
+      , React.createElement('div', {
+        onTouchStart: handleTouchStart,
+        onTouchMove: handleTouchMove,
+        onTouchEnd: handleTouchEnd,
+        style: { transform: `translateX(${tx}px)`, transition: tx === 0 ? "transform 0.22s" : "none", position:"relative", zIndex:1 }}
+        , children
+      )
+    )
+  );
+}
+
+function ProjectsScreen({ state, dispatch, navigate, theme, lang }) {
+  const L = T[lang] || T.ru;
+  const cur = CURRENCY[lang] || CURRENCY.ru;
+  const fmtAmt = (n) => fmtMoney(n, lang);
+  const [activeTab, setActiveTab] = useState("estimate"); // "estimate" | "materials"
+  const [showModal, setShowModal] = useState(false);
+  const [confirmDeletePid, setConfirmDeletePid] = useState(null);
+  const [form, setForm] = useState({ name: "", address: "", area: "" });
+  const [search, setSearch] = useState("");
+  const [swipeId, setSwipeId] = useState(null);
+
+  // Search by name OR date (day "15", month "03", "март", partial date "2024-03")
+  const MONTHS_RU = ["январь","февраль","март","апрель","май","июнь","июль","август","сентябрь","октябрь","ноябрь","декабрь"];
+  const MONTHS_SHORT = ["янв","фев","мар","апр","май","июн","июл","авг","сен","окт","ноя","дек"];
+  const searchLower = search.toLowerCase().trim();
+  const allProjects = state.projects.filter(p => {
+    if (!searchLower) return true;
+    const nameMatch = ((p.name||"")).toLowerCase().includes(searchLower);
+    const addrMatch = (p.address || "").toLowerCase().includes(searchLower);
+    // Date matching: p.date is "YYYY-MM-DD"
+    const d = p.date || "";
+    const dateMatch = d.includes(searchLower) || // "2024", "2024-03", "03-15", "15"
+      (() => {
+        const parts = d.split("-"); // [year, month, day]
+        if (parts.length < 3) return false;
+        const [y, m, day] = parts;
+        const mIdx = parseInt(m) - 1;
+        return (
+          day === searchLower ||
+          parseInt(day) === parseInt(searchLower) ||
+          m === searchLower.padStart(2,"0") ||
+          parseInt(m) === parseInt(searchLower) ||
+          (mIdx >= 0 && MONTHS_RU[mIdx] && MONTHS_RU[mIdx].startsWith(searchLower)) ||
+          (mIdx >= 0 && MONTHS_SHORT[mIdx] && MONTHS_SHORT[mIdx].startsWith(searchLower))
+        );
+      })();
+    return nameMatch || addrMatch || dateMatch;
+  });
+
+  // Estimate projects = те что без mode или mode="estimate"
+  // Materials projects = mode="materials"
+  const estimateProjects = allProjects.filter(p => !p.mode || p.mode === "estimate");
+  const materialsProjects = allProjects.filter(p => p.mode === "materials");
+  // Sort newest first (by date descending, fallback to array order)
+  const sortNewestFirst = arr => [...arr].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const projects = sortNewestFirst(activeTab === "estimate" ? estimateProjects : materialsProjects);
+
+  const handleCreate = () => {
+    if (!form.name.trim()) return;
+    const newId = uid();
+    dispatch({
+      type: "ADD_PROJECT",
+      project: {
+        id: newId, name: form.name, address: form.address,
+        area: +form.area || 0, date: new Date().toISOString().slice(0, 10),
+        progress: 0, rooms: [], sections: [], mode: activeTab,
+      },
+    });
+    setForm({ name: "", address: "", area: "" });
+    setShowModal(false);
+    navigate("project", { projectId: newId, mode: activeTab });
+  };
+
+  const isEst = activeTab === "estimate";
+  const accent = isEst ? "#1e40af" : "#0f766e";
+  const accentLight = isEst ? "#3b82f6" : "#0d9488";
+  const emptyIcon = isEst ? "📋" : "📦";
+  const emptyText = isEst ? "Создайте смету работ кнопкой «+»" : "Создайте список материалов кнопкой «+»";
+
+  return (
+    React.createElement('div', { style: { minHeight: "100%", background: "var(--bg)" }}
+      /* Header */
+      , React.createElement('div', { style: { background: "var(--bg)", borderBottom: "1px solid var(--b1)", padding: "52px 20px 20px", position: "relative", overflow: "hidden" }}
+        , React.createElement('div', { style: { position: "absolute", top: -80, right: -60, width: 280, height: 280, borderRadius: "50%", background: "radial-gradient(circle, rgba(124,111,255,0.08) 0%, transparent 70%)", pointerEvents: "none" }} )
+        , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 14, marginBottom: 20 }}
+          , React.createElement(Logo, { size: 44} )
+          , React.createElement('div', {}
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 22, fontWeight: 900, color: "var(--tx)", letterSpacing: "-0.02em", lineHeight: 1.1 }}, "СтройСмета")
+            , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", letterSpacing: "0.1em", textTransform: "uppercase", marginTop: 3 }}, "Строительный контроль" )
+          )
+        )
+        , React.createElement('div', { style: { background: "var(--s2)", border: "1px solid var(--b2)", borderRadius: 12, padding: "11px 14px", display: "flex", alignItems: "center", gap: 10 }}
+          , React.createElement(Icon, { name: "search", size: 16, color: "var(--tx3)"} )
+          , React.createElement('input', { value: search, onChange: e => setSearch(e.target.value), placeholder: "Поиск по названию или дате (15, март, 2024)..."       ,
+            style: { background: "none", border: "none", outline: "none", color: "var(--tx)", fontSize: 14, width: "100%", fontFamily: "inherit" }} )
+        )
+      )
+
+      /* Tab switcher */
+      , React.createElement('div', { style: { padding: "16px 16px 0" }}
+        , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}
+          , React.createElement('button', { onClick: () => { setActiveTab("estimate"); setSwipeId(null); }, style: {
+            background: activeTab === "estimate" ? "rgba(124,111,255,0.18)" : "var(--s1)",
+            border: activeTab === "estimate" ? "1px solid rgba(124,111,255,0.35)" : "1px solid var(--b1)",
+            borderRadius: "var(--r)", padding: "10px 12px", cursor: "pointer", fontFamily: "inherit",
+            transition: "all 0.2s", textAlign: "left", display: "flex", alignItems: "center", gap: 10,
+          }}
+            , React.createElement('div', { style: { fontSize: 20, flexShrink: 0 }}, "📋")
+            , React.createElement('div', {}
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 11, fontWeight: 700, color: activeTab === "estimate" ? "var(--acc2)" : "var(--tx)", marginBottom: 1 }}, "Сметы работ" )
+              , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)" }}, estimateProjects.length, " проект." )
+            )
+          )
+          , React.createElement('button', { onClick: () => { setActiveTab("materials"); setSwipeId(null); }, style: {
+            background: activeTab === "materials" ? "rgba(16,185,129,0.15)" : "var(--s1)",
+            border: activeTab === "materials" ? "1px solid rgba(16,185,129,0.35)" : "1px solid var(--b1)",
+            borderRadius: "var(--r)", padding: "10px 12px", cursor: "pointer", fontFamily: "inherit",
+            transition: "all 0.2s", textAlign: "left", display: "flex", alignItems: "center", gap: 10,
+          }}
+            , React.createElement('div', { style: { fontSize: 20, flexShrink: 0 }}, "📦")
+            , React.createElement('div', {}
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 11, fontWeight: 700, color: activeTab === "materials" ? "var(--green)" : "var(--tx)", marginBottom: 1 }}, "С материалами" )
+              , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)" }}, materialsProjects.length, " проект." )
+            )
+          )
+        )
+      )
+
+      /* Projects list */
+      , React.createElement('div', { style: { padding: "14px 16px" }}
+        , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}
+          , React.createElement('span', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 700, color: "var(--tx)" }}
+            , isEst ? "Сметы работ" : "Проекты с материалами"
+          )
+          , React.createElement('span', { style: { fontSize: 12, color: "var(--tx3)" }}, projects.length, " шт." )
+        )
+
+        /* Add project button — always visible */
+        , React.createElement('button', { onClick: () => setShowModal(true), style: {
+          width: "100%", marginBottom: 14,
+          background: "linear-gradient(135deg,var(--acc),var(--acc2))",
+          border: "none", borderRadius: "var(--r)", padding: "15px 16px",
+          cursor: "pointer", fontFamily: "inherit",
+          display: "flex", alignItems: "center", gap: 12,
+          boxShadow: "0 4px 18px rgba(108,99,255,0.4)",
+        }}
+          , React.createElement('div', { style: { width: 36, height: 36, borderRadius: 11, background: "rgba(255,255,255,0.18)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}
+            , isEst ? "📋" : "📦"
+          )
+          , React.createElement('div', { style: { flex: 1, textAlign: "left" }}
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 800, color: "#fff" }}, "+ "
+               , isEst ? "Новая смета работ" : "Новый список материалов"
+            )
+            , React.createElement('div', { style: { fontSize: 11, color: "rgba(255,255,255,0.65)", marginTop: 2 }}, "Создать проект" )
+          )
+          , React.createElement(Icon, { name: "chevronRight", size: 18, color: "rgba(255,255,255,0.7)"} )
+        )
+
+        , projects.length === 0 && (
+          React.createElement('div', { style: { textAlign: "center", padding: "30px 20px", color: "var(--tx3)", background: "var(--s1)", borderRadius: "var(--r)", border: "1px solid var(--b1)" }}
+            , React.createElement('div', { style: { fontSize: 40, marginBottom: 10 }}, emptyIcon)
+            , React.createElement('div', { style: { fontWeight: 600, marginBottom: 4, color: "var(--tx2)", fontSize: 13 }}, "Нет проектов" )
+            , React.createElement('div', { style: { fontSize: 12 }}, emptyText)
+          )
+        )
+
+        , projects.map(p => {
+          // estimate mode: show only work items; materials mode: show all or only material items
+          const workSections = isEst
+            ? p.sections.map(s => ({ ...s, items: s.items.filter(i => i.type === "work") }))
+            : p.sections;
+          const matSections = p.sections.map(s => ({ ...s, items: s.items.filter(i => i.type === "material") }));
+
+          const displayTotal = isEst ? calcTotal(workSections) : calcTotal(p.sections);
+          const matTotal = calcTotal(matSections);
+          const workTotal = calcTotal(workSections);
+          const isSwipe = swipeId === p.id;
+
+          return (
+            React.createElement('div', { key: p.id, style: { marginBottom: 12, position: "relative", overflow: "hidden", borderRadius: "var(--r)" }}
+              , React.createElement('div', { style: {
+                position: "absolute", right: 0, top: 0, bottom: 0, width: 80,
+                background: "#ef4444", display: "flex", alignItems: "center", justifyContent: "center",
+                borderRadius: "0 16px 16px 0", cursor: "pointer", zIndex: 1,
+              }, onClick: () => setConfirmDeletePid(p.id)}
+                , React.createElement(Icon, { name: "trash", size: 20, color: "#fff"} )
+              )
+
+              , theme === "classic" ? (
+                /* -- Classic card layout — matches screenshot style -- */
+                React.createElement('div', { style: {
+                  background:"#fff", borderRadius:4, border:"1px solid #e0e0e0",
+                  boxShadow:"0 1px 3px rgba(0,0,0,0.12)", overflow:"hidden",
+                  transform: isSwipe ? "translateX(-80px)" : "translateX(0)",
+                  transition:"transform 0.25s ease", position:"relative", zIndex:2,
+                },
+                  onClick: e => { if (!isSwipe && !e.currentTarget._scrolled) navigate("project", { projectId: p.id, mode: p.mode || "estimate" }); },
+                  onTouchStart: e => { const t=e.touches[0]; e.currentTarget._tsx=t.clientX; e.currentTarget._tsy=t.clientY; e.currentTarget._scrolled=false; },
+                  onTouchMove: e => { if(Math.abs(e.touches[0].clientY-(e.currentTarget._tsy||0))>8) e.currentTarget._scrolled=true; },
+                  onTouchEnd: e => { if(e.currentTarget._scrolled) return; const dx=e.changedTouches[0].clientX-(e.currentTarget._tsx||0); if(dx<-50) setSwipeId(p.id); else if(dx>50) setSwipeId(null); }}
+
+                  , React.createElement('div', { style: { display:"flex", alignItems:"stretch", padding:"14px 14px 0" }}
+                    /* House icon */
+                    , React.createElement('div', { style: { width:64, height:64, background:"#f5f5f5", borderRadius:2, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, marginRight:14 }}
+                      , React.createElement('svg', { width: "32", height: "32", viewBox: "0 0 24 24"   , fill: "none"}, React.createElement('path', { d: "M3 12L12 4l9 8"   , stroke: "#9e9e9e", strokeWidth: "1.5", strokeLinejoin: "round"}), React.createElement('path', { d: "M5 10v8a1 1 0 001 1h4v-4h4v4h4a1 1 0 001-1v-8"        , stroke: "#9e9e9e", strokeWidth: "1.5", strokeLinejoin: "round"}))
+                    )
+                    , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                      , React.createElement('div', { style: { fontSize:16, fontWeight:700, color:"#212121", marginBottom:4, lineHeight:1.2 }}, p.name)
+                      , React.createElement('div', { style: { fontSize:13, color:"#757575", lineHeight:1.4 }}, p.address || "Адрес не указан")
+                      , React.createElement('div', { style: { fontSize:13, color:"#757575" }}, p.area ? `${p.area} м²` : "")
+                    )
+                    , React.createElement('div', { style: { flexShrink:0, paddingLeft:8, paddingTop:2 }}
+                      , React.createElement('div', { style: { fontSize:18, color:"#bdbdbd" }}, "⋮")
+                    )
+                  )
+                  , React.createElement('div', { style: { borderTop:"1px solid #eeeeee", margin:"12px 0 0", padding:"8px 14px", display:"flex", justifyContent:"space-between", alignItems:"center" }}
+                    , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:6, fontSize:12, color:"#757575" }}
+                      , React.createElement('div', { style: { width:8, height:8, borderRadius:"50%", background:"#9e9e9e" }} )
+                      , React.createElement('span', {}, "Новый")
+                    )
+                    , React.createElement('div', { style: { fontSize:12, color:"#9e9e9e" }}, _optionalChain([p, 'access', _4 => _4.date, 'optionalAccess', _5 => _5.split, 'call', _6 => _6("-"), 'access', _7 => _7.reverse, 'call', _8 => _8(), 'access', _9 => _9.join, 'call', _10 => _10(".")]))
+                  )
+                )
+              ) : (
+              React.createElement('div', { style: {
+                background: "var(--s1)", borderRadius: "var(--r)", padding: "16px",
+                border: "1px solid var(--b1)",
+                transform: isSwipe ? "translateX(-80px)" : "translateX(0)",
+                transition: "transform 0.25s ease", position: "relative", zIndex: 2, cursor: "pointer",
+              },
+                onClick: e => { if (!isSwipe && !e.currentTarget._scrolled) navigate("project", { projectId: p.id, mode: p.mode || "estimate" }); },
+                onTouchStart: e => { const t = e.touches[0]; e.currentTarget._tsx = t.clientX; e.currentTarget._tsy = t.clientY; e.currentTarget._scrolled = false; },
+                onTouchMove: e => {
+                  const dy = Math.abs(e.touches[0].clientY - (e.currentTarget._tsy || 0));
+                  if (dy > 8) e.currentTarget._scrolled = true; // mark as scroll
+                },
+                onTouchEnd: e => {
+                  if (e.currentTarget._scrolled) return;
+                  const dx = e.changedTouches[0].clientX - (e.currentTarget._tsx || 0);
+                  if (dx < -80) { setConfirmDeletePid(p.id); setSwipeId(null); }
+
+                  else if (dx < -40) setSwipeId(p.id);
+                  else if (Math.abs(dx) < 10) {} // tap handled by onClick
+                }}
+
+                , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 10 }}
+                  , React.createElement('div', { style: { flex: 1 }}
+                    , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 7, marginBottom: 3 }}
+                      , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 700, color: "var(--tx)" }}, p.name)
+                      , React.createElement('div', { style: {
+                        fontSize: 9, padding: "2px 6px", borderRadius: 5, fontWeight: 800, letterSpacing: "0.06em",
+                        background: isEst ? "#eff6ff" : "#f0fdfa",
+                        color: isEst ? "#1e40af" : "#0f766e",
+                        border: `1px solid ${isEst ? "#bfdbfe" : "#99f6e4"}`,
+                      }}, isEst ? "СМЕТА" : "МАТЕРИАЛЫ")
+                    )
+                    , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)" }}, p.address, p.area ? ` • ${p.area} м²` : "")
+                  )
+                  , React.createElement('div', { style: { textAlign: "right" }}
+                    , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 800, color: isEst ? "#1e40af" : "#0f766e" }}, fmt(displayTotal))
+                    , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", marginTop: 2 }}, p.date)
+                  )
+                )
+
+                /* Mini breakdown */
+                , !isEst && (
+                  React.createElement('div', { style: { display: "flex", gap: 6, marginBottom: 10 }}
+                    , React.createElement('div', { style: { background: "rgba(124,111,255,0.12)", borderRadius: 8, padding: "4px 9px", fontSize: 11, color: "var(--acc2)", fontWeight: 600 }}, "🔨 "
+                       , fmt(workTotal)
+                    )
+                    , React.createElement('div', { style: { background: "rgba(245,158,11,0.12)", borderRadius: 8, padding: "4px 9px", fontSize: 11, color: "var(--gold)", fontWeight: 600 }}, "🧱 "
+                       , fmt(matTotal)
+                    )
+                  )
+                )
+
+                , React.createElement('div', { style: { display: "flex", gap: 6 }}
+                  , React.createElement('button', { onClick: e => { e.stopPropagation(); setSwipeId(isSwipe ? null : p.id); },
+                    style: { background: "var(--s2)", border: "none", borderRadius: 8, padding: "5px 10px", fontSize: 11, color: "var(--tx2)", cursor: "pointer", fontWeight: 600 }}
+                    , isSwipe ? "Отмена" : "⟵ Удалить"
+                  )
+                  , React.createElement('div', { style: { marginLeft: "auto", background: isEst ? "#eff6ff" : "#f0fdfa", borderRadius: 8, padding: "4px 10px", fontSize: 11, color: isEst ? "#3b82f6" : "#0f766e", fontWeight: 600 }}
+                    , p.sections.length, " разд."
+                  )
+                )
+              )
+              )/* end classic ternary */
+            )
+          );
+        })
+      )
+
+      /* FAB — portal so it always stays bottom-right on Samsung Browser */
+      , React.createElement(FabButton, {
+          visible: true,
+          onClick: () => setShowModal(true),
+          color: isEst ? "linear-gradient(135deg,#3b82f6,#1d4ed8)" : "linear-gradient(135deg,#0d9488,#0f766e)",
+          shadow: isEst ? "0 6px 24px rgba(59,130,246,0.55)" : "0 6px 24px rgba(13,148,136,0.55)",
+          label: "Новая смета",
+        })
+
+      , React.createElement(ConfirmSheet, {
+        open: !!confirmDeletePid,
+        title: "Удалить проект?" ,
+        subtitle: `«${_optionalChain([state, 'access', _11 => _11.projects, 'access', _12 => _12.find, 'call', _13 => _13(p=>p.id===confirmDeletePid), 'optionalAccess', _14 => _14.name]) || ""}» и все данные будут удалены`,
+        danger: true,
+        onCancel: () => setConfirmDeletePid(null),
+        onConfirm: () => { dispatch({ type: "DELETE_PROJECT", id: confirmDeletePid }); setConfirmDeletePid(null); setSwipeId(null); }}
+      )
+      , React.createElement(Modal, { open: showModal, onClose: () => setShowModal(false),
+        title: isEst ? "📋 Новая смета (работы)" : "📦 Новый проект (с материалами)"}
+        , React.createElement('div', { style: { background: isEst ? "#eff6ff" : "#f0fdfa", borderRadius: 10, padding: "10px 12px", marginBottom: 14, fontSize: 12, color: isEst ? "#1e40af" : "#0f766e", fontWeight: 600 }}
+          , isEst
+            ? "Смета без материалов — только работы и услуги."
+            : "Проект с материалами — работы и закупки в одном месте."
+        )
+        , React.createElement(Input, { label: "Название", value: form.name, onChange: v => setForm({ ...form, name: v }), placeholder: isEst ? "Отделочные работы" : "Закупка стройматериалов"} )
+        , React.createElement(Input, { label: "Адрес / Объект"  , value: form.address, onChange: v => setForm({ ...form, address: v }), placeholder: "ул. Пушкина, д. 1"   } )
+        , React.createElement(Input, { label: "Площадь (м²)" , type: "number", value: form.area, onChange: v => setForm({ ...form, area: v }), placeholder: "50"} )
+        , React.createElement('div', { style: { display: "flex", gap: 10, marginTop: 8 }}
+          , React.createElement(Btn, { onClick: () => setShowModal(false), variant: "secondary", full: true}, "Отмена")
+          , React.createElement(Btn, { onClick: handleCreate, full: true}, "Создать")
+        )
+      )
+    )
+  );
+}
+
+// ==================== ROOMS MODULE ====================
+
+// Геометрия помещения: стандартное прямоугольное
+function calcRoomStandard({ length, width, height, doors, windows }) {
+  const L = parseFloat(length) || 0;
+  const W = parseFloat(width) || 0;
+  const H = parseFloat(height) || 0;
+  const D = parseFloat(doors) || 0;
+  const WN = parseFloat(windows) || 0;
+  const floor = L * W;
+  const ceiling = L * W;
+  const perimeter = 2 * (L + W);
+  const wallsTotal = perimeter * H;
+  // стандартные вычеты: дверь 0.9×2.0, окно 1.2×1.4
+  const deductions = D * (0.9 * 2.0) + WN * (1.2 * 1.4);
+  const wallsNet = Math.max(0, wallsTotal - deductions);
+  return { floor, ceiling, perimeter, wallsTotal, wallsNet, deductions };
+}
+
+// Геометрия помещения: нестандартная форма (многоугольник)
+function polygonArea(pts) {
+  let area = 0;
+  const n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    area += pts[i].x * pts[j].y;
+    area -= pts[j].x * pts[i].y;
+  }
+  return Math.abs(area) / 2;
+}
+function polygonPerimeter(pts) {
+  let p = 0;
+  const n = pts.length;
+  for (let i = 0; i < n; i++) {
+    const j = (i + 1) % n;
+    const dx = pts[j].x - pts[i].x;
+    const dy = pts[j].y - pts[i].y;
+    p += Math.sqrt(dx * dx + dy * dy);
+  }
+  return p;
+}
+
+// ---- Custom shape drawer ----
+function RoomShapeDrawer({ points, onChange, sides, onSideChange }) {
+  const SIZE = 280;
+  const PAD = 30;
+  const SNAP_R = 18;
+  const [dragging, setDragging] = useState(null);
+  const [hovering, setHovering] = useState(null);
+  const [mousePos, setMousePos] = useState(null);
+  const [closed, setClosed] = useState(points.length >= 3);
+
+  // Inline editing state: which segment label is being edited on canvas
+  const [inlineEdit, setInlineEdit] = useState(null); // { segIdx, value, x, y }
+  const inlineInputRef = useRef(null);
+
+  useEffect(() => {
+    if (points.length >= 3 && !closed) setClosed(true);
+    if (points.length === 0) setClosed(false);
+  }, []);
+
+  // Focus inline input when it appears
+  useEffect(() => {
+    if (inlineEdit !== null && inlineInputRef.current) {
+      inlineInputRef.current.focus();
+      inlineInputRef.current.select();
+    }
+  }, [inlineEdit]);
+
+  const scale = 10 / (SIZE - 2 * PAD); // meters per pixel
+  const pxPerM = 1 / scale;            // pixels per meter
+
+  const GRID_STEP = (SIZE - 2 * PAD) / 10; // pixels per grid cell
+
+  const snapToGrid = (val, origin) => {
+    const relative = val - origin;
+    return origin + Math.round(relative / GRID_STEP) * GRID_STEP;
+  };
+
+  const getSVGPos = (e, el) => {
+    const rect = el.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    const clientY = e.touches ? e.touches[0].clientY : e.clientY;
+    const rawX = Math.max(PAD, Math.min(SIZE - PAD, clientX - rect.left));
+    const rawY = Math.max(PAD, Math.min(SIZE - PAD, clientY - rect.top));
+    // Snap to grid intersections
+    return {
+      x: snapToGrid(rawX, PAD),
+      y: snapToGrid(rawY, PAD),
+    };
+  };
+
+  const dist = (a, b) => Math.sqrt((a.x - b.x) ** 2 + (a.y - b.y) ** 2);
+
+  // -- Apply manually typed length to a segment ------------------------------
+  // Strategy: keep point[i] fixed, move point[j] along same direction
+  const applySegmentLength = (segIdx, newLenM) => {
+    const newLenPx = newLenM * pxPerM;
+    const n = points.length;
+    const j = (segIdx + 1) % n;
+    const p = points[segIdx];
+    const nx = points[j];
+    const curLen = dist(p, nx);
+    if (curLen < 0.001) return; // degenerate
+    // Unit vector from p -> nx
+    const ux = (nx.x - p.x) / curLen;
+    const uy = (nx.y - p.y) / curLen;
+    // New position of j clamped to canvas
+    const newX = Math.max(PAD, Math.min(SIZE - PAD, p.x + ux * newLenPx));
+    const newY = Math.max(PAD, Math.min(SIZE - PAD, p.y + uy * newLenPx));
+    const newPts = points.map((pt, idx) => idx === j ? { x: newX, y: newY } : pt);
+    onChange(newPts);
+    // Also record this as the "manual" side length so badge shows it
+    onSideChange(segIdx, String(newLenM));
+  };
+
+  const openInlineEdit = (e, segIdx, mx, my, currentDisplay) => {
+    e.stopPropagation();
+    setInlineEdit({ segIdx, value: currentDisplay, x: mx, y: my });
+  };
+
+  const commitInlineEdit = () => {
+    if (!inlineEdit) return;
+    const v = parseFloat(inlineEdit.value);
+    if (v > 0) {
+      applySegmentLength(inlineEdit.segIdx, v);
+    }
+    setInlineEdit(null);
+  };
+
+  const handleInlineKey = (e) => {
+    if (e.key === "Enter") commitInlineEdit();
+    if (e.key === "Escape") setInlineEdit(null);
+    e.stopPropagation();
+  };
+
+  const handleCanvasClick = (e) => {
+    if (inlineEdit !== null) { commitInlineEdit(); return; }
+    if (dragging !== null) return;
+    if (closed) return;
+    const el = e.currentTarget;
+    const pos = getSVGPos(e, el);
+    if (points.length >= 3 && dist(pos, points[0]) < SNAP_R) {
+      setClosed(true);
+      return;
+    }
+    onChange([...points, pos]);
+  };
+
+  const startDrag = (e, i) => {
+    e.stopPropagation();
+    if (inlineEdit !== null) { commitInlineEdit(); return; }
+    setDragging(i);
+  };
+
+  const onMove = (e) => {
+    const el = e.currentTarget;
+    const pos = getSVGPos(e, el);
+    setMousePos(pos);
+    if (dragging !== null) {
+      const newPts = points.map((p, idx) => idx === dragging ? pos : p);
+      onChange(newPts);
+    }
+  };
+
+  const onMouseLeave = () => { setMousePos(null); setDragging(null); };
+  const endDrag = () => setDragging(null);
+
+  const removePoint = (i) => {
+    if (points.length <= 3) return;
+    const newPts = points.filter((_, idx) => idx !== i);
+    onChange(newPts);
+    if (newPts.length < 3) setClosed(false);
+  };
+
+  const resetShape = () => { onChange([]); setClosed(false); setMousePos(null); setInlineEdit(null); };
+
+  const segCount = closed ? points.length : points.length - 1;
+  const area = closed && points.length >= 3 ? polygonArea(points) * scale * scale : 0;
+  const perimPx = closed && points.length >= 2 ? polygonPerimeter(points) : 0;
+  const perimM = perimPx * scale;
+  const nearFirst = !closed && points.length >= 3 && mousePos && dist(mousePos, points[0]) < SNAP_R;
+
+  return (
+    React.createElement('div', {}
+      /* Instructions */
+      , React.createElement('div', { style: { fontSize: 12, color: "var(--tx2)", marginBottom: 8, lineHeight: 1.6, background: "var(--s2)", borderRadius: 10, padding: "8px 12px", border: "1px solid var(--b1)" }}
+        , !closed && points.length === 0 && React.createElement('span', {}, "👆 " , React.createElement('b', {}, "Нажмите на холст"  ), " чтобы поставить первый угол"    )
+        , !closed && points.length === 1 && React.createElement('span', {}, "➕ Ставьте следующие углы последовательно по периметру"      )
+        , !closed && points.length === 2 && React.createElement('span', {}, "➕ Продолжайте ставить углы. Минимум 3 точки для замыкания"        )
+        , !closed && points.length >= 3 && React.createElement('span', {}, "🔴 " , React.createElement('b', {}, "Нажмите на первую точку"   ), " (мигает) чтобы замкнуть контур"    )
+        , closed && React.createElement('span', {}, "✅ Замкнут. "  , React.createElement('b', {}, "Тапните цифру" ), " на стороне — введите точный размер и сторона перерисуется. Или "           , React.createElement('b', {}, "тяните точку" ), ".")
+      )
+
+      /* Canvas wrapper — position:relative so we can absolutely position the inline input */
+      , React.createElement('div', { style: { background: "var(--s2)", borderRadius: 12, border: `2px solid ${closed ? "#22c55e" : "#e2e8f0"}`, marginBottom: 12, position: "relative", overflow: "visible" }}
+        , React.createElement('svg', {
+          width: SIZE, height: SIZE,
+          style: { display: "block", cursor: dragging !== null ? "grabbing" : (closed ? (inlineEdit ? "default" : "default") : "crosshair"), touchAction: "none", userSelect: "none", borderRadius: 12 },
+          onClick: handleCanvasClick,
+          onMouseMove: onMove,
+          onMouseUp: endDrag,
+          onMouseLeave: onMouseLeave,
+          onTouchMove: onMove,
+          onTouchEnd: endDrag}
+
+          /* Grid */
+          , Array.from({ length: 11 }).map((_, i) => {
+            const x = PAD + (i / 10) * (SIZE - 2 * PAD);
+            const y = PAD + (i / 10) * (SIZE - 2 * PAD);
+            return (
+              React.createElement('g', { key: i}
+                , React.createElement('line', { x1: x, y1: PAD, x2: x, y2: SIZE - PAD, stroke: "var(--b1)", strokeWidth: "1"} )
+                , React.createElement('line', { x1: PAD, y1: y, x2: SIZE - PAD, y2: y, stroke: "var(--b1)", strokeWidth: "1"} )
+              )
+            );
+          })
+          /* Grid intersection dots + snap cursor highlight */
+          , Array.from({ length: 11 }).map((_, i) => Array.from({ length: 11 }).map((_, j) => {
+            const x = PAD + (j / 10) * (SIZE - 2 * PAD);
+            const y = PAD + (i / 10) * (SIZE - 2 * PAD);
+            const isSnap = mousePos && Math.abs(mousePos.x - x) < 2 && Math.abs(mousePos.y - y) < 2;
+            return React.createElement('circle', { key: `dot${i}-${j}`, cx: x, cy: y, r: isSnap ? 4 : 1.5, fill: isSnap ? "#3b82f6" : "var(--tx3)", opacity: isSnap ? 1 : 0.35} );
+          }))
+          , [0, 5, 10].map(m => {
+            const x = PAD + (m / 10) * (SIZE - 2 * PAD);
+            return React.createElement('text', { key: m, x: x, y: SIZE - 8, textAnchor: "middle", fontSize: "9", fill: "#94a3b8"}, m, "м");
+          })
+
+          /* Polygon fill */
+          , closed && points.length >= 3 && (
+            React.createElement('polygon', { points: points.map(p => `${p.x},${p.y}`).join(" "), fill: "rgba(59,130,246,0.07)", stroke: "none"} )
+          )
+
+          /* Segments + clickable labels */
+          , points.length >= 2 && Array.from({ length: segCount }).map((_, i) => {
+            const j = (i + 1) % points.length;
+            const p = points[i];
+            const nx = points[j];
+            const mx = (p.x + nx.x) / 2;
+            const my = (p.y + nx.y) / 2;
+            const autoLenM = dist(p, nx) * scale;
+            const displayLen = sides[i] ? parseFloat(sides[i]).toFixed(2) : autoLenM.toFixed(2);
+            const isClosing = closed && i === points.length - 1;
+            const isEditing = inlineEdit && inlineEdit.segIdx === i;
+            const hasManual = !!(sides[i] && sides[i] !== "");
+
+            // Label box dimensions
+            const labelW = 44;
+            const labelH = 20;
+
+            return (
+              React.createElement('g', { key: `seg${i}`}
+                /* Segment line */
+                , React.createElement('line', {
+                  x1: p.x, y1: p.y, x2: nx.x, y2: nx.y,
+                  stroke: isEditing ? "#f97316" : (isClosing ? "#22c55e" : (hasManual ? "#1e40af" : "#3b82f6")),
+                  strokeWidth: isEditing ? 3 : 2.5}
+                )
+
+                /* Invisible wider hit area for the label click */
+                , closed && !isEditing && (
+                  React.createElement('rect', {
+                    x: mx - labelW / 2 - 6, y: my - labelH / 2 - 4,
+                    width: labelW + 12, height: labelH + 8, rx: 7,
+                    fill: "transparent",
+                    style: { cursor: "pointer" },
+                    onClick: e => openInlineEdit(e, i, mx, my, displayLen)}
+                  )
+                )
+
+                /* Label badge — hidden when this segment is being inline-edited (shown as HTML input instead) */
+                , !isEditing && (
+                  React.createElement('g', { style: { cursor: closed ? "pointer" : "default" },
+                     onClick: closed ? e => openInlineEdit(e, i, mx, my, displayLen) : undefined}
+                    , React.createElement('rect', {
+                      x: mx - labelW / 2, y: my - labelH / 2,
+                      width: labelW, height: labelH, rx: 6,
+                      fill: hasManual ? "#dbeafe" : "white",
+                      stroke: hasManual ? "#3b82f6" : "#cbd5e1",
+                      strokeWidth: "1.5"}
+                    )
+                    /* Pencil icon hint when closed */
+                    , closed && (
+                      React.createElement('text', { x: mx - labelW / 2 + 5, y: my + 4, fontSize: "8", fill: "#94a3b8"}, "✎")
+                    )
+                    , React.createElement('text', { x: mx + 4, y: my + 4, textAnchor: "middle", fontSize: "10", fontWeight: "800",
+                      fill: hasManual ? "#1e40af" : "#334155"}
+                      , displayLen, "м"
+                    )
+                  )
+                )
+
+                /* Highlight the edited segment endpoints */
+                , isEditing && (
+                  React.createElement(React.Fragment, null
+                    , React.createElement('circle', { cx: p.x, cy: p.y, r: 5, fill: "#f97316", opacity: "0.5"} )
+                    , React.createElement('circle', { cx: nx.x, cy: nx.y, r: 7, fill: "#f97316", stroke: "white", strokeWidth: "2"} )
+                    , React.createElement('text', { x: nx.x + 10, y: nx.y - 8, fontSize: "9", fill: "#f97316", fontWeight: "700"}, "двигается")
+                  )
+                )
+              )
+            );
+          })
+
+          /* Preview line */
+          , !closed && points.length >= 1 && mousePos && (
+            React.createElement('line', {
+              x1: points[points.length - 1].x, y1: points[points.length - 1].y,
+              x2: mousePos.x, y2: mousePos.y,
+              stroke: "#94a3b8", strokeWidth: "1.5", strokeDasharray: "5,4"}
+            )
+          )
+
+          /* Corner points */
+          , points.map((p, i) => {
+            const isFirst = i === 0;
+            const isClosable = isFirst && !closed && points.length >= 3;
+            const r = hovering === i ? 10 : (isClosable ? 9 : 7);
+            const fill = dragging === i ? "#1d4ed8" : (isClosable ? (nearFirst ? "#ef4444" : "#f97316") : "#3b82f6");
+            return (
+              React.createElement('g', { key: `pt${i}`}
+                , isClosable && (
+                  React.createElement('circle', { cx: p.x, cy: p.y, r: 16, fill: "none", stroke: nearFirst ? "#ef4444" : "#f97316", strokeWidth: "1.5", opacity: "0.4", strokeDasharray: "3,3"} )
+                )
+                , React.createElement('circle', {
+                  cx: p.x, cy: p.y, r: r, fill: fill, stroke: "white", strokeWidth: "2.5",
+                  style: { cursor: closed ? "grab" : (isClosable ? "pointer" : "grab") },
+                  onMouseDown: e => { e.stopPropagation(); if (closed) startDrag(e, i); },
+                  onTouchStart: e => { e.stopPropagation(); startDrag(e, i); },
+                  onMouseEnter: () => setHovering(i),
+                  onMouseLeave: () => setHovering(null),
+                  onDoubleClick: e => { e.stopPropagation(); removePoint(i); }}
+                )
+                , React.createElement('text', { x: p.x + (i === 0 ? -14 : 10), y: p.y - 9, fontSize: "9", fontWeight: "600", fill: isClosable ? "#f97316" : "#64748b"}, i + 1)
+              )
+            );
+          })
+        )
+
+        /* -- Inline edit input — absolutely positioned over the canvas -- */
+        , inlineEdit !== null && (
+          React.createElement('div', { style: {
+            position: "absolute",
+            left: inlineEdit.x - 46,
+            top: inlineEdit.y - 14,
+            zIndex: 50,
+            display: "flex",
+            alignItems: "center",
+            gap: 2,
+            background: "var(--s1)",
+            border: "2px solid #f97316",
+            borderRadius: 9,
+            boxShadow: "0 4px 20px rgba(249,115,22,0.35)",
+            padding: "2px 6px",
+            pointerEvents: "all",
+          },
+            onClick: e => e.stopPropagation()}
+
+            , React.createElement('input', {
+              ref: inlineInputRef,
+              type: "number",
+              step: "0.01",
+              min: "0.1",
+              value: inlineEdit.value,
+              onChange: e => setInlineEdit({ ...inlineEdit, value: e.target.value }),
+              onKeyDown: handleInlineKey,
+              onBlur: commitInlineEdit,
+              style: {
+                width: 54,
+                border: "none",
+                outline: "none",
+                fontSize: 13,
+                fontWeight: 800,
+                color: "#ea580c",
+                fontFamily: "inherit",
+                background: "transparent",
+                textAlign: "center",
+              }}
+            )
+            , React.createElement('span', { style: { fontSize: 11, color: "var(--tx3)", fontWeight: 600 }}, "м")
+            , React.createElement('button', {
+              onMouseDown: e => { e.preventDefault(); commitInlineEdit(); },
+              style: { background: "#f97316", border: "none", borderRadius: 5, width: 20, height: 20, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", color: "var(--tx)", fontSize: 11, fontWeight: 800, marginLeft: 2 }}
+, "✓")
+          )
+        )
+
+        /* Reset button */
+        , points.length > 0 && (
+          React.createElement('button', {
+            onClick: resetShape,
+            style: { position: "absolute", top: 6, right: 6, background: "rgba(239,68,68,0.85)", color: "var(--tx)", border: "none", borderRadius: 7, padding: "4px 8px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}
+, "✕ Сброс"
+
+          )
+        )
+
+        /* Hint overlay when closed and no edits yet */
+        , closed && points.length >= 3 && !inlineEdit && (
+          React.createElement('div', { style: { position: "absolute", bottom: 8, left: 8, background: "rgba(249,115,22,0.9)", color: "var(--tx)", borderRadius: 7, padding: "4px 8px", fontSize: 10, fontWeight: 700, pointerEvents: "none" }}, "✎ Тапните цифру чтобы ввести размер"
+
+          )
+        )
+      )
+
+      /* Side lengths table — also editable, with apply button that redraws */
+      , points.length >= 2 && (
+        React.createElement('div', { style: { background: "var(--s1)", borderRadius: 12, border: "1px solid var(--b1)", overflow: "hidden", marginBottom: 10 }}
+          , React.createElement('div', { style: { padding: "8px 12px", background: "var(--s2)", fontSize: 11, fontWeight: 700, color: "var(--tx2)", textTransform: "uppercase", letterSpacing: "0.08em", display: "flex", alignItems: "center", justifyContent: "space-between" }}
+            , React.createElement('span', {}, "📐 Стороны (м) — введите и нажмите ↵"       )
+            , React.createElement('span', { style: { fontSize: 10, color: "#f97316", fontWeight: 700 }}, "Рисунок обновится" )
+          )
+          , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 0 }}
+            , Array.from({ length: segCount }).map((_, i) => {
+              const j = (i + 1) % points.length;
+              const autoLenM = dist(points[i], points[j]) * scale;
+              const autoLen = autoLenM.toFixed(2);
+              const hasManual = !!(sides[i] && sides[i] !== "");
+              return (
+                React.createElement('div', { key: i, style: {
+                  padding: "8px 10px",
+                  borderBottom: "1px solid var(--b1)",
+                  borderRight: i % 2 === 0 ? "1px solid #f1f5f9" : "none",
+                  background: hasManual ? "#fff7ed" : "#fff",
+                }}
+                  , React.createElement('div', { style: { fontSize: 10, color: hasManual ? "#f97316" : "#94a3b8", marginBottom: 3, fontWeight: 700 }}, "Сторона "
+                     , i + 1, "- " , j + 1
+                    , hasManual && React.createElement('span', { style: { marginLeft: 4, fontSize: 9, background: "#f97316", color: "var(--tx)", borderRadius: 3, padding: "1px 4px" }}, "✎")
+                  )
+                  , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 4 }}
+                    , React.createElement('input', {
+                      type: "number",
+                      step: "0.01",
+                      min: "0.1",
+                      placeholder: autoLen,
+                      value: sides[i] || "",
+                      onChange: e => onSideChange(i, e.target.value),
+                      onKeyDown: e => {
+                        if (e.key === "Enter") {
+                          const v = parseFloat(sides[i]);
+                          if (v > 0) applySegmentLength(i, v);
+                        }
+                      },
+                      onBlur: () => {
+                        const v = parseFloat(sides[i]);
+                        if (v > 0) applySegmentLength(i, v);
+                      },
+                      style: {
+                        width: "100%", border: "none", background: "none",
+                        fontSize: 14, fontWeight: 800,
+                        color: hasManual ? "#ea580c" : "#1e293b",
+                        outline: "none", fontFamily: "inherit",
+                      }}
+                    )
+                    , React.createElement('span', { style: { fontSize: 11, color: "var(--tx3)", whiteSpace: "nowrap" }}, "м")
+                    , hasManual && (
+                      React.createElement('button', {
+                        onClick: () => { onSideChange(i, ""); },
+                        style: { background: "none", border: "none", cursor: "pointer", color: "var(--tx3)", fontSize: 12, padding: 0, lineHeight: 1 },
+                        title: "Сбросить"}
+, "✕")
+                    )
+                  )
+                  , hasManual && (
+                    React.createElement('div', { style: { fontSize: 9, color: "var(--tx3)", marginTop: 1 }}, "было: " , autoLen, "м")
+                  )
+                )
+              );
+            })
+          )
+        )
+      )
+
+      /* Stats */
+      , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}
+        , React.createElement('div', { style: { background: closed ? "#eff6ff" : "#f8fafc", borderRadius: 10, padding: "10px 12px" }}
+          , React.createElement('div', { style: { fontSize: 10, color: closed ? "#3b82f6" : "#94a3b8", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.08em" }}, "Площадь")
+          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 16, fontWeight: 800, color: closed ? "#1e40af" : "#94a3b8", marginTop: 3 }}, closed ? `${area.toFixed(2)} м²` : "—")
+        )
+        , React.createElement('div', { style: { background: closed ? "#f0fdf4" : "#f8fafc", borderRadius: 10, padding: "10px 12px" }}
+          , React.createElement('div', { style: { fontSize: 10, color: closed ? "#16a34a" : "#94a3b8", textTransform: "uppercase", fontWeight: 700, letterSpacing: "0.08em" }}, "Периметр")
+          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 16, fontWeight: 800, color: closed ? "#15803d" : "#94a3b8", marginTop: 3 }}
+            , closed ? `${perimM.toFixed(2)} м` : `${points.length} точек`
+          )
+        )
+      )
+    )
+  );
+}
+
+// ---- Room Form Modal (шаг 1: размеры -> шаг 2: работы) ----
+function RoomModal({ open, onClose, onSave, initial, priceBook }) {
+  const [step, setStep] = useState("type"); // "type" | "standard" | "custom" | "works"
+  const [savedRoom, setSavedRoom] = useState(null);
+  const [works, setWorks] = useState([]);
+  const [showAddWork, setShowAddWork] = useState(false);
+  const [errors, setErrors] = useState({}); // field -> true
+  const [form, setForm] = useState({
+    name: "", height: "2.7", length: "", width: "",
+    doors: "1", windows: "1", points: [], sides: [],
+  });
+
+  const nameRef = useRef(null);
+  const lengthRef = useRef(null);
+  const widthRef = useRef(null);
+
+  useEffect(() => {
+    if (open) {
+      if (initial) {
+        setForm({
+          name: initial.name || "",
+          height: String(initial.height || 2.7),
+          length: String(initial.length || ""),
+          width: String(initial.width || ""),
+          doors: String(_nullishCoalesce(initial.doors, () => ( 1))),
+          windows: String(_nullishCoalesce(initial.windows, () => ( 1))),
+          points: initial.points || [],
+          sides: initial.sides || [],
+        });
+        setStep(initial.shapeType || "standard");
+        setSavedRoom(initial);
+        setWorks(initial.works || []);
+      } else {
+        setForm({ name: "", height: "2.7", length: "", width: "", doors: "1", windows: "1", points: [], sides: [] });
+        setStep("type");
+        setSavedRoom(null);
+        setWorks([]);
+      }
+      setErrors({});
+    }
+  }, [open, _optionalChain([initial, 'optionalAccess', _15 => _15.id])]);
+
+  if (!open) return null;
+
+  const stdCalc = calcRoomStandard(form);
+  const scaleF = 10 / (280 - 60);
+  const customArea = form.points.length >= 3 ? polygonArea(form.points) * scaleF * scaleF : 0;
+  const customPerim = form.points.length >= 2 ? polygonPerimeter(form.points) * scaleF : 0;
+
+  function buildRoom(wks) {
+    const isCustom = step === "custom";
+    const h = parseFloat(form.height) || 2.7;
+    const d = parseFloat(form.doors) || 1;
+    const wi = parseFloat(form.windows) || 1;
+    return {
+      id: _optionalChain([initial, 'optionalAccess', _16 => _16.id]) || _optionalChain([savedRoom, 'optionalAccess', _17 => _17.id]) || uid(),
+      name: form.name,
+      shapeType: step,
+      height: h,
+      works: wks !== undefined ? wks : works,
+      ...(isCustom ? {
+        points: form.points, sides: form.sides,
+        floor: customArea, ceiling: customArea, perimeter: customPerim,
+        wallsTotal: customPerim * h,
+        wallsNet: Math.max(0, customPerim * h - (d * 1.8 + wi * 1.68)),
+        deductions: d * 1.8 + wi * 1.68,
+        doors: d, windows: wi,
+      } : {
+        length: parseFloat(form.length) || 0,
+        width: parseFloat(form.width) || 0,
+        doors: d, windows: wi,
+        ...stdCalc,
+      }),
+    };
+  }
+
+  function validateAndSave(andContinue) {
+    const newErrors = {};
+    if (!form.name.trim()) newErrors.name = true;
+    if (step === "standard") {
+      if (!parseFloat(form.length)) newErrors.length = true;
+      if (!parseFloat(form.width)) newErrors.width = true;
+    }
+    if (step === "custom" && form.points.length < 3) newErrors.points = true;
+
+    if (Object.keys(newErrors).length > 0) {
+      setErrors(newErrors);
+      // Scroll to first error
+      if (newErrors.name && nameRef.current) {
+        nameRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+        nameRef.current.focus();
+      } else if (newErrors.length && lengthRef.current) {
+        lengthRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+        lengthRef.current.focus();
+      } else if (newErrors.width && widthRef.current) {
+        widthRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+        widthRef.current.focus();
+      }
+      return;
+    }
+    setErrors({});
+    const room = buildRoom([]);
+    setSavedRoom(room);
+    setWorks([]);
+    onSave(room);
+    if (andContinue) setStep("works");
+    else onClose();
+  }
+
+  function handleSaveAndContinue() { validateAndSave(true); }
+  function handleSaveOnly() { validateAndSave(false); }
+
+  function handleFinish() {
+    if (savedRoom) onSave({ ...savedRoom, works });
+    onClose();
+  }
+
+  const errBorder = "1.5px solid var(--red)";
+  const errShadow = "0 0 0 3px rgba(239,68,68,0.15)";
+
+  const IS = (field) => ({
+    width: "100%", padding: "10px 12px", borderRadius: 10,
+    border: errors[field] ? errBorder : "1.5px solid var(--b1)",
+    boxShadow: errors[field] ? errShadow : "none",
+    fontSize: 14, color: "var(--tx)",
+    background: errors[field] ? "rgba(239,68,68,0.04)" : "var(--s2)",
+    outline: "none", fontFamily: "inherit", boxSizing: "border-box",
+    transition: "border-color 0.2s, box-shadow 0.2s",
+  });
+  const LS = {
+    display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)",
+    marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em",
+  };
+  const ErrMsg = ({ field, msg }) => errors[field]
+    ? React.createElement('div', { style: { fontSize: 11, color: "var(--red)", marginTop: 4, fontWeight: 600 }}, "⚠ " , msg)
+    : null;
+
+  const fld = (label, key, placeholder, type = "number", ref = null) => (
+    React.createElement('div', { style: { flex: 1 }}
+      , React.createElement('label', { style: { ...LS, color: errors[key] ? "var(--red)" : "var(--tx2)" }}, label)
+      , React.createElement('input', { ref: ref, type: type, value: form[key], placeholder: placeholder,
+        onChange: e => { setForm(f => ({ ...f, [key]: e.target.value })); setErrors(er => ({ ...er, [key]: false })); },
+        style: IS(key),
+        onFocus: e => { if (!errors[key]) e.target.style.borderColor = "var(--acc)"; },
+        onBlur: e => { if (!errors[key]) e.target.style.borderColor = "var(--b1)"; }} )
+      , React.createElement(ErrMsg, { field: key, msg: key === "name" ? "Введите название" : key === "length" ? "Введите длину" : "Введите ширину"} )
+    )
+  );
+
+  const statsGrid = (rows) => (
+    React.createElement('div', { style: { background: "linear-gradient(135deg,#eff6ff,#f0fdf4)", borderRadius: 12, padding: 14, marginBottom: 16, border: "1px solid rgba(124,111,255,0.2)" }}
+      , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 11, fontWeight: 800, color: "var(--acc2)", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.05em" }}, "Автоматический расчёт"
+
+      )
+      , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}
+        , rows.map((s, i) => (
+          React.createElement('div', { key: i, style: { background: s.bg, borderRadius: 10, padding: "9px 11px" }}
+            , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}, s.label)
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 800, color: s.color }}, s.val)
+          )
+        ))
+      )
+    )
+  );
+
+  const worksTotal = works.reduce((s, w) => s + w.qty * w.price, 0);
+  const isWorksStep = step === "works";
+  const accentGrad = isWorksStep ? "linear-gradient(90deg,#0f766e,#0d9488)" : "linear-gradient(90deg,#1e40af,#3b82f6)";
+  const progressW = step === "type" ? "20%" : (step === "standard" || step === "custom") ? "55%" : "100%";
+
+  const stepTitle = step === "type" ? "Новое помещение"
+    : step === "standard" ? "🟦 Стандартное помещение"
+    : step === "custom" ? "🔷 Произвольная форма"
+    : ("🔨 Работы — " + (_optionalChain([savedRoom, 'optionalAccess', _18 => _18.name]) || ""));
+
+  return (
+    React.createElement('div', { style: { position: "absolute", inset: 0, zIndex: 2000, background: "rgba(15,23,42,0.75)", backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-end", justifyContent: "center" },
+      onClick: e => e.target === e.currentTarget && handleFinish()}
+      , React.createElement('div', { style: { background: "var(--s1)", borderRadius: "20px 20px 0 0", width: "100%", maxWidth: "min(480px, 95vw)", maxHeight: "93vh", display: "flex", flexDirection: "column", boxShadow: "0 -8px 40px rgba(0,0,0,0.2)" }}
+
+        /* Прогресс-бар */
+        , React.createElement('div', { style: { height: 4, background: "var(--s2)", borderRadius: "20px 20px 0 0", overflow: "hidden" }}
+          , React.createElement('div', { style: { height: "100%", background: accentGrad, width: progressW, transition: "width 0.4s ease" }} )
+        )
+
+        /* Заголовок */
+        , React.createElement('div', { style: { padding: "14px 18px 0", flexShrink: 0 }}
+          , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}
+            , React.createElement('div', {}
+              , (step === "standard" || step === "custom") && !savedRoom && (
+                React.createElement('button', { onClick: () => setStep("type"), style: { background: "none", border: "none", color: "var(--tx3)", fontSize: 12, cursor: "pointer", padding: 0, marginBottom: 4, display: "block" }}, "‹ Назад"
+
+                )
+              )
+              , React.createElement('span', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 800, color: "var(--tx)" }}, stepTitle)
+            )
+            , React.createElement('button', { onClick: handleFinish, style: { background: "var(--s2)", border: "none", borderRadius: 10, padding: 7, cursor: "pointer" }}
+              , React.createElement(Icon, { name: "close", size: 16, color: "#64748b"} )
+            )
+          )
+
+          /* Индикатор шагов */
+          , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 14 }}
+            , [["1", "Размеры"], ["2", "Работы"]].map(([n, lbl], i) => {
+              const isActive = i === 0 ? !isWorksStep : isWorksStep;
+              const isDone = i === 0 && isWorksStep;
+              return (
+                React.createElement('div', { key: n, style: { display: "flex", alignItems: "center", gap: 5 }}
+                  , React.createElement('div', { style: {
+                    width: 24, height: 24, borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center",
+                    fontSize: 11, fontWeight: 800,
+                    background: isDone ? "#10b981" : isActive ? (isWorksStep ? "#0f766e" : "#1e40af") : "#e2e8f0",
+                    color: isDone || isActive ? "#fff" : "#94a3b8",
+                    transition: "background 0.3s",
+                  }}
+                    , isDone ? "✓" : n
+                  )
+                  , React.createElement('span', { style: { fontSize: 12, fontWeight: 600, color: isDone || isActive ? "#1e293b" : "#94a3b8" }}, lbl)
+                  , i === 0 && (
+                    React.createElement('div', { style: { width: 28, height: 2, background: isWorksStep ? "#10b981" : "#e2e8f0", borderRadius: 1, transition: "background 0.3s" }} )
+                  )
+                )
+              );
+            })
+          )
+        )
+
+        /* Скроллируемое содержимое */
+        , React.createElement('div', { style: { flex: 1, overflowY: "auto", padding: "0 18px 32px" }}
+
+          /* ----- ШАГ: Выбор типа ----- */
+          , step === "type" && (
+            React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 12 }}
+              , React.createElement('div', { style: { fontSize: 13, color: "var(--tx2)", marginBottom: 4 }}, "Выберите тип помещения:"  )
+              , React.createElement('button', { onClick: () => setStep("standard"), style: { background: "linear-gradient(135deg,#eff6ff,#dbeafe)", border: "1px solid rgba(124,111,255,0.3)", borderRadius: "var(--r)", padding: "18px 16px", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}
+                , React.createElement('div', { style: { fontSize: 28, marginBottom: 8 }}, "🟦")
+                , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 700, color: "var(--acc2)", marginBottom: 4 }}, "Стандартное помещение" )
+                , React.createElement('div', { style: { fontSize: 12, color: "var(--tx2)", lineHeight: 1.5 }}, "Прямоугольная комната — введите длину и ширину, всё рассчитается автоматически."         )
+              )
+              , React.createElement('button', { onClick: () => setStep("custom"), style: { background: "linear-gradient(135deg,#fdf4ff,#f3e8ff)", border: "2px solid #d8b4fe", borderRadius: "var(--r)", padding: "18px 16px", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}
+                , React.createElement('div', { style: { fontSize: 28, marginBottom: 8 }}, "🔷")
+                , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 700, color: "var(--acc2)", marginBottom: 4 }}, "Нестандартная форма" )
+                , React.createElement('div', { style: { fontSize: 12, color: "var(--tx2)", lineHeight: 1.5 }}, "Нарисуйте произвольный контур на сетке — площадь посчитается сама."        )
+              )
+            )
+          )
+
+          /* ----- ШАГ: Стандартное помещение ----- */
+          , step === "standard" && (
+            React.createElement('div', {}
+              , React.createElement('div', { style: { marginBottom: 14 }}
+                , React.createElement('label', { style: { ...LS, color: errors.name ? "var(--red)" : "var(--tx2)" }}, "Название помещения" )
+                , React.createElement('input', { ref: nameRef, type: "text", value: form.name, placeholder: "Гостиная",
+                  onChange: e => { setForm(f => ({ ...f, name: e.target.value })); setErrors(er => ({ ...er, name: false })); },
+                  style: IS("name"),
+                  onFocus: e => { if (!errors.name) e.target.style.borderColor = "var(--acc)"; },
+                  onBlur: e => { if (!errors.name) e.target.style.borderColor = "var(--b1)"; }} )
+                , React.createElement(ErrMsg, { field: "name", msg: "Введите название помещения"  } )
+              )
+
+              /* Схема */
+              , React.createElement('div', { style: { background: "var(--s2)", borderRadius: 12, padding: 10, marginBottom: 14 }}
+                , React.createElement('svg', { width: "100%", viewBox: "0 0 260 160"   , style: { display: "block" }}
+                  , React.createElement('rect', { x: "30", y: "20", width: "200", height: "120", fill: "#dbeafe", stroke: "#3b82f6", strokeWidth: "2.5"} )
+                  , React.createElement('text', { x: "130", y: "150", textAnchor: "middle", fontSize: "11", fill: "#1e40af", fontWeight: "bold"}, form.length || "Длина", " м" )
+                  , React.createElement('text', { x: "5", y: "85", textAnchor: "middle", fontSize: "11", fill: "#1e40af", fontWeight: "bold", transform: "rotate(-90,5,85)"}, form.width || "Ширина", " м" )
+                  , React.createElement('rect', { x: "100", y: "130", width: "20", height: "10", fill: "#93c5fd", stroke: "#3b82f6", strokeWidth: "1"} )
+                  , React.createElement('rect', { x: "155", y: "19", width: "30", height: "6", fill: "#bfdbfe", stroke: "#3b82f6", strokeWidth: "1"} )
+                )
+              )
+
+              , React.createElement('div', { style: { display: "flex", gap: 10, marginBottom: 10 }}
+                , fld("Длина (м)", "length", "5.0", "number", lengthRef)
+                , fld("Ширина (м)", "width", "4.0", "number", widthRef)
+              )
+              , React.createElement('div', { style: { display: "flex", gap: 10, marginBottom: 10 }}
+                , fld("Высота (м)", "height", "2.7")
+              )
+              , React.createElement('div', { style: { display: "flex", gap: 10, marginBottom: 16 }}
+                , fld("Дверей", "doors", "1")
+                , fld("Окон", "windows", "1")
+              )
+
+              , parseFloat(form.length) > 0 && parseFloat(form.width) > 0 && statsGrid([
+                { label: "Площадь пола",    val: stdCalc.floor.toFixed(2) + " м²",       color: "var(--acc2)", bg: "#eff6ff" },
+                { label: "Площадь потолка", val: stdCalc.ceiling.toFixed(2) + " м²",     color: "var(--acc2)", bg: "#eff6ff" },
+                { label: "Периметр",        val: stdCalc.perimeter.toFixed(2) + " м.п.", color: "var(--green)", bg: "#f0fdf4" },
+                { label: "Стены (общ.)",    val: stdCalc.wallsTotal.toFixed(2) + " м²",  color: "var(--gold)", bg: "#fffbeb" },
+                { label: "Вычеты (дв+ок)", val: stdCalc.deductions.toFixed(2) + " м²",  color: "var(--red)", bg: "#fef2f2" },
+                { label: "Стены (чист.)",  val: stdCalc.wallsNet.toFixed(2) + " м²",    color: "var(--acc2)", bg: "#fdf4ff" },
+              ])
+
+              /* Кнопки */
+              , React.createElement('button', { onClick: handleSaveAndContinue,
+                style: { width: "100%", background: "linear-gradient(135deg,#0f766e,#0d9488)", border: "none", borderRadius: 12, padding: "14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 800, fontSize: 14, color: "#fff", boxShadow: "0 4px 14px rgba(13,148,136,0.35)", transition: "all 0.2s", marginBottom: 8 }}, "Сохранить и добавить работы ›"
+
+              )
+              , React.createElement('button', { onClick: handleSaveOnly,
+                style: { width: "100%", background: "var(--s2)", border: "none", borderRadius: 12, padding: "11px", cursor: "pointer", fontFamily: "inherit", fontWeight: 600, fontSize: 13, color: "var(--tx2)" }}, "Только сохранить"
+
+              )
+            )
+          )
+
+          /* ----- ШАГ: Произвольная форма ----- */
+          , step === "custom" && (
+            React.createElement('div', {}
+              , React.createElement('div', { style: { marginBottom: 12 }}
+                , React.createElement('label', { style: { ...LS, color: errors.name ? "var(--red)" : "var(--tx2)" }}, "Название помещения" )
+                , React.createElement('input', { ref: nameRef, type: "text", value: form.name, placeholder: "Г-образный холл" ,
+                  onChange: e => { setForm(f => ({ ...f, name: e.target.value })); setErrors(er => ({ ...er, name: false })); },
+                  style: IS("name"),
+                  onFocus: e => { if (!errors.name) e.target.style.borderColor = "var(--acc)"; },
+                  onBlur: e => { if (!errors.name) e.target.style.borderColor = "var(--b1)"; }} )
+                , React.createElement(ErrMsg, { field: "name", msg: "Введите название помещения"  } )
+              )
+              , React.createElement('div', { style: { display: "flex", gap: 10, marginBottom: 12 }}
+                , React.createElement('div', { style: { flex: 1 }}
+                  , React.createElement('label', { style: LS}, "Высота (м)" )
+                  , React.createElement('input', { type: "number", value: form.height, onChange: e => setForm(f => ({ ...f, height: e.target.value })), style: IS("height")} )
+                )
+                , React.createElement('div', { style: { flex: 1 }}
+                  , React.createElement('label', { style: LS}, "Дверей")
+                  , React.createElement('input', { type: "number", value: form.doors, onChange: e => setForm(f => ({ ...f, doors: e.target.value })), style: IS("doors")} )
+                )
+                , React.createElement('div', { style: { flex: 1 }}
+                  , React.createElement('label', { style: LS}, "Окон")
+                  , React.createElement('input', { type: "number", value: form.windows, onChange: e => setForm(f => ({ ...f, windows: e.target.value })), style: IS("windows")} )
+                )
+              )
+
+              , errors.points && (
+                React.createElement('div', { style: { background: "rgba(239,68,68,0.08)", border: "1.5px solid rgba(239,68,68,0.35)", borderRadius: 10, padding: "9px 12px", marginBottom: 10, fontSize: 12, color: "var(--red)", fontWeight: 600 }}, "⚠ Нарисуйте контур помещения — минимум 3 точки"
+
+                )
+              )
+
+              , React.createElement(RoomShapeDrawer, {
+                points: form.points,
+                onChange: pts => setForm(f => ({ ...f, points: pts, sides: pts.map((_, i) => f.sides[i] || "") })),
+                sides: form.sides,
+                onSideChange: (i, v) => setForm(f => { const s = [...f.sides]; s[i] = v; return { ...f, sides: s }; })}
+              )
+
+              , form.points.length >= 3 && statsGrid([
+                { label: "Площадь пола",    val: customArea.toFixed(2) + " м²",    color: "var(--acc2)", bg: "#eff6ff" },
+                { label: "Площадь потолка", val: customArea.toFixed(2) + " м²",    color: "var(--acc2)", bg: "#eff6ff" },
+                { label: "Периметр",        val: customPerim.toFixed(2) + " м.п.", color: "var(--green)", bg: "#f0fdf4" },
+                { label: "Стены (общ.)",    val: (customPerim * (parseFloat(form.height) || 2.7)).toFixed(2) + " м²", color: "var(--gold)", bg: "#fffbeb" },
+                { label: "Вычеты",          val: (parseFloat(form.doors || 1) * 1.8 + parseFloat(form.windows || 1) * 1.68).toFixed(2) + " м²", color: "var(--red)", bg: "#fef2f2" },
+                { label: "Стены (чист.)",  val: Math.max(0, customPerim * (parseFloat(form.height) || 2.7) - parseFloat(form.doors || 1) * 1.8 - parseFloat(form.windows || 1) * 1.68).toFixed(2) + " м²", color: "var(--acc2)", bg: "#fdf4ff" },
+              ])
+
+              , React.createElement('button', { onClick: handleSaveAndContinue,
+                style: { width: "100%", background: "linear-gradient(135deg,#7c3aed,#a855f7)", border: "none", borderRadius: 12, padding: "14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 800, fontSize: 14, color: "#fff", boxShadow: "0 4px 14px rgba(124,58,237,0.35)", marginBottom: 8 }}, "Сохранить и добавить работы ›"
+
+              )
+              , React.createElement('button', { onClick: handleSaveOnly,
+                style: { width: "100%", background: "var(--s2)", border: "none", borderRadius: 12, padding: "11px", cursor: "pointer", fontFamily: "inherit", fontWeight: 600, fontSize: 13, color: "var(--tx2)" }}, "Только сохранить"
+
+              )
+            )
+          )
+
+          /* ----- ШАГ: Добавление работ ----- */
+          , step === "works" && (
+            React.createElement('div', {}
+              /* Карточка сохранённого помещения */
+              , React.createElement('div', { style: { background: "linear-gradient(135deg,#f0fdf4,#eff6ff)", borderRadius: 12, padding: "12px 16px", marginBottom: 16, border: "1px solid #6ee7b7" }}
+                , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                  , React.createElement('div', {}
+                    , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 800, color: "var(--green)" }}, "✅ "
+                       , _optionalChain([savedRoom, 'optionalAccess', _19 => _19.name])
+                    )
+                    , React.createElement('div', { style: { fontSize: 11, color: "var(--tx2)", marginTop: 3 }}, "Пол: "
+                       , (_optionalChain([savedRoom, 'optionalAccess', _20 => _20.floor]) || 0).toFixed(2), " м²  •  Стены: "    , (_optionalChain([savedRoom, 'optionalAccess', _21 => _21.wallsNet]) || 0).toFixed(2), " м²"
+                    )
+                  )
+                  , React.createElement('div', { style: { textAlign: "right" }}
+                    , worksTotal > 0 && (
+                      React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 800, color: "var(--green)" }}, fmt(worksTotal))
+                    )
+                    , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)" }}, works.length, " работ" )
+                  )
+                )
+              )
+
+              /* Пустое состояние */
+              , works.length === 0 && (
+                React.createElement('div', { style: { textAlign: "center", padding: "20px 0 12px", color: "var(--tx3)" }}
+                  , React.createElement('div', { style: { fontSize: 44, marginBottom: 10 }}, "🔨")
+                  , React.createElement('div', { style: { fontSize: 14, fontWeight: 600, color: "var(--tx2)" }}, "Нет работ" )
+                  , React.createElement('div', { style: { fontSize: 12, marginTop: 4 }}, "Нажмите «+ Добавить работу»"   )
+                )
+              )
+
+              /* Список добавленных работ */
+              , works.map((w, i) => (
+                React.createElement('div', { key: w.id, style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "var(--s2)", borderRadius: 12, marginBottom: 8, border: "1px solid var(--b1)" }}
+                  , React.createElement('div', { style: { width: 8, height: 8, borderRadius: "50%", background: "#0d9488", flexShrink: 0 }} )
+                  , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+                    , React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: "var(--tx)" }}, w.name)
+                    , React.createElement('div', { style: { fontSize: 11, color: "var(--tx2)", marginTop: 1 }}
+                      , w.qty.toFixed(2), " " , w.unit, " × "  , fmt(w.price)
+                    )
+                  )
+                  , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 }}
+                    , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 12, fontWeight: 800, color: "var(--green)" }}
+                      , fmt(w.qty * w.price)
+                    )
+                    , React.createElement('button', { onClick: () => {
+                      const nw = works.filter((_, j) => j !== i);
+                      setWorks(nw);
+                      if (savedRoom) onSave({ ...savedRoom, works: nw });
+                    }, style: { background: "rgba(239,68,68,0.1)", border: "none", borderRadius: 6, padding: "3px 7px", cursor: "pointer", marginTop: 3 }}
+                      , React.createElement(Icon, { name: "trash", size: 12, color: "#ef4444"} )
+                    )
+                  )
+                )
+              ))
+
+              /* Кнопка добавить работу */
+              , React.createElement('button', { onClick: () => setShowAddWork(true),
+                style: { width: "100%", background: "rgba(124,111,255,0.12)", border: "2px dashed #bfdbfe", borderRadius: 12, padding: "13px", cursor: "pointer", color: "var(--acc2)", fontWeight: 700, fontSize: 13, fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}
+                , React.createElement(Icon, { name: "plus", size: 16, color: "#3b82f6"} ), " Добавить работу"
+              )
+
+              /* Итого */
+              , worksTotal > 0 && (
+                React.createElement('div', { style: { background: "linear-gradient(135deg,#0f766e,#0d9488)", borderRadius: 12, padding: "12px 16px", marginTop: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                  , React.createElement('span', { style: { color: "var(--tx2)", fontSize: 12, fontWeight: 600 }}, "ИТОГО РАБОТ" )
+                  , React.createElement('span', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 17, fontWeight: 800, color: "var(--tx)" }}, fmt(worksTotal))
+                )
+              )
+
+              /* Готово */
+              , React.createElement('button', { onClick: handleFinish,
+                style: { width: "100%", marginTop: 10, background: "linear-gradient(135deg,#1e40af,#3b82f6)", border: "none", borderRadius: 12, padding: "14px", cursor: "pointer", fontFamily: "inherit", fontWeight: 800, fontSize: 14, color: "#fff", boxShadow: "0 4px 14px rgba(59,130,246,0.35)" }}, "Готово ✓"
+
+              )
+
+              /* Модалка добавления работы */
+              , showAddWork && (
+                React.createElement(InlineAddWork, {
+                  room: savedRoom,
+                  priceBook: priceBook,
+                  onClose: () => setShowAddWork(false),
+                  onAdd: w => {
+                    const nw = [...works, w];
+                    setWorks(nw);
+                    if (savedRoom) onSave({ ...savedRoom, works: nw });
+                    if (w._saveToBook && priceBook !== undefined) {
+                      // handled by parent via onSave
+                    }
+                    setShowAddWork(false);
+                  }}
+                )
+              )
+            )
+          )
+
+        )
+      )
+    )
+  );
+}
+
+// ---- InlineAddWork — добавить работу прямо в RoomModal ----
+function InlineAddWork({ room, priceBook, onClose, onAdd }) {
+  const [tab, setTab] = useState("catalog");
+  const [search, setSearch] = useState("");
+  const [picked, setPicked] = useState(null);
+  const [qty, setQty] = useState("");
+  const [cName, setCName] = useState("");
+  const [cPrice, setCPrice] = useState("");
+  const [cUnit, setCUnit] = useState("м²");
+  const [cQty, setCQty] = useState("");
+
+  const builtinWorks = [
+    { id: "bw1",  category: "Полы",       name: "Укладка плитки",         unit: "м²",   price: 1500 },
+    { id: "bw2",  category: "Полы",       name: "Стяжка цементная",        unit: "м²",   price: 600  },
+    { id: "bw3",  category: "Полы",       name: "Укладка ламината",        unit: "м²",   price: 500  },
+    { id: "bw4",  category: "Полы",       name: "Наливной пол",            unit: "м²",   price: 800  },
+    { id: "bw5",  category: "Стены",      name: "Штукатурка гипсовая",     unit: "м²",   price: 500  },
+    { id: "bw6",  category: "Стены",      name: "Шпаклёвка финишная",      unit: "м²",   price: 350  },
+    { id: "bw7",  category: "Стены",      name: "Поклейка обоев",          unit: "м²",   price: 280  },
+    { id: "bw8",  category: "Стены",      name: "Укладка плитки (стены)",  unit: "м²",   price: 1600 },
+    { id: "bw9",  category: "Стены",      name: "Покраска стен",           unit: "м²",   price: 200  },
+    { id: "bw10", category: "Потолок",    name: "Шпаклёвка потолка",       unit: "м²",   price: 400  },
+    { id: "bw11", category: "Потолок",    name: "Натяжной потолок",        unit: "м²",   price: 900  },
+    { id: "bw12", category: "Потолок",    name: "Гипсокартон потолок",     unit: "м²",   price: 1200 },
+    { id: "bw13", category: "Потолок",    name: "Покраска потолка",        unit: "м²",   price: 180  },
+    { id: "bw14", category: "Электрика",  name: "Монтаж розетки",          unit: "шт",   price: 800  },
+    { id: "bw15", category: "Электрика",  name: "Монтаж выключателя",      unit: "шт",   price: 700  },
+    { id: "bw16", category: "Электрика",  name: "Прокладка кабеля",        unit: "м.п.", price: 150  },
+    { id: "bw17", category: "Сантехника", name: "Монтаж смесителя",        unit: "шт",   price: 1200 },
+    { id: "bw18", category: "Сантехника", name: "Прокладка труб",          unit: "м.п.", price: 550  },
+    { id: "bw19", category: "Сантехника", name: "Монтаж унитаза",          unit: "шт",   price: 2500 },
+    { id: "bw20", category: "Общие",      name: "Демонтаж покрытия",       unit: "м²",   price: 300  },
+    { id: "bw21", category: "Общие",      name: "Вынос мусора",            unit: "м³",   price: 1500 },
+    { id: "bw22", category: "Общие",      name: "Грунтовка поверхности",   unit: "м²",   price: 80   },
+  ];
+
+  const pbWorks = Object.entries(priceBook || {})
+    .filter(([n]) => !builtinWorks.find(w => w.name === n))
+    .map(([n, val]) => {
+      const price = typeof val === "object" ? val.price : val;
+      const unit  = typeof val === "object" ? (val.unit || "м²") : "м²";
+      return { id: "pb_" + n, name: n, price, unit, category: "Мои цены" };
+    });
+
+  const allWorks = [...builtinWorks, ...pbWorks];
+  const filtered = allWorks.filter(w => w.name.toLowerCase().includes(search.toLowerCase()));
+
+  const units = ["м²", "шт", "м.п.", "мешок", "рул.", "л", "кг", "компл."];
+
+  const qtyOpts = [
+    { l: "Пол " + (_optionalChain([room, 'optionalAccess', _22 => _22.floor]) || 0).toFixed(2) + " м²",            v: _optionalChain([room, 'optionalAccess', _23 => _23.floor]) || 0 },
+    { l: "Потолок " + (_optionalChain([room, 'optionalAccess', _24 => _24.ceiling]) || 0).toFixed(2) + " м²",      v: _optionalChain([room, 'optionalAccess', _25 => _25.ceiling]) || 0 },
+    { l: "Стены чист. " + (_optionalChain([room, 'optionalAccess', _26 => _26.wallsNet]) || 0).toFixed(2) + " м²", v: _optionalChain([room, 'optionalAccess', _27 => _27.wallsNet]) || 0 },
+    { l: "Стены общ. " + (_optionalChain([room, 'optionalAccess', _28 => _28.wallsTotal]) || 0).toFixed(2) + " м²",v: _optionalChain([room, 'optionalAccess', _29 => _29.wallsTotal]) || 0 },
+    { l: "Периметр " + (_optionalChain([room, 'optionalAccess', _30 => _30.perimeter]) || 0).toFixed(2) + " м",    v: _optionalChain([room, 'optionalAccess', _31 => _31.perimeter]) || 0 },
+  ].filter(o => o.v > 0);
+
+  return (
+    React.createElement('div', { style: { position: "absolute", inset: 0, zIndex: 3000, background: "rgba(15,23,42,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-end", justifyContent: "center" },
+      onClick: e => e.target === e.currentTarget && onClose()}
+      , React.createElement('div', { style: { background: "var(--s1)", borderRadius: "20px 20px 0 0", width: "100%", maxWidth: "min(480px, 95vw)", maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 -8px 40px rgba(0,0,0,0.2)" }}
+
+        /* Header */
+        , React.createElement('div', { style: { padding: "18px 18px 0", flexShrink: 0 }}
+          , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}
+            , React.createElement('div', {}
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 800, color: "var(--tx)" }}, "Добавить работу" )
+              , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", marginTop: 2 }}, "🏠 " , _optionalChain([room, 'optionalAccess', _32 => _32.name]))
+            )
+            , React.createElement('button', { onClick: onClose, style: { background: "var(--s2)", border: "none", borderRadius: 10, padding: 7, cursor: "pointer" }}
+              , React.createElement(Icon, { name: "close", size: 16, color: "#64748b"} )
+            )
+          )
+
+          /* Tabs */
+          , React.createElement('div', { style: { display: "flex", background: "var(--s2)", borderRadius: 10, padding: 3, marginBottom: 12 }}
+            , [["catalog", "📋 Из списка"], ["custom", "✏️ Своя работа"]].map(([id, l]) => (
+              React.createElement('button', { key: id, onClick: () => setTab(id), style: { flex: 1, padding: "9px", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 12, background: tab === id ? "#fff" : "transparent", color: tab === id ? "#1e293b" : "#94a3b8", boxShadow: tab === id ? "0 1px 4px rgba(0,0,0,0.1)" : "none", transition: "all 0.15s" }}
+                , l
+              )
+            ))
+          )
+        )
+
+        /* Body */
+        , React.createElement('div', { style: { flex: 1, overflowY: "auto", padding: "0 18px 28px" }}
+
+          /* === Из списка === */
+          , tab === "catalog" && (
+            React.createElement('div', { style: { flex:1, overflowY:"auto" }}
+              , React.createElement('div', { style: { background: "var(--s2)", borderRadius: 10, padding: "8px 12px", display: "flex", alignItems: "center", gap: 8, marginBottom: 10, border: "1px solid var(--b1)" }}
+                , React.createElement(Icon, { name: "search", size: 14, color: "#94a3b8"} )
+                , React.createElement('input', { value: search, onChange: e => setSearch(e.target.value), placeholder: "Поиск вида работы..."  ,
+                  style: { background: "none", border: "none", outline: "none", fontSize: 13, color: "var(--tx)", width: "100%", fontFamily: "inherit" }} )
+              )
+
+              , filtered.map(w => (
+                React.createElement('button', { key: w.id, onClick: () => {
+                  setPicked(w);
+                  if (w.unit === "м²") setQty((_optionalChain([room, 'optionalAccess', _33 => _33.wallsNet]) || 0).toFixed(2));
+                  else if (w.unit === "м.п.") setQty((_optionalChain([room, 'optionalAccess', _34 => _34.perimeter]) || 0).toFixed(2));
+                  else setQty("1");
+                }, style: { width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", marginBottom: 6, borderRadius: 12, cursor: "pointer", fontFamily: "inherit", textAlign: "left", background: _optionalChain([picked, 'optionalAccess', _35 => _35.id]) === w.id ? "#eff6ff" : "#f8fafc", border: _optionalChain([picked, 'optionalAccess', _36 => _36.id]) === w.id ? "2px solid #3b82f6" : "2px solid transparent", transition: "all 0.15s" }}
+                  , React.createElement('div', { style: { width: 36, height: 36, borderRadius: 9, background: "var(--s1)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 1px 3px rgba(0,0,0,0.08)", fontSize: 16 }}, "🔨")
+                  , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+                    , React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: "var(--tx)" }}, w.name)
+                    , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}, w.category, " • "  , w.unit)
+                  )
+                  , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 }}
+                    , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 12, fontWeight: 800, color: "var(--acc2)" }}, fmt(w.price))
+                    , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)" }}, "/", w.unit)
+                  )
+                  , _optionalChain([picked, 'optionalAccess', _37 => _37.id]) === w.id && React.createElement(Icon, { name: "check", size: 16, color: "#3b82f6"} )
+                )
+              ))
+
+              /* Панель количества */
+              , picked && (
+                React.createElement('div', { style: { background: "linear-gradient(135deg,#eff6ff,#f0fdf4)", borderRadius: 12, padding: 14, border: "1px solid rgba(124,111,255,0.2)", marginTop: 8 }}
+                  , React.createElement('div', { style: { fontSize: 11, fontWeight: 800, color: "var(--acc2)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em" }}, "Количество — "
+                      , picked.name
+                  )
+
+                  /* Быстрые кнопки из параметров помещения */
+                  , React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}
+                    , qtyOpts.map((q, i) => (
+                      React.createElement('button', { key: i, onClick: () => setQty(q.v.toFixed(2)),
+                        style: { background: qty === q.v.toFixed(2) ? "#3b82f6" : "#fff", color: qty === q.v.toFixed(2) ? "#fff" : "#475569", border: "1px solid " + (qty === q.v.toFixed(2) ? "#3b82f6" : "#e2e8f0"), borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
+                        , q.l
+                      )
+                    ))
+                  )
+
+                  , React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "flex-end", marginBottom: 12 }}
+                    , React.createElement('div', { style: { flex: 1 }}
+                      , React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)", marginBottom: 4, textTransform: "uppercase" }}, "Объём (" , picked.unit, ")")
+                      , React.createElement('input', { type: "number", value: qty, onChange: e => setQty(e.target.value),
+                        style: { width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(124,111,255,0.3)", fontSize: 14, fontWeight: 700, color: "var(--tx)", background: "var(--s1)", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} )
+                    )
+                    , React.createElement('div', { style: { textAlign: "right", paddingBottom: 2 }}
+                      , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}, "Итого")
+                      , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 800, color: "var(--acc2)" }}
+                        , fmt((parseFloat(qty) || 0) * picked.price)
+                      )
+                    )
+                  )
+
+                  , React.createElement('button', { onClick: () => {
+                    if (!picked || !qty || parseFloat(qty) <= 0) return;
+                    onAdd({ id: uid(), name: picked.name, unit: picked.unit, price: picked.price, qty: parseFloat(qty), type: "work" });
+                  }, style: { width: "100%", background: "linear-gradient(135deg,#1e40af,#3b82f6)", border: "none", borderRadius: 10, padding: 12, cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 14, color: "#fff", boxShadow: "0 3px 10px rgba(59,130,246,0.35)" }}, "Добавить ›"
+
+                  )
+                )
+              )
+            )
+          )
+
+          /* === Своя работа === */
+          , tab === "custom" && (
+            React.createElement('div', {}
+              , React.createElement('div', { style: { background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 10, padding: "9px 12px", marginBottom: 14, fontSize: 12, color: "var(--gold)", lineHeight: 1.5 }}, "🏷️ Работа сохранится в ваш справочник цен"
+
+              )
+
+              , React.createElement('div', { style: { marginBottom: 10 }}
+                , React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)", marginBottom: 4, textTransform: "uppercase" }}, "Название работы" )
+                , React.createElement('input', { type: "text", value: cName,
+                  onChange: e => {
+                    setCName(e.target.value);
+                    const entry = (priceBook || {})[e.target.value];
+                    if (entry) {
+                      const p = typeof entry === "object" ? entry.price : entry;
+                      const u = typeof entry === "object" ? (entry.unit || "м²") : "м²";
+                      setCPrice(String(p));
+                      setCUnit(u);
+                    }
+                  },
+                  placeholder: "Укладка ламината" ,
+                  style: { width: "100%", padding: "10px 12px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", outline: "none", fontFamily: "inherit", boxSizing: "border-box" },
+                  onFocus: e => e.target.style.borderColor = "#3b82f6",
+                  onBlur: e => e.target.style.borderColor = "#e2e8f0"} )
+              )
+
+              , React.createElement('div', { style: { display: "flex", gap: 10, marginBottom: 10 }}
+                , React.createElement('div', { style: { flex: 1 }}
+                  , React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)", marginBottom: 4, textTransform: "uppercase" }}, "Цена (₽/ед.)" )
+                  , React.createElement('input', { type: "number", value: cPrice, onChange: e => setCPrice(e.target.value), placeholder: "1200",
+                    style: { width: "100%", padding: "10px 12px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", outline: "none", fontFamily: "inherit", boxSizing: "border-box" },
+                    onFocus: e => e.target.style.borderColor = "#3b82f6",
+                    onBlur: e => e.target.style.borderColor = "#e2e8f0"} )
+                )
+                , React.createElement('div', { style: { flex: 1 }}
+                  , React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)", marginBottom: 4, textTransform: "uppercase" }}, "Ед. изм." )
+                  , React.createElement('select', { value: cUnit, onChange: e => setCUnit(e.target.value),
+                    style: { width: "100%", padding: "10px 12px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", outline: "none", fontFamily: "inherit" }}
+                    , units.map(u => React.createElement('option', { key: u}, u))
+                  )
+                )
+              )
+
+              , React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)", marginBottom: 6, textTransform: "uppercase" }}, "Объём")
+              , React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}
+                , qtyOpts.map((q, i) => (
+                  React.createElement('button', { key: i, onClick: () => setCQty(q.v.toFixed(2)),
+                    style: { background: cQty === q.v.toFixed(2) ? "#3b82f6" : "#f1f5f9", color: cQty === q.v.toFixed(2) ? "#fff" : "#475569", border: "none", borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
+                    , q.l
+                  )
+                ))
+              )
+              , React.createElement('input', { type: "number", value: cQty, onChange: e => setCQty(e.target.value), placeholder: "0.00",
+                style: { width: "100%", padding: "10px 12px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", outline: "none", fontFamily: "inherit", boxSizing: "border-box", marginBottom: 12 },
+                onFocus: e => e.target.style.borderColor = "#3b82f6",
+                onBlur: e => e.target.style.borderColor = "#e2e8f0"} )
+
+              , cName && cPrice && cQty && (
+                React.createElement('div', { style: { background: "rgba(16,185,129,0.12)", borderRadius: 10, padding: "10px 14px", marginBottom: 12, display: "flex", justifyContent: "space-between" }}
+                  , React.createElement('span', { style: { fontSize: 12, color: "var(--green)", fontWeight: 600 }}, "Итого")
+                  , React.createElement('span', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 800, color: "var(--green)" }}
+                    , fmt(parseFloat(cPrice) * parseFloat(cQty))
+                  )
+                )
+              )
+
+              , React.createElement('button', { onClick: () => {
+                if (!cName.trim() || !cPrice || !cQty) return;
+                onAdd({ id: uid(), name: cName.trim(), unit: cUnit, price: parseFloat(cPrice), qty: parseFloat(cQty), type: "work", _saveToBook: true });
+              }, style: { width: "100%", background: "linear-gradient(135deg,#1e40af,#3b82f6)", border: "none", borderRadius: 10, padding: 12, cursor: "pointer", fontFamily: "inherit", fontWeight: 700, fontSize: 14, color: "#fff", boxShadow: "0 3px 10px rgba(59,130,246,0.35)" }}, "Добавить и сохранить ›"
+
+              )
+            )
+          )
+
+        )
+      )
+    )
+  );
+}
+
+// ==================== ROOM DETAIL — STAGE-BASED WORKS ====================
+
+const WORK_STAGES = {};
+
+// Modal to add work items (multi-select with inline qty editing)
+function AddWorkItemModal({ open, onClose, onAdd, onAddMany, room, priceBook, workGroups, stageName }) {
+  const [tab, setTab] = useState("prices"); // "prices" | "custom" | "groups"
+  const [search, setSearch] = useState("");
+  // Multi-select: { [entryId]: { checked, qty, entry } }
+  const [selected, setSelected] = useState({});
+  // custom
+  const [cName, setCName] = useState("");
+  const [cPrice, setCPrice] = useState("");
+  const [cUnit, setCUnit] = useState("м²");
+  const [cQty, setCQty] = useState("");
+
+  useEffect(() => {
+    if (open) { setTab("prices"); setSearch(""); setSelected({}); setCName(""); setCPrice(""); setCUnit("м²"); setCQty(""); }
+  }, [open]);
+
+  if (!open) return null;
+
+  const units = ["м²", "шт", "м.п.", "мешок", "рул.", "л", "кг", "компл."];
+
+  // qty quick-pick from room measurements
+  const qtyOpts = [
+    { l: `Пол ${(room.floor||0).toFixed(2)}м²`,             v: room.floor||0 },
+    { l: `Потолок ${(room.ceiling||0).toFixed(2)}м²`,       v: room.ceiling||0 },
+    { l: `Стены чист. ${(room.wallsNet||0).toFixed(2)}м²`,  v: room.wallsNet||0 },
+    { l: `Стены общ. ${(room.wallsTotal||0).toFixed(2)}м²`, v: room.wallsTotal||0 },
+    { l: `Периметр ${(room.perimeter||0).toFixed(2)}м`,     v: room.perimeter||0 },
+  ].filter(o => o.v > 0);
+
+  const autoQtyForUnit = (unit) => {
+    if (unit === "м²") return (room.floor || 0).toFixed(2);
+    if (unit === "м.п.") return (room.perimeter || 0).toFixed(2);
+    return "1";
+  };
+
+  // Build price book list
+  const pbEntries = Object.entries(priceBook || {}).map(([name, val]) => ({
+    id: "pb_" + name,
+    name,
+    price: typeof val === "object" ? val.price : val,
+    unit:  typeof val === "object" ? (val.unit || "м²") : "м²",
+  })).filter(e => e.name.toLowerCase().includes(search.toLowerCase()));
+
+  const toggleEntry = (entry) => {
+    setSelected(prev => {
+      if (prev[entry.id]) {
+        const next = { ...prev };
+        delete next[entry.id];
+        return next;
+      } else {
+        return { ...prev, [entry.id]: { entry, qty: autoQtyForUnit(entry.unit) } };
+      }
+    });
+  };
+
+  const setEntryQty = (id, val) => {
+    setSelected(prev => prev[id] ? { ...prev, [id]: { ...prev[id], qty: val } } : prev);
+  };
+
+  const checkedCount = Object.keys(selected).length;
+  const checkedTotal = Object.values(selected).reduce((s, { entry, qty }) => s + (parseFloat(qty)||0) * entry.price, 0);
+
+  const handleAddSelected = () => {
+    const worksToAdd = Object.values(selected)
+      .map(({ entry, qty }) => ({ id: uid(), name: entry.name, unit: entry.unit, price: entry.price, qty: parseFloat(qty) || 0, type: "work" }))
+      .filter(w => w.qty > 0);
+    if (worksToAdd.length === 0) return;
+    if (onAddMany) {
+      onAddMany(worksToAdd);
+    } else {
+      worksToAdd.forEach(w => onAdd(w));
+    }
+    setSelected({});
+  };
+
+  return (
+    React.createElement(Modal, { open: open, onClose: onClose, title: `Добавить работу${stageName ? ` — ${stageName}` : ""}`}
+      /* Tabs */
+      , React.createElement('div', { style: { display: "flex", background: "var(--s2)", borderRadius: 10, padding: 3, marginBottom: 14, gap: 2 }}
+        , [["prices","🏷️ Мои цены"],["custom","✏️ Своя"],["groups","⚡ Группы"]].map(([id,lbl]) => (
+          React.createElement('button', { key: id, onClick: () => setTab(id), style: {
+            flex:1, padding:"7px 4px", border:"none", borderRadius:8, cursor:"pointer", fontFamily:"inherit",
+            fontWeight:700, fontSize:11, transition:"all 0.15s",
+            background: tab===id ? "#fff" : "transparent",
+            color: tab===id ? "#1e293b" : "#94a3b8",
+            boxShadow: tab===id ? "0 1px 4px rgba(0,0,0,0.1)" : "none",
+          }}, lbl)
+        ))
+      )
+
+      /* === МОИ ЦЕНЫ — multi-select === */
+      , tab === "prices" && (
+        React.createElement('div', {}
+          /* Hint */
+          , React.createElement('div', { style: { background:"#eff6ff", borderRadius:9, padding:"7px 11px", marginBottom:10, fontSize:11, color:"#1e40af", fontWeight:600 }}, "☑️ Отмечайте галочкой нужные работы, меняйте объём и нажмите «Добавить»"
+
+          )
+
+          , React.createElement('input', { value: search, onChange: e => setSearch(e.target.value), placeholder: "Поиск по прайс-листу..."  ,
+            style: { width:"100%", padding:"9px 12px", borderRadius:10, border:"2px solid #e2e8f0", fontSize:13, outline:"none", fontFamily:"inherit", marginBottom:8, boxSizing:"border-box" },
+            onFocus: e=>e.target.style.borderColor="#3b82f6", onBlur: e=>e.target.style.borderColor="#e2e8f0"} )
+
+          , pbEntries.length === 0 && (
+            React.createElement('div', { style: { textAlign:"center", padding:"20px 0", color:"#94a3b8", fontSize:12 }}, "Прайс-лист пуст. Добавьте работы во вкладке «Своя»"
+
+            )
+          )
+
+          /* List with checkboxes */
+          , React.createElement('div', { style: { maxHeight:280, overflowY:"auto", marginBottom:8 }}
+            , pbEntries.map(e => {
+              const isChecked = !!selected[e.id];
+              const selEntry = selected[e.id];
+              return (
+                React.createElement('div', { key: e.id, style: {
+                  borderRadius:11, marginBottom:6, overflow:"hidden",
+                  border: `2px solid ${isChecked ? "#3b82f6" : "#f1f5f9"}`,
+                  background: isChecked ? "#f0f7ff" : "#fff",
+                  transition:"all 0.15s",
+                }}
+                  /* Row — click anywhere to toggle */
+                  , React.createElement('div', {
+                    onClick: () => toggleEntry(e),
+                    style: { display:"flex", alignItems:"center", gap:10, padding:"9px 12px", cursor:"pointer" }}
+
+                    /* Checkbox */
+                    , React.createElement('div', { style: {
+                      width:22, height:22, borderRadius:6, flexShrink:0,
+                      background: isChecked ? "#3b82f6" : "#fff",
+                      border: `2px solid ${isChecked ? "#3b82f6" : "#cbd5e1"}`,
+                      display:"flex", alignItems:"center", justifyContent:"center",
+                      transition:"all 0.15s",
+                    }}
+                      , isChecked && React.createElement('svg', { width: "12", height: "12", viewBox: "0 0 12 12"   , fill: "none"}, React.createElement('polyline', { points: "2,6 5,9 10,3"  , stroke: "#fff", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round"}))
+                    )
+
+                    , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                      , React.createElement('div', { style: { fontSize:13, fontWeight:700, color:"#1e293b", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}, e.name)
+                      , React.createElement('div', { style: { fontSize:11, color:"#94a3b8" }}, e.unit, " • "  , fmt(e.price), "/", e.unit)
+                    )
+
+                    , isChecked && selEntry && (
+                      React.createElement('div', { style: { textAlign:"right", flexShrink:0, fontSize:11, color:"#1e40af", fontWeight:700 }}
+                        , fmt((parseFloat(selEntry.qty)||0)*e.price)
+                      )
+                    )
+                    , !isChecked && (
+                      React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"#3b82f6", flexShrink:0 }}, fmt(e.price))
+                    )
+                  )
+
+                  /* Expanded qty editor — shown when checked */
+                  , isChecked && selEntry && (
+                    React.createElement('div', {
+                      onClick: ev => ev.stopPropagation(),
+                      style: { padding:"0 12px 10px 44px", background:"#eff6ff" }}
+
+                      , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"#64748b", textTransform:"uppercase", marginBottom:5 }}, "Объём (" , e.unit, ")")
+                      /* Quick-pick pills */
+                      , React.createElement('div', { style: { display:"flex", flexWrap:"wrap", gap:4, marginBottom:7 }}
+                        , qtyOpts.map((q,i) => (
+                          React.createElement('button', { key: i, onClick: () => setEntryQty(e.id, q.v.toFixed(2)),
+                            style: {
+                              background: selEntry.qty===q.v.toFixed(2) ? "#3b82f6" : "#fff",
+                              color: selEntry.qty===q.v.toFixed(2) ? "#fff" : "#475569",
+                              border:`1px solid ${selEntry.qty===q.v.toFixed(2) ? "#3b82f6" : "#e2e8f0"}`,
+                              borderRadius:6, padding:"3px 8px", fontSize:10, fontWeight:600, cursor:"pointer", fontFamily:"inherit",
+                            }}
+                            , q.l
+                          )
+                        ))
+                      )
+                      , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:8 }}
+                        , React.createElement('input', {
+                          type: "number", step: "0.01", min: "0",
+                          value: selEntry.qty,
+                          onChange: ev => setEntryQty(e.id, ev.target.value),
+                          style: { flex:1, padding:"8px 10px", borderRadius:8, border:"2px solid #bfdbfe", fontSize:14, fontWeight:800, color:"#1e40af", outline:"none", fontFamily:"inherit", background:"#fff" }}
+                        )
+                        , React.createElement('span', { style: { fontSize:12, color:"#64748b", fontWeight:600 }}, e.unit)
+                        , React.createElement('span', { style: { fontSize:12, fontWeight:800, color:"#1e40af", minWidth:60, textAlign:"right" }}, "= " , fmt((parseFloat(selEntry.qty)||0)*e.price))
+                      )
+                    )
+                  )
+                )
+              );
+            })
+          )
+
+          /* Sticky add bar */
+          , checkedCount > 0 && (
+            React.createElement('div', { style: { background:"linear-gradient(135deg,#1e40af,#3b82f6)", borderRadius:12, padding:"12px 14px", display:"flex", alignItems:"center", justifyContent:"space-between", gap:10 }}
+              , React.createElement('div', {}
+                , React.createElement('div', { style: { fontSize:11, color:"rgba(255,255,255,0.75)" }}, "Отмечено: " , checkedCount, " работ" )
+                , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:800, color:"#fff" }}, fmt(checkedTotal))
+              )
+              , React.createElement('button', { onClick: handleAddSelected,
+                style: { background:"#fff", border:"none", borderRadius:9, padding:"9px 16px", cursor:"pointer", fontFamily:"inherit", fontWeight:800, fontSize:13, color:"#1e40af", whiteSpace:"nowrap" }}, "✓ Добавить "
+                  , checkedCount
+              )
+            )
+          )
+        )
+      )
+
+      /* === СВОЯ РАБОТА === */
+      , tab === "custom" && (
+        React.createElement('div', {}
+          , React.createElement('div', { style: { background:"#fffbeb", border:"1px solid #fde68a", borderRadius:9, padding:"9px 11px", marginBottom:12, fontSize:12, color:"#92400e", lineHeight:1.5 }}, "🏷️ Работа автоматически "
+               , React.createElement('b', {}, "сохранится в Мои цены"   )
+          )
+          , React.createElement('div', { style: { marginBottom:10 }}
+            , React.createElement('label', { style: { fontSize:11, fontWeight:700, color:"#64748b", textTransform:"uppercase", display:"block", marginBottom:3 }}, "Название работы" )
+            , React.createElement('input', { type: "text", value: cName, onChange: e => {
+              setCName(e.target.value);
+              const pb = (priceBook||{})[e.target.value];
+              if (pb) { const p=typeof pb==="object"?pb.price:pb; const u=typeof pb==="object"?(pb.unit||"м²"):"м²"; setCPrice(String(p)); setCUnit(u); }
+            }, placeholder: "Укладка ламината" ,
+              style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"2px solid #e2e8f0", fontSize:14, outline:"none", fontFamily:"inherit", boxSizing:"border-box" },
+              onFocus: e=>e.target.style.borderColor="#3b82f6", onBlur: e=>e.target.style.borderColor="#e2e8f0"} )
+            , cName && (priceBook||{})[cName] && (
+              React.createElement('div', { style: { fontSize:11, color:"#b45309", fontWeight:600, marginTop:4 }}, "🏷️ Цена из справочника: "    , fmt(typeof (priceBook||{})[cName]==="object"?(priceBook||{})[cName].price:(priceBook||{})[cName]))
+            )
+          )
+          , React.createElement('div', { style: { display:"flex", gap:10, marginBottom:10 }}
+            , React.createElement('div', { style: { flex:1 }}
+              , React.createElement('label', { style: { fontSize:11, fontWeight:700, color:"#64748b", textTransform:"uppercase", display:"block", marginBottom:3 }}, "Цена ₽/ед." )
+              , React.createElement('input', { type: "number", value: cPrice, onChange: e=>setCPrice(e.target.value),
+                style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"2px solid #e2e8f0", fontSize:14, outline:"none", fontFamily:"inherit", boxSizing:"border-box" },
+                onFocus: e=>e.target.style.borderColor="#3b82f6", onBlur: e=>e.target.style.borderColor="#e2e8f0"} )
+            )
+            , React.createElement('div', { style: { flex:1 }}
+              , React.createElement('label', { style: { fontSize:11, fontWeight:700, color:"#64748b", textTransform:"uppercase", display:"block", marginBottom:3 }}, "Ед. изм." )
+              , React.createElement('select', { value: cUnit, onChange: e=>setCUnit(e.target.value),
+                style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"2px solid #e2e8f0", fontSize:14, fontFamily:"inherit", outline:"none" }}
+                , units.map(u=>React.createElement('option', { key: u}, u))
+              )
+            )
+          )
+          , React.createElement('label', { style: { fontSize:11, fontWeight:700, color:"#64748b", textTransform:"uppercase", display:"block", marginBottom:5 }}, "Объём")
+          , React.createElement('div', { style: { display:"flex", flexWrap:"wrap", gap:5, marginBottom:8 }}
+            , qtyOpts.map((q,i) => (
+              React.createElement('button', { key: i, onClick: ()=>setCQty(q.v.toFixed(2)),
+                style: { background: cQty===q.v.toFixed(2) ? "#3b82f6" : "#f1f5f9", color: cQty===q.v.toFixed(2) ? "#fff" : "#475569",
+                  border:"none", borderRadius:7, padding:"4px 9px", fontSize:11, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}
+                , q.l
+              )
+            ))
+          )
+          , React.createElement('input', { type: "number", value: cQty, onChange: e=>setCQty(e.target.value), placeholder: "0.00",
+            style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"2px solid #e2e8f0", fontSize:14, outline:"none", fontFamily:"inherit", boxSizing:"border-box", marginBottom:10 },
+            onFocus: e=>e.target.style.borderColor="#3b82f6", onBlur: e=>e.target.style.borderColor="#e2e8f0"} )
+          , cName&&cPrice&&cQty && (
+            React.createElement('div', { style: { background:"#f0fdf4", borderRadius:9, padding:"9px 12px", marginBottom:12, display:"flex", justifyContent:"space-between" }}
+              , React.createElement('span', { style: { fontSize:12, color:"#15803d", fontWeight:600 }}, "Итого")
+              , React.createElement('span', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:800, color:"#15803d" }}, fmt(parseFloat(cPrice)*parseFloat(cQty)))
+            )
+          )
+          , React.createElement('button', { onClick: () => {
+            if(!cName.trim()||!cPrice||!cQty) return;
+            onAdd({id:uid(),name:cName.trim(),unit:cUnit,price:parseFloat(cPrice),qty:parseFloat(cQty),type:"work",_saveToBook:true});
+          }, style: { width:"100%", background:"linear-gradient(135deg,#1e40af,#3b82f6)", border:"none", borderRadius:9, padding:"11px", cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13, color:"#fff", boxShadow:"0 3px 10px rgba(59,130,246,0.3)" }}, "Добавить и сохранить в Мои цены ›"
+
+          )
+        )
+      )
+
+      /* === ГРУППЫ РАБОТ === */
+      , tab === "groups" && (
+        React.createElement('div', {}
+          , (!workGroups||workGroups.length===0) && (
+            React.createElement('div', { style: { textAlign:"center", padding:"24px 0", color:"#94a3b8", fontSize:12 }}, "Группы работ не созданы. Создайте их в разделе Справочник - Группы работ."
+
+            )
+          )
+          , (workGroups||[]).map(group => {
+            const groupTotal = group.items.reduce((s,i)=>s+i.qty*i.price,0);
+            return (
+              React.createElement('div', { key: group.id, style: { border:`2px solid ${group.color}22`, borderRadius:12, marginBottom:10, overflow:"hidden" }}
+                , React.createElement('div', { style: { background:`${group.color}12`, padding:"10px 14px", display:"flex", alignItems:"center", gap:10 }}
+                  , React.createElement('span', { style: { fontSize:20 }}, group.icon)
+                  , React.createElement('div', { style: { flex:1 }}
+                    , React.createElement('div', { style: { fontSize:13, fontWeight:800, color:"var(--tx)" }}, group.name)
+                    , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" }}, group.items.length, " работ" )
+                  )
+                  , React.createElement('button', { onClick: () => {
+                    group.items.forEach(item => {
+                      const autoQ = resolveAutoQty(item, room, group._stageId || "other");
+                      onAdd({id:uid(),name:item.name,unit:item.unit,price:item.price,qty:autoQ||item.qty,type:"work"});
+                    });
+                  }, style: { background:group.color, color:"#fff", border:"none", borderRadius:8, padding:"6px 12px", fontSize:12, fontWeight:800, cursor:"pointer", fontFamily:"inherit", whiteSpace:"nowrap" }}, "⚡ Добавить"
+
+                  )
+                )
+                , React.createElement('div', { style: { padding:"8px 14px 10px" }}
+                  , group.items.map((item,i) => {
+                    const autoQ = resolveAutoQty(item, room, group._stageId || "other");
+                    const cost = autoQ * item.price;
+                    return (
+                      React.createElement('div', { key: item.id, style: { display:"flex", alignItems:"center", gap:6, padding:"5px 0", borderBottom: i<group.items.length-1?"1px solid var(--b1)":"none" }}
+                        , React.createElement('div', { style: { width:5, height:5, borderRadius:"50%", background:group.color, flexShrink:0 }} )
+                        , React.createElement('div', { style: { flex:1, fontSize:12, color:"var(--tx2)", fontWeight:600 }}, item.name)
+                        , React.createElement('span', { style: { fontSize:10, fontWeight:700, color:"var(--green)", background:"rgba(16,185,129,0.12)", borderRadius:4, padding:"1px 5px", whiteSpace:"nowrap" }}, "📐 "
+                           , autoQ>0?autoQ.toFixed(2):item.qty, " " , item.unit
+                        )
+                        , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:"var(--acc2)", minWidth:56, textAlign:"right", fontFamily:"'Unbounded',sans-serif" }}, fmt(autoQ>0?cost:item.qty*item.price))
+                      )
+                    );
+                  })
+                  /* Group total for this room */
+                  , room && (
+                    React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:6, paddingTop:6, borderTop:`1px solid ${group.color}33` }}
+                      , React.createElement('span', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700 }}, "Итого по помещению:"  )
+                      , React.createElement('span', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"var(--tx)" }}
+                        , fmt(group.items.reduce((s,item) => s + resolveAutoQty(item, room, group._stageId || "other") * item.price, 0))
+                      )
+                    )
+                  )
+                )
+              )
+            );
+          })
+        )
+      )
+    )
+  );
+}
+
+// ---- Room Detail Screen (opened per room, shows stages) ----
+function RoomDetailScreen({ state, dispatch, projectId, roomId, navigate }) {
+  const project = state.projects.find(p => p.id === projectId);
+  const room = (_optionalChain([project, 'optionalAccess', _38 => _38.rooms]) || []).find(r => r.id === roomId);
+  const priceBook = state.priceBook || {};
+  const workGroups = state.workGroups || [];
+
+  const [expandedStages, setExpandedStages] = useState({});
+  const [addingToStage, setAddingToStage] = useState(null);
+  const [editWork, setEditWork] = useState(null);
+  const [showAddSheet, setShowAddSheet] = useState(false); // bottom sheet to pick stage
+
+  if (!room) return React.createElement('div', { style: { padding: 20, color: "var(--tx)" }}, "Помещение не найдено"  );
+
+  const works = room.works || [];
+
+  const toggleStage = (sid) => setExpandedStages(s => ({ ...s, [sid]: !s[sid] }));
+
+  const getStageWorks = (sid) => works.filter(w => w.stageId === sid);
+
+  const handleAddWorksBulk = (stageId, worksArr) => {
+    if (!worksArr || worksArr.length === 0) return;
+    dispatch({ type: "ADD_WORKS_BULK", pid: projectId, rid: roomId, works: worksArr.map(w => ({ ...w, stageId })) });
+  };
+
+  const handleDeleteWork = (workId) => {
+    dispatch({ type: "UPDATE_ROOM", pid: projectId, room: { ...room, works: works.filter(w => w.id !== workId) } });
+  };
+
+  const handleUpdateWork = (updatedWork) => {
+    dispatch({ type: "UPDATE_ROOM", pid: projectId, room: { ...room, works: works.map(w => w.id === updatedWork.id ? updatedWork : w) } });
+    if (updatedWork._saveToBook) dispatch({ type: "UPDATE_PRICE_BOOK", name: updatedWork.name, price: updatedWork.price, unit: updatedWork.unit });
+    setEditWork(null);
+  };
+
+  const totalAll = works.reduce((s, w) => s + w.qty * w.price, 0);
+  const stagesWithWorks = WORK_STAGES.filter(s => getStageWorks(s.id).length > 0);
+
+  const measurements = [
+    { l: "Пол", v: room.floor, u: "м²", c: "var(--acc2)" },
+    { l: "Потолок", v: room.ceiling, u: "м²", c: "var(--acc2)" },
+    { l: "Стены", v: room.wallsNet, u: "м²", c: "var(--gold)" },
+    { l: "Периметр", v: room.perimeter, u: "м.п.", c: "var(--green)" },
+  ].filter(m => (m.v || 0) > 0);
+
+  return (
+    React.createElement('div', { style: { minHeight: "100%", background: "var(--bg)", paddingBottom: 100 }}
+
+      /* -- Header -- */
+      , React.createElement('div', { style: { background: "linear-gradient(135deg, var(--s2) 0%, var(--s1) 100%)", padding: "48px 16px 16px", borderBottom: "1px solid var(--b1)" }}
+        , React.createElement('button', { onClick: () => navigate("rooms", { projectId }),
+          style: { background: "var(--b1)", border: "1px solid var(--b1)", borderRadius: 10, padding: "7px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, marginBottom: 14 }}
+          , React.createElement(Icon, { name: "back", size: 16, color: "var(--tx2)"} )
+          , React.createElement('span', { style: { color: "var(--tx2)", fontSize: 13, fontWeight: 600 }}, "Помещения")
+        )
+
+        , React.createElement('div', { style: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}
+          , React.createElement('div', { style: { flex: 1 }}
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 19, fontWeight: 800, color: "var(--tx)", marginBottom: 4 }}, room.name)
+            , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)" }}, "h = "
+                , room.height, " м · "   , room.shapeType === "custom" ? "Нестандартная форма" : "Прямоугольник"
+            )
+          )
+          , totalAll > 0 && (
+            React.createElement('div', { style: { textAlign: "right", flexShrink: 0, marginLeft: 12 }}
+              , React.createElement('div', { style: { fontSize: 9, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 3 }}, "Смета")
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 17, fontWeight: 800, color: "var(--acc2)" }}, fmt(totalAll))
+            )
+          )
+        )
+
+        /* Measurements pills */
+        , measurements.length > 0 && (
+          React.createElement('div', { style: { display: "flex", gap: 6, flexWrap: "wrap" }}
+            , measurements.map((m, i) => (
+              React.createElement('div', { key: i, style: { background: "var(--s3)", borderRadius: 9, padding: "5px 10px", border: "1px solid var(--b1)" }}
+                , React.createElement('span', { style: { fontSize: 10, color: "var(--tx3)" }}, m.l, ": " )
+                , React.createElement('span', { style: { fontSize: 11, fontWeight: 800, color: m.c }}, (m.v || 0).toFixed(2), " " , m.u)
+              )
+            ))
+          )
+        )
+      )
+
+      /* -- Content -- */
+      , React.createElement('div', { style: { padding: "14px 14px 20px" }}
+
+        /* Empty state */
+        , works.length === 0 && (
+          React.createElement('div', { style: { textAlign: "center", padding: "40px 20px", color: "var(--tx3)" }}
+            , React.createElement('div', { style: { fontSize: 52, marginBottom: 12 }}, "🔨")
+            , React.createElement('div', { style: { fontSize: 15, fontWeight: 700, color: "var(--tx2)", marginBottom: 6 }}, "Нет работ" )
+            , React.createElement('div', { style: { fontSize: 13, marginBottom: 20 }}, "Нажмите кнопку ниже, чтобы добавить работы в это помещение"        )
+          )
+        )
+
+        /* Stages list */
+        , WORK_STAGES.map(stage => {
+          const sw = getStageWorks(stage.id);
+          const st = sw.reduce((s, w) => s + w.qty * w.price, 0);
+          const isOpen = !!expandedStages[stage.id];
+          const hasWorks = sw.length > 0;
+
+          return (
+            React.createElement('div', { key: stage.id, style: {
+              background: "var(--s1)", borderRadius: "var(--r)", marginBottom: 8, overflow: "hidden",
+              border: hasWorks ? `1px solid ${stage.color}44` : "1px solid var(--b1)",
+              boxShadow: hasWorks ? `0 2px 12px ${stage.color}18` : "none",
+            }}
+              /* Stage header */
+              , React.createElement('div', { onClick: () => toggleStage(stage.id), style: {
+                display: "flex", alignItems: "center", padding: "12px 14px", cursor: "pointer",
+                background: hasWorks ? `${stage.color}0d` : "transparent",
+                borderBottom: isOpen ? `1px solid ${stage.color}22` : "none",
+              }}
+                , React.createElement('div', { style: { width: 36, height: 36, borderRadius: 10, background: `${stage.color}1a`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, marginRight: 10, flexShrink: 0 }}
+                  , stage.icon
+                )
+                , React.createElement('div', { style: { flex: 1 }}
+                  , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: "var(--tx)", fontFamily: "'Unbounded',sans-serif", fontSize: 12 }}, stage.label)
+                  , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", marginTop: 1 }}
+                    , hasWorks ? `${sw.length} ${sw.length === 1 ? "работа" : "работ"}` : "Нет работ — нажмите чтобы добавить"
+                  )
+                )
+                , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}
+                  , st > 0 && React.createElement('span', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 12, fontWeight: 800, color: stage.color }}, fmt(st))
+                  , React.createElement('div', { style: { transform: isOpen ? "rotate(180deg)" : "rotate(0)", transition: "transform 0.2s" }}
+                    , React.createElement(Icon, { name: "chevronDown", size: 15, color: hasWorks ? stage.color : "var(--tx3)"} )
+                  )
+                )
+              )
+
+              /* Stage content */
+              , isOpen && (
+                React.createElement('div', { style: { padding: "10px 14px 12px", animation: "fadeIn 0.18s ease" }}
+                  , sw.length === 0 && (
+                    React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)", textAlign: "center", padding: "10px 0 6px" }}, "Нет работ в этом этапе"
+
+                    )
+                  )
+
+                  , sw.map(work => (
+                    React.createElement('div', { key: work.id, style: {
+                      display: "flex", alignItems: "center", gap: 8, padding: "9px 11px",
+                      background: "var(--s2)", borderRadius: 10, marginBottom: 6,
+                      border: "1px solid var(--b1)",
+                    }}
+                      , React.createElement('div', { style: { width: 5, height: 5, borderRadius: "50%", background: stage.color, flexShrink: 0 }} )
+                      , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+                        , React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: "var(--tx)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}, work.name)
+                        , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", marginTop: 1 }}
+                          , work.qty.toFixed(2), " " , work.unit, " × "  , fmt(work.price), " ₽"
+                        )
+                      )
+                      , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 }}
+                        , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 12, fontWeight: 800, color: "var(--acc2)", marginBottom: 4 }}, fmt(work.qty * work.price))
+                        , React.createElement('div', { style: { display: "flex", gap: 4, justifyContent: "flex-end" }}
+                          , React.createElement('button', { onClick: () => setEditWork({ stageId: stage.id, work }),
+                            style: { background: "var(--acc3)", border: "none", borderRadius: 6, padding: "3px 7px", cursor: "pointer" }}
+                            , React.createElement(Icon, { name: "edit", size: 12, color: "var(--acc2)"} )
+                          )
+                          , React.createElement('button', { onClick: () => handleDeleteWork(work.id),
+                            style: { background: "rgba(239,68,68,0.1)", border: "none", borderRadius: 6, padding: "3px 7px", cursor: "pointer" }}
+                            , React.createElement(Icon, { name: "trash", size: 12, color: "#ef4444"} )
+                          )
+                        )
+                      )
+                    )
+                  ))
+
+                  , React.createElement('button', { onClick: () => setAddingToStage(stage.id), style: {
+                    width: "100%", background: `${stage.color}12`, border: `1.5px dashed ${stage.color}55`,
+                    borderRadius: 10, padding: "9px", cursor: "pointer", fontFamily: "inherit",
+                    fontWeight: 700, fontSize: 12, color: stage.color,
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6, marginTop: 2,
+                  }}
+                    , React.createElement(Icon, { name: "plus", size: 13, color: stage.color} ), " Добавить в «"   , stage.label, "»"
+                  )
+                )
+              )
+            )
+          );
+        })
+
+        /* Total */
+        , totalAll > 0 && (
+          React.createElement('div', { style: {
+            background: "linear-gradient(135deg, var(--acc), var(--acc2))", borderRadius: "var(--r)",
+            padding: "14px 18px", marginTop: 4, display: "flex", justifyContent: "space-between", alignItems: "center",
+            boxShadow: "0 4px 20px rgba(108,99,255,0.35)",
+          }}
+            , React.createElement('div', {}
+              , React.createElement('div', { style: { fontSize: 10, color: "rgba(255,255,255,0.65)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 }}, "Итого по помещению"  )
+              , React.createElement('div', { style: { fontSize: 12, color: "rgba(255,255,255,0.6)" }}, works.length, " работ · "   , stagesWithWorks.length, " этапов" )
+            )
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 20, fontWeight: 900, color: "#fff" }}, fmt(totalAll))
+          )
+        )
+      )
+
+      /* -- FAB: Add Work -- portal */
+      , React.createElement(FabButton, {
+          visible: !showAddSheet,
+          onClick: () => setShowAddSheet(true),
+          color: "linear-gradient(135deg,#6c63ff,#a78bfa)",
+          shadow: "0 6px 28px rgba(108,99,255,0.55)",
+          label: "Добавить работу",
+        })
+
+      /* -- Stage picker bottom sheet -- */
+      , showAddSheet && (
+        React.createElement('div', { style: { position: "absolute", inset: 0, zIndex: 400, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(6px)" },
+          onClick: () => setShowAddSheet(false)}
+          , React.createElement('div', { style: {
+            position: "absolute", bottom: 0, left: "50%", transform: "translateX(-50%)",
+            width: "100%", maxWidth: "min(480px, 95vw)", background: "var(--s1)",
+            borderRadius: "24px 24px 0 0", padding: "20px 16px 36px",
+            boxShadow: "0 -12px 60px rgba(0,0,0,0.5)",
+            animation: "slideUp 0.3s cubic-bezier(0.34,1.56,0.64,1)",
+          }, onClick: e => e.stopPropagation()}
+            , React.createElement('div', { style: { width: 36, height: 4, background: "var(--s3)", borderRadius: 2, margin: "0 auto 16px" }} )
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 700, color: "var(--tx)", marginBottom: 4 }}, "Выберите этап" )
+            , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)", marginBottom: 14 }}, "В какой этап добавить работы?"    )
+            , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}
+              , WORK_STAGES.map(stage => {
+                const sw = getStageWorks(stage.id);
+                return (
+                  React.createElement('button', { key: stage.id, onClick: () => { setAddingToStage(stage.id); setShowAddSheet(false); }, style: {
+                    background: `${stage.color}12`, border: `1.5px solid ${stage.color}33`, borderRadius: 12,
+                    padding: "10px 6px", cursor: "pointer", textAlign: "center",
+                    display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+                  }}
+                    , React.createElement('span', { style: { fontSize: 22 }}, stage.icon)
+                    , React.createElement('span', { style: { fontSize: 10, fontWeight: 700, color: stage.color, lineHeight: 1.2 }}, stage.label)
+                    , sw.length > 0 && React.createElement('span', { style: { fontSize: 9, color: "var(--tx3)" }}, sw.length, " шт" )
+                  )
+                );
+              })
+            )
+          )
+        )
+      )
+
+      /* Add work modal */
+      , React.createElement(AddWorkItemModal, {
+        open: !!addingToStage,
+        onClose: () => setAddingToStage(null),
+        onAdd: (work) => handleAddWorksBulk(addingToStage, [work]),
+        onAddMany: (worksArr) => handleAddWorksBulk(addingToStage, worksArr),
+        room: room,
+        priceBook: priceBook,
+        workGroups: workGroups,
+        stageName: _optionalChain([WORK_STAGES, 'access', _39 => _39.find, 'call', _40 => _40(s => s.id === addingToStage), 'optionalAccess', _41 => _41.label])}
+      )
+
+      /* Edit work modal */
+      , editWork && (
+        React.createElement(Modal, { open: true, onClose: () => setEditWork(null), title: "Редактировать работу" }
+          , React.createElement(EditWorkForm, {
+            work: editWork.work,
+            room: room,
+            priceBook: priceBook,
+            onSave: handleUpdateWork,
+            onCancel: () => setEditWork(null)}
+          )
+        )
+      )
+      , React.createElement(ConfirmSheet, {
+        open: !!confirmDeleteWid,
+        title: "Удалить работу?" ,
+        subtitle: confirmDeleteWid ? `«${_optionalChain([(room.works||[]), 'access', _42 => _42.find, 'call', _43 => _43(w=>w.id===confirmDeleteWid), 'optionalAccess', _44 => _44.name])||""}»` : "",
+        danger: true,
+        onCancel: () => setConfirmDeleteWid(null),
+        onConfirm: confirmDeleteWork}
+      )
+    )
+  );
+}
+
+function EditWorkForm({ work, room, priceBook, onSave, onCancel }) {
+  const [name, setName] = useState(work.name);
+  const [price, setPrice] = useState(String(work.price));
+  const [qty, setQty] = useState(String(work.qty));
+  const [unit, setUnit] = useState(work.unit);
+  const units = ["м²", "шт", "м.п.", "мешок", "рул.", "л", "кг", "компл."];
+
+  const qtyOpts = [
+    { l: `Пол ${(room.floor||0).toFixed(2)}м²`, v: room.floor||0 },
+    { l: `Стены ${(room.wallsNet||0).toFixed(2)}м²`, v: room.wallsNet||0 },
+    { l: `Потолок ${(room.ceiling||0).toFixed(2)}м²`, v: room.ceiling||0 },
+    { l: `Периметр ${(room.perimeter||0).toFixed(2)}м`, v: room.perimeter||0 },
+  ].filter(o => o.v > 0);
+
+  const inputStyle = { width: "100%", padding: "10px 12px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, outline: "none", fontFamily: "inherit", boxSizing: "border-box", background: "var(--s2)", color: "var(--tx)" };
+  const labelStyle = { fontSize: 11, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.07em", display: "block", marginBottom: 5 };
+
+  return (
+    React.createElement('div', {}
+      , React.createElement('div', { style: { marginBottom: 12 }}
+        , React.createElement('label', { style: labelStyle}, "Название")
+        , React.createElement('input', { value: name, onChange: e => {
+          setName(e.target.value);
+          const pb = (priceBook||{})[e.target.value];
+          if (pb) { const p = typeof pb === "object" ? pb.price : pb; const u = typeof pb === "object" ? (pb.unit || unit) : unit; setPrice(String(p)); setUnit(u); }
+        }, style: inputStyle,
+          onFocus: e => { e.target.style.borderColor = "var(--acc)"; e.target.style.boxShadow = "0 0 0 3px rgba(108,99,255,0.15)"; },
+          onBlur: e => { e.target.style.borderColor = "var(--b1)"; e.target.style.boxShadow = "none"; }} )
+      )
+      , React.createElement('div', { style: { display: "flex", gap: 10, marginBottom: 12 }}
+        , React.createElement('div', { style: { flex: 1 }}
+          , React.createElement('label', { style: labelStyle}, "Цена ₽/ед." )
+          , React.createElement('input', { type: "number", value: price, onChange: e => setPrice(e.target.value), style: inputStyle,
+            onFocus: e => { e.target.style.borderColor = "var(--acc)"; e.target.style.boxShadow = "0 0 0 3px rgba(108,99,255,0.15)"; },
+            onBlur: e => { e.target.style.borderColor = "var(--b1)"; e.target.style.boxShadow = "none"; }} )
+        )
+        , React.createElement('div', { style: { flex: 1 }}
+          , React.createElement('label', { style: labelStyle}, "Ед. изм." )
+          , React.createElement('select', { value: unit, onChange: e => setUnit(e.target.value),
+            style: { ...inputStyle, padding: "10px 8px" }}
+            , units.map(u => React.createElement('option', { key: u}, u))
+          )
+        )
+      )
+      , React.createElement('label', { style: labelStyle}, "Объём")
+      , qtyOpts.length > 0 && (
+        React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 5, marginBottom: 8 }}
+          , qtyOpts.map((q, i) => (
+            React.createElement('button', { key: i, onClick: () => setQty(q.v.toFixed(2)),
+              style: { background: qty === q.v.toFixed(2) ? "var(--acc)" : "var(--s2)", color: qty === q.v.toFixed(2) ? "#fff" : "var(--tx2)", border: "1px solid var(--b1)", borderRadius: 7, padding: "4px 9px", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}
+              , q.l
+            )
+          ))
+        )
+      )
+      , React.createElement('input', { type: "number", value: qty, onChange: e => setQty(e.target.value), style: { ...inputStyle, marginBottom: 12 },
+        onFocus: e => { e.target.style.borderColor = "var(--acc)"; e.target.style.boxShadow = "0 0 0 3px rgba(108,99,255,0.15)"; },
+        onBlur: e => { e.target.style.borderColor = "var(--b1)"; e.target.style.boxShadow = "none"; }} )
+      , name && price && qty && (
+        React.createElement('div', { style: { background: "var(--acc3)", borderRadius: 9, padding: "9px 12px", marginBottom: 12, display: "flex", justifyContent: "space-between", border: "1px solid rgba(124,111,255,0.2)" }}
+          , React.createElement('span', { style: { fontSize: 12, color: "var(--tx2)", fontWeight: 600 }}, "Итого")
+          , React.createElement('span', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 800, color: "var(--acc2)" }}, fmt(parseFloat(price) * parseFloat(qty)), " ₽" )
+        )
+      )
+      , React.createElement('div', { style: { display: "flex", gap: 8 }}
+        , React.createElement(Btn, { onClick: onCancel, variant: "secondary", full: true}, "Отмена")
+        , React.createElement(Btn, { onClick: () => { if (!name || !price || !qty) return; onSave({ ...work, name, price: parseFloat(price), qty: parseFloat(qty), unit, _saveToBook: true }); }, full: true}, "Сохранить")
+      )
+    )
+  );
+}
+
+// ---- Room Works Panel (compact view on rooms list — shows total + link to detail) ----
+function RoomWorksPanel({ room, onOpenDetail }) {
+  const works = room.works || [];
+  const total = works.reduce((s, w) => s + w.qty * w.price, 0);
+  const stagesWithWorks = WORK_STAGES.filter(s => works.some(w => w.stageId === s.id));
+
+  return (
+    React.createElement('div', { style: { marginTop:12, borderTop:"1px solid #f1f5f9", paddingTop:12 }}
+      , React.createElement('div', { style: { display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom: stagesWithWorks.length > 0 ? 10 : 0 }}
+        , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:8 }}
+          , React.createElement('span', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:700, color:"#1e293b" }}, "🔨 Работы по этапам"   )
+          , works.length > 0 && (
+            React.createElement('span', { style: { background:"#eff6ff", borderRadius:6, padding:"2px 7px", fontSize:11, color:"#3b82f6", fontWeight:700 }}, works.length)
+          )
+        )
+        , total > 0 && (
+          React.createElement('span', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"#1e40af" }}, fmt(total))
+        )
+      )
+
+      , stagesWithWorks.length > 0 && (
+        React.createElement('div', { style: { display:"flex", flexWrap:"wrap", gap:5, marginBottom:10 }}
+          , stagesWithWorks.map(stage => {
+            const sw = works.filter(w => w.stageId === stage.id);
+            const st = sw.reduce((s,w)=>s+w.qty*w.price,0);
+            return (
+              React.createElement('div', { key: stage.id, style: { background:`${stage.color}12`, border:`1px solid ${stage.color}33`, borderRadius:8, padding:"4px 8px", display:"flex", alignItems:"center", gap:4 }}
+                , React.createElement('span', { style: { fontSize:12 }}, stage.icon)
+                , React.createElement('span', { style: { fontSize:11, fontWeight:700, color:stage.color }}, stage.label)
+                , React.createElement('span', { style: { fontSize:10, color:"#94a3b8" }}, sw.length, " / "  , fmt(st))
+              )
+            );
+          })
+        )
+      )
+
+      , React.createElement('button', { onClick: onOpenDetail, style: {
+        width:"100%", background: works.length > 0 ? "linear-gradient(135deg,#1e40af,#3b82f6)" : "#f8fafc",
+        border: works.length > 0 ? "none" : "2px dashed #bfdbfe",
+        borderRadius:10, padding:"10px",
+        cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:12,
+        color: works.length > 0 ? "#fff" : "#3b82f6",
+        display:"flex", alignItems:"center", justifyContent:"center", gap:6,
+        boxShadow: works.length > 0 ? "0 3px 10px rgba(59,130,246,0.25)" : "none",
+      }}
+        , works.length > 0 ? "✏️ Редактировать смету помещения ›" : "➕ Открыть смету помещения"
+      )
+    )
+  );
+}
+
+// ---- Add Room Work Modal ----
+function AddRoomWorkModal({ room, priceBook, onClose, onAdd }) {
+  const [tab, setTab] = useState("catalog"); // "catalog" | "custom"
+  const [search, setSearch] = useState("");
+  const [selectedCatalog, setSelectedCatalog] = useState(null);
+  const [qty, setQty] = useState("");
+  const [qtyBase, setQtyBase] = useState("floor"); // which room measurement to use
+  const [customName, setCustomName] = useState("");
+  const [customPrice, setCustomPrice] = useState("");
+  const [customUnit, setCustomUnit] = useState("м²");
+  const [customQty, setCustomQty] = useState("");
+
+  // Works from CATALOG only
+  const catalogWorks = CATALOG.filter(c => c.type === "work");
+  // Also include priceBook entries that aren't in CATALOG
+  const pbExtras = Object.entries(priceBook)
+    .filter(([name]) => !catalogWorks.find(c => c.name === name))
+    .map(([name, price]) => ({ id: "pb_" + name, name, price, unit: "м²", type: "work", category: "Мои цены" }));
+  const allWorks = [...catalogWorks, ...pbExtras];
+  const filtered = allWorks.filter(w => w.name.toLowerCase().includes(search.toLowerCase()));
+
+  // Auto qty suggestions based on room measurements
+  const qtyOptions = [
+    { label: `Пол (${(room.floor || 0).toFixed(2)} м²)`, val: room.floor || 0, unit: "м²" },
+    { label: `Потолок (${(room.ceiling || 0).toFixed(2)} м²)`, val: room.ceiling || 0, unit: "м²" },
+    { label: `Стены чист. (${(room.wallsNet || 0).toFixed(2)} м²)`, val: room.wallsNet || 0, unit: "м²" },
+    { label: `Стены общ. (${(room.wallsTotal || 0).toFixed(2)} м²)`, val: room.wallsTotal || 0, unit: "м²" },
+    { label: `Периметр (${(room.perimeter || 0).toFixed(2)} м.п.)`, val: room.perimeter || 0, unit: "м.п." },
+    { label: "Своё значение", val: null, unit: "м²" },
+  ];
+
+  const handleAddFromCatalog = () => {
+    if (!selectedCatalog) return;
+    const qtyVal = parseFloat(qty) || 0;
+    if (qtyVal <= 0) return;
+    onAdd({
+      id: uid(), name: selectedCatalog.name, unit: selectedCatalog.unit,
+      price: selectedCatalog.price, qty: qtyVal, type: "work",
+    });
+  };
+
+  const handleAddCustom = () => {
+    if (!customName.trim() || !customPrice || !customQty) return;
+    onAdd({
+      id: uid(), name: customName.trim(), unit: customUnit,
+      price: parseFloat(customPrice), qty: parseFloat(customQty), type: "work",
+      _saveToBook: true,
+    });
+  };
+
+  const units = ["м²", "шт", "м.п.", "мешок", "рул.", "л", "кг", "компл."];
+
+  return (
+    React.createElement('div', { style: {
+      position: "absolute", inset: 0, zIndex: 3000, background: "rgba(15,23,42,0.7)",
+      backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-end", justifyContent: "center",
+    }, onClick: e => e.target === e.currentTarget && onClose()}
+      , React.createElement('div', { style: {
+        background: "var(--s1)", borderRadius: "20px 20px 0 0", width: "100%", maxWidth: "min(480px, 95vw)",
+        maxHeight: "88vh", display: "flex", flexDirection: "column",
+        boxShadow: "0 -8px 40px rgba(0,0,0,0.15)", animation: "slideUp 0.25s ease",
+      }}
+        /* Header */
+        , React.createElement('div', { style: { padding: "20px 18px 0", flexShrink: 0 }}
+          , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}
+            , React.createElement('div', {}
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 800, color: "var(--tx)" }}, "Добавить работу"
+
+              )
+              , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", marginTop: 2 }}, "🏠 " , room.name)
+            )
+            , React.createElement('button', { onClick: onClose, style: { background: "var(--s2)", border: "none", borderRadius: 10, padding: 7, cursor: "pointer" }}
+              , React.createElement(Icon, { name: "close", size: 16, color: "#64748b"} )
+            )
+          )
+
+          /* Tab switcher */
+          , React.createElement('div', { style: { display: "flex", background: "var(--s2)", borderRadius: 12, padding: 3, marginBottom: 14 }}
+            , [["catalog", "📋 Из справочника"], ["custom", "✏️ Своя работа"]].map(([id, lbl]) => (
+              React.createElement('button', { key: id, onClick: () => setTab(id), style: {
+                flex: 1, padding: "9px", border: "none", borderRadius: 9, cursor: "pointer",
+                fontFamily: "inherit", fontWeight: 700, fontSize: 12, transition: "all 0.2s",
+                background: tab === id ? "#fff" : "transparent",
+                color: tab === id ? "#1e293b" : "#94a3b8",
+                boxShadow: tab === id ? "0 1px 4px rgba(0,0,0,0.1)" : "none",
+              }}, lbl)
+            ))
+          )
+        )
+
+        /* Body — scrollable */
+        , React.createElement('div', { style: { flex: 1, overflowY: "auto", padding: "0 18px 24px" }}
+
+          /* === CATALOG TAB === */
+          , tab === "catalog" && (
+            React.createElement('div', {}
+              /* Search */
+              , React.createElement('div', { style: { background: "var(--s2)", borderRadius: 10, padding: "9px 12px", display: "flex", alignItems: "center", gap: 8, marginBottom: 12, border: "1px solid var(--b1)" }}
+                , React.createElement(Icon, { name: "search", size: 15, color: "#94a3b8"} )
+                , React.createElement('input', { value: search, onChange: e => setSearch(e.target.value), placeholder: "Поиск работы..." ,
+                  style: { background: "none", border: "none", outline: "none", fontSize: 13, color: "var(--tx)", width: "100%", fontFamily: "inherit" }} )
+              )
+
+              /* Work list */
+              , React.createElement('div', { style: { marginBottom: 14 }}
+                , filtered.map(w => (
+                  React.createElement('button', { key: w.id, onClick: () => {
+                    setSelectedCatalog(w);
+                    // auto-set qty based on unit
+                    if (w.unit === "м²") setQty(String((room.wallsNet || 0).toFixed(2)));
+                    else if (w.unit === "м.п.") setQty(String((room.perimeter || 0).toFixed(2)));
+                    else setQty("1");
+                  }, style: {
+                    width: "100%", display: "flex", alignItems: "center", gap: 10,
+                    padding: "11px 12px", marginBottom: 6, borderRadius: 12, cursor: "pointer",
+                    fontFamily: "inherit", textAlign: "left",
+                    background: _optionalChain([selectedCatalog, 'optionalAccess', _45 => _45.id]) === w.id ? "#eff6ff" : "#f8fafc",
+                    border: _optionalChain([selectedCatalog, 'optionalAccess', _46 => _46.id]) === w.id ? "2px solid #3b82f6" : "2px solid transparent",
+                    transition: "all 0.15s",
+                  }}
+                    , React.createElement('div', { style: {
+                      width: 36, height: 36, borderRadius: 9, background: "var(--s1)",
+                      display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+                      boxShadow: "0 1px 3px rgba(0,0,0,0.08)",
+                    }}, "🔨")
+                    , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+                      , React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: "var(--tx)", marginBottom: 1 }}, w.name)
+                      , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}, w.category || "Мои цены", " • "  , w.unit)
+                    )
+                    , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 }}
+                      , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 12, fontWeight: 800, color: "var(--acc2)" }}
+                        , fmt(w.price)
+                      )
+                      , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)" }}, "/", w.unit)
+                    )
+                    , _optionalChain([selectedCatalog, 'optionalAccess', _47 => _47.id]) === w.id && (
+                      React.createElement('div', { style: { color: "var(--acc2)", flexShrink: 0 }}
+                        , React.createElement(Icon, { name: "check", size: 16, color: "#3b82f6"} )
+                      )
+                    )
+                  )
+                ))
+              )
+
+              /* Qty selection when catalog item is chosen */
+              , selectedCatalog && (
+                React.createElement('div', { style: { background: "linear-gradient(135deg,#eff6ff,#f0fdf4)", borderRadius: 12, padding: 14, border: "1px solid rgba(124,111,255,0.2)" }}
+                  , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 11, fontWeight: 800, color: "var(--acc2)", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}, "Количество для «"
+                      , selectedCatalog.name, "»"
+                  )
+
+                  /* Quick-pick from room measurements */
+                  , React.createElement('div', { style: { marginBottom: 10 }}
+                    , React.createElement('div', { style: { fontSize: 11, color: "var(--tx2)", marginBottom: 6, fontWeight: 600 }}, "Быстрый выбор из параметров помещения:"    )
+                    , React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 6 }}
+                      , qtyOptions.filter(q => q.val !== null && q.val > 0).map((q, i) => (
+                        React.createElement('button', { key: i, onClick: () => setQty(q.val.toFixed(2)), style: {
+                          background: qty === q.val.toFixed(2) ? "#3b82f6" : "#fff",
+                          color: qty === q.val.toFixed(2) ? "#fff" : "#475569",
+                          border: `1px solid ${qty === q.val.toFixed(2) ? "#3b82f6" : "#e2e8f0"}`,
+                          borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                        }}, q.label)
+                      ))
+                    )
+                  )
+
+                  , React.createElement('div', { style: { display: "flex", gap: 8, alignItems: "flex-end" }}
+                    , React.createElement('div', { style: { flex: 1 }}
+                      , React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}, "Объём ("
+                         , selectedCatalog.unit, ")"
+                      )
+                      , React.createElement('input', { type: "number", value: qty, onChange: e => setQty(e.target.value),
+                        style: { width: "100%", padding: "10px 12px", borderRadius: 10, border: "1px solid rgba(124,111,255,0.3)", fontSize: 14, fontWeight: 700, color: "var(--tx)", background: "var(--s1)", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }} )
+                    )
+                    , React.createElement('div', { style: { textAlign: "right", flexShrink: 0, paddingBottom: 2 }}
+                      , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}, "Итого")
+                      , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 800, color: "var(--acc2)" }}
+                        , fmt((parseFloat(qty) || 0) * selectedCatalog.price)
+                      )
+                    )
+                  )
+
+                  , React.createElement('button', { onClick: handleAddFromCatalog, style: {
+                    marginTop: 12, width: "100%", background: "linear-gradient(135deg,#1e40af,#3b82f6)",
+                    border: "none", borderRadius: 10, padding: "12px", cursor: "pointer",
+                    fontFamily: "inherit", fontWeight: 700, fontSize: 14, color: "#fff",
+                    boxShadow: "0 3px 10px rgba(59,130,246,0.35)",
+                  }}, "Добавить в помещение ›"
+
+                  )
+                )
+              )
+            )
+          )
+
+          /* === CUSTOM TAB === */
+          , tab === "custom" && (
+            React.createElement('div', {}
+              , React.createElement('div', { style: { background: "rgba(245,158,11,0.12)", border: "1px solid rgba(245,158,11,0.3)", borderRadius: 10, padding: "10px 12px", marginBottom: 14, fontSize: 12, color: "var(--gold)", lineHeight: 1.5 }}, "🏷️ Новая работа автоматически "
+                    , React.createElement('b', {}, "сохранится в справочник"  ), " с указанной ценой"
+              )
+
+              , React.createElement('div', { style: { marginBottom: 12 }}
+                , React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}, "Название работы" )
+                , React.createElement('input', { type: "text", value: customName, onChange: e => {
+                  setCustomName(e.target.value);
+                  // autofill price from priceBook if exists
+                  if (priceBook[e.target.value]) setCustomPrice(String(priceBook[e.target.value]));
+                }, placeholder: "Укладка ламината" ,
+                  style: { width: "100%", padding: "11px 12px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", outline: "none", fontFamily: "inherit", boxSizing: "border-box" },
+                  onFocus: e => e.target.style.borderColor = "#3b82f6",
+                  onBlur: e => e.target.style.borderColor = "#e2e8f0"}
+                )
+                , customName && priceBook[customName] && (
+                  React.createElement('div', { style: { fontSize: 11, color: "var(--gold)", fontWeight: 600, marginTop: 4 }}, "🏷️ Найдена зафиксированная цена: "    , fmt(priceBook[customName]))
+                )
+              )
+
+              , React.createElement('div', { style: { display: "flex", gap: 10, marginBottom: 12 }}
+                , React.createElement('div', { style: { flex: 1 }}
+                  , React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}, "Цена (₽ / ед.)"   )
+                  , React.createElement('input', { type: "number", value: customPrice, onChange: e => setCustomPrice(e.target.value), placeholder: "1 200" ,
+                    style: { width: "100%", padding: "11px 12px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", outline: "none", fontFamily: "inherit", boxSizing: "border-box" },
+                    onFocus: e => e.target.style.borderColor = "#3b82f6",
+                    onBlur: e => e.target.style.borderColor = "#e2e8f0"}
+                  )
+                )
+                , React.createElement('div', { style: { flex: 1 }}
+                  , React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.05em" }}, "Ед. изм." )
+                  , React.createElement('select', { value: customUnit, onChange: e => setCustomUnit(e.target.value),
+                    style: { width: "100%", padding: "11px 12px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", outline: "none", fontFamily: "inherit" }}
+                    , units.map(u => React.createElement('option', { key: u}, u))
+                  )
+                )
+              )
+
+              /* Quick qty from room */
+              , React.createElement('div', { style: { marginBottom: 10 }}
+                , React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}, "Объём работ" )
+                , React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}
+                  , qtyOptions.filter(q => q.val !== null && q.val > 0).map((q, i) => (
+                    React.createElement('button', { key: i, onClick: () => setCustomQty(q.val.toFixed(2)), style: {
+                      background: customQty === q.val.toFixed(2) ? "#3b82f6" : "#f1f5f9",
+                      color: customQty === q.val.toFixed(2) ? "#fff" : "#475569",
+                      border: "none", borderRadius: 8, padding: "5px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer", fontFamily: "inherit",
+                    }}, q.label)
+                  ))
+                )
+                , React.createElement('input', { type: "number", value: customQty, onChange: e => setCustomQty(e.target.value), placeholder: "0.00",
+                  style: { width: "100%", padding: "11px 12px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", outline: "none", fontFamily: "inherit", boxSizing: "border-box" },
+                  onFocus: e => e.target.style.borderColor = "#3b82f6",
+                  onBlur: e => e.target.style.borderColor = "#e2e8f0"}
+                )
+              )
+
+              , customName && customPrice && customQty && (
+                React.createElement('div', { style: { background: "rgba(16,185,129,0.12)", borderRadius: 10, padding: "10px 14px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                  , React.createElement('span', { style: { fontSize: 12, color: "var(--green)", fontWeight: 600 }}, "Итого по позиции"  )
+                  , React.createElement('span', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 800, color: "var(--green)" }}
+                    , fmt(parseFloat(customPrice) * parseFloat(customQty))
+                  )
+                )
+              )
+
+              , React.createElement('button', { onClick: handleAddCustom, style: {
+                width: "100%", background: "linear-gradient(135deg,#1e40af,#3b82f6)",
+                border: "none", borderRadius: 10, padding: "12px", cursor: "pointer",
+                fontFamily: "inherit", fontWeight: 700, fontSize: 14, color: "#fff",
+                boxShadow: "0 3px 10px rgba(59,130,246,0.35)",
+              }}, "Добавить и сохранить в справочник ›"
+
+              )
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+// ---- Rooms List Screen (inside project) ----
+// ==================== ROOM CARD (collapsible areas) ====================
+function RoomCard({ room, projectId, dispatch, navigate, onEdit }) {
+  const [expanded, setExpanded] = useState(false);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState({});
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const photoInputRef = useRef(null);
+
+  const isCustom = room.shapeType === "custom";
+  const worksTotal = (room.works || []).reduce((s, w) => s + w.qty * w.price, 0);
+
+  const handlePhotoUpload = (e) => {
+    const file = _optionalChain([e, 'access', _48 => _48.target, 'access', _49 => _49.files, 'optionalAccess', _50 => _50[0]]);
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      dispatch({ type: "UPDATE_ROOM", pid: projectId, room: { ...room, photo: ev.target.result } });
+    };
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  const startEdit = () => {
+    setDraft({
+      floor: String(room.floor || 0),
+      ceiling: String(room.ceiling || 0),
+      perimeter: String(room.perimeter || 0),
+      wallsTotal: String(room.wallsTotal || 0),
+      deductions: String(room.deductions || 0),
+      wallsNet: String(room.wallsNet || 0),
+      height: String(room.height || 2.7),
+    });
+    setEditing(true);
+  };
+
+  const cancelEdit = () => { setEditing(false); setDraft({}); };
+
+  const saveEdit = () => {
+    const updated = {
+      ...room,
+      floor: parseFloat(draft.floor) || 0,
+      ceiling: parseFloat(draft.ceiling) || 0,
+      perimeter: parseFloat(draft.perimeter) || 0,
+      wallsTotal: parseFloat(draft.wallsTotal) || 0,
+      deductions: parseFloat(draft.deductions) || 0,
+      wallsNet: parseFloat(draft.wallsNet) || 0,
+      height: parseFloat(draft.height) || 2.7,
+    };
+    dispatch({ type: "UPDATE_ROOM", pid: projectId, room: updated });
+    setEditing(false);
+    setDraft({});
+  };
+
+  const fields = [
+    { key: "floor",      label: "Пол",         unit: "м²",   accent: "#6c63ff" },
+    { key: "ceiling",    label: "Потолок",      unit: "м²",   accent: "#6c63ff" },
+    { key: "perimeter",  label: "Периметр",     unit: "м.п.", accent: "#0d9488" },
+    { key: "wallsTotal", label: "Стены общ.",   unit: "м²",   accent: "#f59e0b" },
+    { key: "deductions", label: "Вычеты",       unit: "м²",   accent: "#ef4444" },
+    { key: "wallsNet",   label: "Стены чист.",  unit: "м²",   accent: "#a78bfa" },
+  ];
+
+  const [swipeX, setSwipeX] = useState(0); // -1=delete, 0=normal, 1=edit
+
+  return (
+    React.createElement('div', { style: { background: "var(--s1)", borderRadius: "var(--r)", marginBottom: 12, boxShadow: "0 4px 20px rgba(0,0,0,0.3)", overflow: "hidden", border: "1px solid var(--b1)", position:"relative" }}
+
+      /* Swipe left = delete (red) */
+      , React.createElement('div', { style: { position:"absolute", left:0, top:0, bottom:0, width:70, background:"#ef4444", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1, opacity: swipeX === -1 ? 1 : 0, transition:"opacity 0.2s" }}
+        , React.createElement(Icon, { name: "trash", size: 22, color: "#fff"} )
+      )
+
+
+      /* -- Main row — clickable to open room detail -- */
+      , React.createElement('div', {
+        onClick: () => swipeX === 0 && navigate("roomdetail", { projectId, roomId: room.id }),
+        onTouchStart: e => { e.currentTarget._tsx = e.touches[0].clientX; },
+        onTouchMove: e => {
+          const dx = e.touches[0].clientX - (e.currentTarget._tsx || 0);
+          if (dx < -70) setSwipeX(-1);
+
+          else setSwipeX(0);
+        },
+        onTouchEnd: e => {
+          if (swipeX === -1) dispatch({ type: "DELETE_ROOM", pid: projectId, rid: room.id });
+
+          setSwipeX(0);
+        },
+        style: { display: "flex", alignItems: "center", padding: "13px 14px", gap: 10, cursor: "pointer", position:"relative", zIndex:2,
+          transform: swipeX === -1 ? "translateX(-60px)" : "translateX(0)",
+          transition: "transform 0.2s", background:"var(--s1)" }}
+
+        /* Photo / Icon */
+        , React.createElement('div', {
+          onClick: e => { e.stopPropagation(); _optionalChain([photoInputRef, 'access', _51 => _51.current, 'optionalAccess', _52 => _52.click, 'call', _53 => _53()]); },
+          style: {
+            width: 48, height: 48, borderRadius: 12, flexShrink: 0,
+            background: room.photo ? "transparent" : (isCustom ? "rgba(124,58,237,0.15)" : "rgba(108,99,255,0.15)"),
+            border: `1.5px solid ${room.photo ? "rgba(255,255,255,0.1)" : (isCustom ? "rgba(124,58,237,0.25)" : "rgba(108,99,255,0.25)")}`,
+            display: "flex", alignItems: "center", justifyContent: "center",
+            cursor: "pointer", overflow: "hidden", position: "relative",
+          },
+          title: "Нажмите чтобы добавить фото"   }
+
+          , room.photo ? (
+            React.createElement('img', { src: room.photo, alt: "", style: { width: "100%", height: "100%", objectFit: "cover", borderRadius: 11 }} )
+          ) : (
+            React.createElement('div', { style: { display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}
+              , React.createElement('svg', { width: "18", height: "18", viewBox: "0 0 24 24"   , fill: "none", stroke: "var(--acc)", strokeWidth: "2", strokeLinecap: "round", strokeLinejoin: "round"}
+                , React.createElement('rect', { x: "3", y: "3", width: "18", height: "18", rx: "2"}), React.createElement('circle', { cx: "8.5", cy: "8.5", r: "1.5"})
+                , React.createElement('polyline', { points: "21 15 16 10 5 21"     })
+              )
+              , React.createElement('span', { style: { fontSize: 7, color: "var(--acc)", fontWeight: 700, lineHeight: 1 }}, "фото")
+            )
+          )
+        )
+        , React.createElement('input', { ref: photoInputRef, type: "file", accept: "image/*", style: { display: "none" }, onChange: handlePhotoUpload} )
+
+        /* Name + badges */
+        , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 800, color: "var(--tx)", marginBottom: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+            , room.name
+          )
+          , React.createElement('div', { style: { display: "flex", gap: 5, flexWrap: "wrap", alignItems: "center" }}
+            , React.createElement('span', { style: { fontSize: 10, color: "var(--tx3)" }}, "h = "  , room.height, " м" )
+            , (room.floor || 0) > 0 && (
+              React.createElement('span', { style: { fontSize: 10, background: "rgba(108,99,255,0.12)", color: "var(--acc2)", borderRadius: 5, padding: "1px 6px", fontWeight: 700 }}
+                , (room.floor || 0).toFixed(2), " м²"
+              )
+            )
+            , worksTotal > 0 && (
+              React.createElement('span', { style: { fontSize: 10, background: "rgba(16,185,129,0.1)", color: "var(--green)", borderRadius: 5, padding: "1px 6px", fontWeight: 700 }}, "🔨 "
+                 , fmt(worksTotal)
+              )
+            )
+          )
+        )
+
+        /* Chevron + action buttons */
+        , React.createElement('div', { style: { display: "flex", gap: 5, flexShrink: 0, alignItems: "center" }}
+          /* Toggle areas */
+          , React.createElement('button', {
+            onClick: e => { e.stopPropagation(); setExpanded(v => !v); if (editing) cancelEdit(); },
+            style: {
+              background: expanded ? "var(--acc3)" : "var(--s2)", border: expanded ? "1px solid rgba(124,111,255,0.3)" : "1px solid var(--b1)",
+              borderRadius: 9, padding: "6px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 4,
+            }}
+            , React.createElement('span', { style: { fontSize: 10, fontWeight: 700, color: expanded ? "var(--acc2)" : "var(--tx3)" }}, "м²")
+            , React.createElement('div', { style: { transform: expanded ? "rotate(180deg)" : "rotate(0)", transition: "transform 0.2s", color: expanded ? "var(--acc2)" : "var(--tx3)" }}
+              , React.createElement(Icon, { name: "chevronDown", size: 13, color: expanded ? "var(--acc2)" : "var(--tx3)"} )
+            )
+          )
+          , React.createElement('button', { onClick: e => { e.stopPropagation(); onEdit(); }, style: { background: "var(--s2)", border: "1px solid var(--b1)", borderRadius: 9, padding: "6px 9px", cursor: "pointer" }}
+            , React.createElement(Icon, { name: "edit", size: 14, color: "var(--acc)"} )
+          )
+          , React.createElement('button', { onClick: e => { e.stopPropagation(); setShowDeleteConfirm(true); },
+            style: { background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.15)", borderRadius: 9, padding: "6px 9px", cursor: "pointer" }}
+            , React.createElement(Icon, { name: "trash", size: 14, color: "#ef4444"} )
+          )
+          , React.createElement('div', { style: { color: "var(--tx3)" }}
+            , React.createElement(Icon, { name: "chevronRight", size: 14, color: "var(--tx3)"} )
+          )
+        )
+      )
+
+      /* -- Expanded areas panel -- */
+      , expanded && (
+        React.createElement('div', { style: { borderTop: "1px solid var(--b1)", background: "var(--s2)", animation: "fadeIn 0.18s ease" }}
+
+          /* Header row */
+          , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px 6px" }}
+            , React.createElement('span', { style: { fontSize: 10, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.08em" }}, "Площади помещения" )
+            , !editing ? (
+              React.createElement('button', { onClick: startEdit, style: { display: "flex", alignItems: "center", gap: 5, background: "var(--acc3)", border: "1px solid rgba(124,111,255,0.25)", borderRadius: 8, padding: "5px 10px", cursor: "pointer" }}
+                , React.createElement(Icon, { name: "edit", size: 12, color: "var(--acc2)"} )
+                , React.createElement('span', { style: { fontSize: 11, fontWeight: 700, color: "var(--acc2)" }}, "Редактировать")
+              )
+            ) : (
+              React.createElement('div', { style: { display: "flex", gap: 6 }}
+                , React.createElement('button', { onClick: cancelEdit, style: { background: "var(--s3)", border: "1px solid var(--b1)", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 11, fontWeight: 600, color: "var(--tx2)", fontFamily: "inherit" }}, "Отмена"
+
+                )
+                , React.createElement('button', { onClick: saveEdit, style: { background: "linear-gradient(135deg,#6c63ff,#a78bfa)", border: "none", borderRadius: 8, padding: "5px 12px", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#fff", fontFamily: "inherit", boxShadow: "0 2px 8px rgba(108,99,255,0.35)" }}, "Сохранить"
+
+                )
+              )
+            )
+          )
+
+          /* Fields grid */
+          , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 6, padding: "6px 14px" }}
+            , fields.map(f => (
+              React.createElement('div', { key: f.key, style: { background: "var(--s1)", borderRadius: 10, padding: "8px 10px", border: `1px solid ${editing ? "rgba(124,111,255,0.2)" : "var(--b1)"}`, transition: "border-color 0.2s" }}
+                , React.createElement('div', { style: { fontSize: 9, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}, f.label)
+                , editing ? (
+                  React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 3 }}
+                    , React.createElement('input', {
+                      type: "number", step: "0.01",
+                      value: draft[f.key],
+                      onChange: e => setDraft(d => ({ ...d, [f.key]: e.target.value })),
+                      style: {
+                        width: "100%", border: "none", background: "transparent", fontSize: 13, fontWeight: 800,
+                        color: f.accent, fontFamily: "inherit", outline: "none", padding: 0,
+                        borderBottom: `1.5px solid ${f.accent}`,
+                      }}
+                    )
+                    , React.createElement('span', { style: { fontSize: 9, color: "var(--tx3)", whiteSpace: "nowrap" }}, f.unit)
+                  )
+                ) : (
+                  React.createElement('div', { style: { fontSize: 13, fontWeight: 800, color: f.accent }}
+                    , parseFloat(room[f.key] || 0).toFixed(2), React.createElement('span', { style: { fontSize: 9, fontWeight: 400, color: "var(--tx3)", marginLeft: 2 }}, f.unit)
+                  )
+                )
+              )
+            ))
+          )
+
+          /* Height field when editing */
+          , editing && (
+            React.createElement('div', { style: { padding: "6px 14px 10px" }}
+              , React.createElement('div', { style: { background: "var(--s1)", borderRadius: 10, padding: "8px 10px", border: "1px solid rgba(124,111,255,0.2)", display: "flex", alignItems: "center", gap: 10 }}
+                , React.createElement('span', { style: { fontSize: 11, fontWeight: 600, color: "var(--tx2)", whiteSpace: "nowrap" }}, "Высота потолков" )
+                , React.createElement('input', {
+                  type: "number", step: "0.01", value: draft.height,
+                  onChange: e => setDraft(d => ({ ...d, height: e.target.value })),
+                  style: { flex: 1, border: "none", background: "transparent", fontSize: 13, fontWeight: 800, color: "var(--cyan)", fontFamily: "inherit", outline: "none", borderBottom: "1.5px solid var(--cyan)", padding: "0 2px" }}
+                )
+                , React.createElement('span', { style: { fontSize: 11, color: "var(--tx3)" }}, "м")
+              )
+            )
+          )
+
+          /* Custom shape preview */
+          , isCustom && room.points && room.points.length >= 3 && (
+            React.createElement('div', { style: { margin: "0 14px 10px", background: "var(--s1)", borderRadius: 10, padding: 6, border: "1px solid var(--b1)" }}
+              , React.createElement('svg', { width: "100%", viewBox: "0 0 280 100"   , style: { display: "block" }}
+                , React.createElement('polygon', {
+                  points: room.points.map(p => `${(p.x / 280) * 260 + 10},${(p.y / 280) * 80 + 10}`).join(" "),
+                  fill: "rgba(124,58,237,0.12)", stroke: "#a78bfa", strokeWidth: "2"}
+                )
+                , room.points.map((p, i) => (
+                  React.createElement('circle', { key: i, cx: (p.x / 280) * 260 + 10, cy: (p.y / 280) * 80 + 10, r: "4", fill: "#a78bfa"} )
+                ))
+              )
+            )
+          )
+
+          /* Works quick-nav */
+          , React.createElement('div', { style: { padding: "0 14px 12px" }}
+            , React.createElement(RoomWorksPanel, {
+              room: room,
+              onOpenDetail: () => navigate("roomdetail", { projectId, roomId: room.id })}
+            )
+          )
+        )
+      )
+
+    )
+  );
+}
+
+// ==================== ROOM MEASURE BY PHOTO ====================
+function RoomMeasureModal({ open, onClose, onRoomCreated }) {
+  const [step, setStep] = useState("intro");
+  const [imageB64, setImageB64] = useState(null);
+  const [imageType, setImageType] = useState("image/jpeg");
+  const [refType, setRefType] = useState("door");
+  const [refValue, setRefValue] = useState("80");
+  const [roomName, setRoomName] = useState("Комната");
+  const [result, setResult] = useState(null);
+  const [errorMsg, setErrorMsg] = useState("");
+  const [progress, setProgress] = useState(0);
+  const cameraRef = useRef();
+  const fileRef = useRef();
+
+  useEffect(() => {
+    if (!open) { setStep("intro"); setImageB64(null); setRefValue("80"); setRefType("door"); setResult(null); setErrorMsg(""); setProgress(0); setRoomName("Комната"); }
+  }, [open]);
+
+  const REF_OPTIONS = [
+    { id: "door",   label: "Дверной проём",   hint: "Стандарт 80 или 90 см",  dflt: "80"  },
+    { id: "window", label: "Оконный проём",   hint: "Обычно 100–140 см",      dflt: "120" },
+    { id: "tile",   label: "Плитка на полу",  hint: "Обычно 30, 40 или 60 см",dflt: "60"  },
+    { id: "tape",   label: "Рулетка в кадре", hint: "Введите видимый размер",  dflt: ""    },
+    { id: "manual", label: "Знаю размеры",    hint: "Введу вручную",           dflt: ""    },
+  ];
+
+  const handleFile = (file) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    setImageType(file.type);
+    const reader = new FileReader();
+    reader.onload = ev => { setImageB64(ev.target.result.split(",")[1]); setStep("reference"); };
+    reader.readAsDataURL(file);
+  };
+
+  const handleAnalyze = async () => {
+    if (refType !== "manual" && !refValue) return;
+    setStep("processing"); setProgress(10);
+    const opt = REF_OPTIONS.find(r => r.id === refType);
+    const prompt = refType === "manual"
+      ? `Это фото комнаты. Оцени типичные размеры для жилого помещения на основе видимых пропорций и предметов интерьера. Верни ТОЛЬКО JSON: {"length":4.2,"width":3.1,"height":2.7,"doors":1,"windows":1,"confidence":"medium"}`
+      : `Фото помещения. Опорный размер в кадре: ${opt.label} = ${refValue} см (= ${(parseFloat(refValue)/100).toFixed(2)} м). Используй его как масштаб. Определи реальные размеры комнаты: длина, ширина, высота потолка, количество дверей и окон. Верни ТОЛЬКО JSON без пояснений: {"length":4.2,"width":3.1,"height":2.7,"doors":1,"windows":1,"confidence":"high"} где confidence=high/medium/low в зависимости от качества опорного размера.`;
+    try {
+      const tick = setInterval(() => setProgress(p => Math.min(p + 7, 85)), 500);
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model: "claude-sonnet-4-20250514", max_tokens: 400,
+          messages: [{ role: "user", content: [
+            { type: "image", source: { type: "base64", media_type: imageType, data: imageB64 } },
+            { type: "text", text: prompt }
+          ]}]
+        })
+      });
+      clearInterval(tick); setProgress(92);
+      const data = await resp.json();
+      const text = (data.content || []).map(c => c.text || "").join("");
+      const m = text.match(/\{[\s\S]*?\}/);
+      if (!m) throw new Error("Не удалось получить размеры от AI");
+      const p = JSON.parse(m[0]);
+      const L = Math.max(0.5, parseFloat(p.length) || 4), W = Math.max(0.5, parseFloat(p.width) || 3), H = Math.max(1.5, parseFloat(p.height) || 2.7);
+      const doors = Math.max(0, parseInt(p.doors) || 1), windows = Math.max(0, parseInt(p.windows) || 1);
+      const perim = 2*(L+W), wTotal = perim*H, deduct = doors*1.8+windows*1.68, wNet = Math.max(0, wTotal-deduct);
+      setProgress(100);
+      setResult({ length:L, width:W, height:H, doors, windows, floor:L*W, ceiling:L*W, perimeter:perim, wallsTotal:wTotal, deductions:deduct, wallsNet:wNet, confidence: p.confidence||"medium" });
+      setStep("result");
+    } catch(e) { setErrorMsg(e.message); setStep("error"); }
+  };
+
+  const handleManualResult = () => {
+    const L = parseFloat(manualL)||4, W = parseFloat(manualW)||3, H = parseFloat(manualH)||2.7;
+    const doors = parseInt(manualDoors)||1, windows = parseInt(manualWindows)||1;
+    const perim = 2*(L+W), wTotal = perim*H, deduct = doors*1.8+windows*1.68, wNet = Math.max(0,wTotal-deduct);
+    setResult({ length:L,width:W,height:H,doors,windows,floor:L*W,ceiling:L*W,perimeter:perim,wallsTotal:wTotal,deductions:deduct,wallsNet:wNet,confidence:"high" });
+    setStep("result");
+  };
+
+  const [manualL, setManualL] = useState("4.0");
+  const [manualW, setManualW] = useState("3.0");
+  const [manualH, setManualH] = useState("2.7");
+  const [manualDoors, setManualDoors] = useState("1");
+  const [manualWindows, setManualWindows] = useState("1");
+
+  const handleCreate = () => {
+    if (!result) return;
+    onRoomCreated({ id:uid(), name:roomName, shapeType:"rect", length:result.length, width:result.width, height:result.height, floor:result.floor, ceiling:result.ceiling, perimeter:result.perimeter, wallsTotal:result.wallsTotal, deductions:result.deductions, wallsNet:result.wallsNet, doors:result.doors, windows:result.windows, works:[] });
+    onClose();
+  };
+
+  if (!open) return null;
+  const CONF = { high:["var(--green)","Высокая точность"], medium:["var(--gold)","Средняя точность"], low:["var(--red)","Низкая — проверьте вручную"] };
+  const IS = { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:14, fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+
+  return (
+    React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.85)", zIndex:500, display:"flex", flexDirection:"column" }}
+      , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", marginTop:"auto", maxHeight:"92vh", display:"flex", flexDirection:"column", overflow:"hidden" }}
+        /* Handle */
+        , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"10px auto 0" }} )
+        /* Header */
+        , React.createElement('div', { style: { padding:"12px 16px 10px", borderBottom:"1px solid var(--b1)", display:"flex", alignItems:"center", gap:10, flexShrink:0 }}
+          , React.createElement('div', { style: { width:38, height:38, borderRadius:11, background:"linear-gradient(135deg,#6366f1,#8b5cf6)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:20, flexShrink:0 }}, "📐")
+          , React.createElement('div', { style: { flex:1 }}
+            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:800, color:"var(--tx)" }}, "Измерить по фото"  )
+            , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" }}, "AI определит размеры помещения"   )
+          )
+          , React.createElement('button', { onClick: onClose, style: { background:"var(--s2)", border:"none", borderRadius:9, padding:"7px 10px", cursor:"pointer", color:"var(--tx3)", fontSize:13 }}, "✕")
+        )
+
+        , React.createElement('div', { style: { flex:1, overflowY:"auto", padding:16 }}
+
+          /* INTRO */
+          , step === "intro" && (
+            React.createElement('div', {}
+              , React.createElement('div', { style: { background:"linear-gradient(135deg,rgba(99,102,241,0.12),rgba(139,92,246,0.08))", borderRadius:16, padding:16, marginBottom:14, border:"1px solid rgba(99,102,241,0.2)" }}
+                , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:11, fontWeight:800, color:"var(--acc2)", marginBottom:10 }}, "Как это работает"  )
+                , [["📸","Сфотографируйте комнату","Встаньте в угол, захватите весь пол и потолок"],["📏","Укажите опорный размер","Дверь, окно, плитка или рулетка в кадре"],["🤖","AI вычислит размеры","Claude измерит длину, ширину и высоту по пропорциям"],["🏠","Помещение добавится","Площади и периметр рассчитаются автоматически"]].map(([ic,tt,dd],i) => (
+                  React.createElement('div', { key: i, style: { display:"flex", gap:10, marginBottom:i<3?10:0 }}
+                    , React.createElement('div', { style: { width:34, height:34, borderRadius:9, background:"var(--s2)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}, ic)
+                    , React.createElement('div', {}, React.createElement('div', { style: { fontSize:12, fontWeight:700, color:"var(--tx)", marginBottom:1 }}, tt), React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" }}, dd))
+                  )
+                ))
+              )
+              , React.createElement('div', { style: { background:"rgba(245,158,11,0.1)", border:"1px solid rgba(245,158,11,0.25)", borderRadius:12, padding:"10px 12px", marginBottom:16, fontSize:12, color:"var(--gold)", lineHeight:1.5 }}, "💡 "
+                 , React.createElement('b', {}, "Совет:"), " Встаньте в угол комнаты, направьте камеру диагонально чтобы были видны два стыка пола со стенами."
+              )
+              , React.createElement('div', { style: { display:"flex", gap:10, marginBottom:10 }}
+                , React.createElement('button', { onClick: () => _optionalChain([cameraRef, 'access', _54 => _54.current, 'optionalAccess', _55 => _55.click, 'call', _56 => _56()]), style: { flex:1, background:"linear-gradient(135deg,#6366f1,#8b5cf6)", border:"none", borderRadius:14, padding:"18px 8px", cursor:"pointer", fontFamily:"inherit", color:"#fff", display:"flex", flexDirection:"column", alignItems:"center", gap:7 }}
+                  , React.createElement('span', { style: { fontSize:30 }}, "📷"), React.createElement('span', { style: { fontSize:12, fontWeight:800 }}, "Камера")
+                )
+                , React.createElement('button', { onClick: () => _optionalChain([fileRef, 'access', _57 => _57.current, 'optionalAccess', _58 => _58.click, 'call', _59 => _59()]), style: { flex:1, background:"var(--s2)", border:"1px solid var(--b1)", borderRadius:14, padding:"18px 8px", cursor:"pointer", fontFamily:"inherit", color:"var(--tx)", display:"flex", flexDirection:"column", alignItems:"center", gap:7 }}
+                  , React.createElement('span', { style: { fontSize:30 }}, "🖼️"), React.createElement('span', { style: { fontSize:12, fontWeight:700 }}, "Галерея")
+                )
+              )
+              , React.createElement('button', { onClick: () => setStep("manual"), style: { width:"100%", padding:"12px", borderRadius:12, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx2)", fontSize:13, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}, "✏️ Ввести размеры вручную"
+
+              )
+              , React.createElement('input', { ref: cameraRef, type: "file", accept: "image/*", capture: "environment", style: { display:"none" }, onChange: e => handleFile(_optionalChain([e, 'access', _60 => _60.target, 'access', _61 => _61.files, 'optionalAccess', _62 => _62[0]]))} )
+              , React.createElement('input', { ref: fileRef,   type: "file", accept: "image/*", style: { display:"none" }, onChange: e => handleFile(_optionalChain([e, 'access', _63 => _63.target, 'access', _64 => _64.files, 'optionalAccess', _65 => _65[0]]))} )
+            )
+          )
+
+          /* MANUAL */
+          , step === "manual" && (
+            React.createElement('div', {}
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"var(--tx)", marginBottom:14 }}, "Введите размеры" )
+              , React.createElement('div', { style: { marginBottom:10 }}, React.createElement('label', { style: { fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.05em", display:"block", marginBottom:5 }}, "Название помещения" ), React.createElement('input', { value: roomName, onChange: e=>setRoomName(e.target.value), style: IS} ))
+              , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}
+                , [["Длина (м)",manualL,setManualL],["Ширина (м)",manualW,setManualW],["Высота (м)",manualH,setManualH]].map(([lbl,val,set]) => (
+                  React.createElement('div', { key: lbl}, React.createElement('label', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", display:"block", marginBottom:4 }}, lbl), React.createElement('input', { type: "number", value: val, onChange: e=>set(e.target.value), style: { ...IS, padding:"8px 8px", fontSize:14, textAlign:"center" }} ))
+                ))
+              )
+              , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }}
+                , [["Дверей (шт)",manualDoors,setManualDoors],["Окон (шт)",manualWindows,setManualWindows]].map(([lbl,val,set]) => (
+                  React.createElement('div', { key: lbl}, React.createElement('label', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", display:"block", marginBottom:4 }}, lbl), React.createElement('input', { type: "number", value: val, onChange: e=>set(e.target.value), style: { ...IS, padding:"8px 8px", fontSize:14, textAlign:"center" }} ))
+                ))
+              )
+              , React.createElement('div', { style: { display:"flex", gap:8 }}
+                , React.createElement('button', { onClick: () => setStep("intro"), style: { flex:1, padding:"11px", borderRadius:11, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx3)", fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "‹ Назад" )
+                , React.createElement('button', { onClick: handleManualResult, style: { flex:2, padding:"11px", borderRadius:11, border:"none", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Рассчитать ›" )
+              )
+            )
+          )
+
+          /* REFERENCE */
+          , step === "reference" && imageB64 && (
+            React.createElement('div', {}
+              , React.createElement('div', { style: { borderRadius:14, overflow:"hidden", marginBottom:14, position:"relative" }}
+                , React.createElement('img', { src: `data:${imageType};base64,${imageB64}`, alt: "", style: { width:"100%", height:180, objectFit:"cover" }} )
+                , React.createElement('div', { style: { position:"absolute", inset:0, background:"linear-gradient(to bottom,transparent 50%,rgba(0,0,0,0.55))" }} )
+                , React.createElement('div', { style: { position:"absolute", bottom:10, left:12, fontSize:12, color:"#fff", fontWeight:600 }}, "📸 Фото загружено"  )
+              )
+              , React.createElement('div', { style: { fontSize:12, fontWeight:700, color:"var(--tx)", marginBottom:8 }}, "Что есть в кадре как ориентир?"     )
+              , React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:6, marginBottom:12 }}
+                , REF_OPTIONS.map(opt => (
+                  React.createElement('button', { key: opt.id, onClick: () => { setRefType(opt.id); setRefValue(opt.dflt); },
+                    style: { display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:11, border:`1.5px solid ${refType===opt.id?"var(--acc)":"var(--b1)"}`, background:refType===opt.id?"var(--acc3)":"var(--s2)", cursor:"pointer", fontFamily:"inherit", textAlign:"left" }}
+                    , React.createElement('div', { style: { width:18, height:18, borderRadius:"50%", border:`2px solid ${refType===opt.id?"var(--acc)":"var(--b2)"}`, background:refType===opt.id?"var(--acc)":"transparent", flexShrink:0 }} )
+                    , React.createElement('div', { style: { flex:1 }}, React.createElement('div', { style: { fontSize:13, fontWeight:700, color:"var(--tx)" }}, opt.label), React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" }}, opt.hint))
+                  )
+                ))
+              )
+              , refType !== "manual" && (
+                React.createElement('div', { style: { marginBottom:12 }}
+                  , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:"var(--tx3)", marginBottom:6 }}, "Размер в сантиметрах:"  )
+                  , React.createElement('div', { style: { display:"flex", gap:6, flexWrap:"wrap" }}
+                    , (refType==="door"?["80","90"]:refType==="tile"?["30","40","60"]:refType==="window"?["100","120","140"]:[]).map(v=>(
+                      React.createElement('button', { key: v, onClick: ()=>setRefValue(v), style: { padding:"8px 14px", borderRadius:9, border:`1.5px solid ${refValue===v?"var(--acc)":"var(--b1)"}`, background:refValue===v?"var(--acc3)":"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:14, fontWeight:700, color:refValue===v?"var(--acc2)":"var(--tx)" }}, v)
+                    ))
+                    , React.createElement('input', { type: "number", value: refValue, onChange: e=>setRefValue(e.target.value), placeholder: "см", style: { width:70, padding:"8px 10px", borderRadius:9, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:14, fontFamily:"inherit", outline:"none", textAlign:"center" }} )
+                  )
+                )
+              )
+              , React.createElement('button', { onClick: handleAnalyze, disabled: refType!=="manual" && !refValue,
+                style: { width:"100%", padding:"14px", borderRadius:13, border:"none", background:(refType==="manual"||refValue)?"linear-gradient(135deg,#6366f1,#8b5cf6)":"var(--s3)", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit", opacity:(refType==="manual"||refValue)?1:0.5 }}, "🤖 Анализировать ›"
+
+              )
+            )
+          )
+
+          /* PROCESSING */
+          , step === "processing" && (
+            React.createElement('div', { style: { textAlign:"center", padding:"40px 0" }}
+              , React.createElement('div', { style: { fontSize:56, marginBottom:16 }}, "🤖")
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:800, color:"var(--tx)", marginBottom:8 }}, "Измеряю помещение..." )
+              , React.createElement('div', { style: { fontSize:12, color:"var(--tx3)", marginBottom:24, lineHeight:1.6 }}, "AI анализирует пропорции и рассчитывает реальные размеры"      )
+              , React.createElement('div', { style: { background:"var(--s2)", borderRadius:8, height:8, overflow:"hidden", margin:"0 20px 8px" }}
+                , React.createElement('div', { style: { height:"100%", background:"linear-gradient(90deg,#6366f1,#8b5cf6)", borderRadius:8, width:`${progress}%`, transition:"width 0.5s ease" }} )
+              )
+              , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" }}, progress, "%")
+            )
+          )
+
+          /* RESULT */
+          , step === "result" && result && (
+            React.createElement('div', {}
+              , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:8, marginBottom:14, padding:"10px 12px", borderRadius:11, background:`${CONF[result.confidence][0]}22`, border:`1px solid ${CONF[result.confidence][0]}44` }}
+                , React.createElement('div', { style: { width:8, height:8, borderRadius:"50%", background:CONF[result.confidence][0], flexShrink:0 }} )
+                , React.createElement('span', { style: { fontSize:12, fontWeight:700, color:CONF[result.confidence][0] }}, CONF[result.confidence][1])
+              )
+              , React.createElement('div', { style: { marginBottom:12 }}
+                , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:5 }}, "Название помещения" )
+                , React.createElement('input', { value: roomName, onChange: e=>setRoomName(e.target.value), style: IS} )
+              )
+              , React.createElement('div', { style: { background:"var(--s2)", borderRadius:13, padding:13, marginBottom:12 }}
+                , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:7, marginBottom:8 }}
+                  , [["Длина",result.length,"м","var(--acc2)"],["Ширина",result.width,"м","var(--acc2)"],["Высота",result.height,"м","var(--green)"]].map(([lbl,v,u,c])=>(
+                    React.createElement('div', { key: lbl, style: { background:"var(--s1)", borderRadius:10, padding:"10px 6px", textAlign:"center", border:"1px solid var(--b1)" }}
+                      , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:16, fontWeight:900, color:c }}, v.toFixed(2))
+                      , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", marginTop:2 }}, lbl, " (" , u, ")")
+                    )
+                  ))
+                )
+                , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:7 }}
+                  , [["Площадь пола",result.floor.toFixed(2)+" м²"],["Периметр",result.perimeter.toFixed(2)+" м.п."],["Стены чист.",result.wallsNet.toFixed(2)+" м²"],["Дв / Окна",`${result.doors} / ${result.windows} шт`]].map(([l,v])=>(
+                    React.createElement('div', { key: l, style: { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"7px 10px", background:"var(--s1)", borderRadius:9, border:"1px solid var(--b1)" }}
+                      , React.createElement('span', { style: { fontSize:10, color:"var(--tx3)" }}, l)
+                      , React.createElement('span', { style: { fontSize:12, fontWeight:700, color:"var(--tx)" }}, v)
+                    )
+                  ))
+                )
+              )
+              /* Floor plan */
+              , React.createElement('div', { style: { background:"var(--s2)", borderRadius:13, padding:13, marginBottom:14 }}
+                , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.07em", marginBottom:8 }}, "План помещения" )
+                , React.createElement('svg', { width: "100%", viewBox: "0 0 220 160"   , style: { display:"block" }}
+                  , (()=>{
+                    const sc=Math.min(160/result.length,120/result.width);
+                    const rw=result.length*sc, rh=result.width*sc;
+                    const ox=(220-rw)/2, oy=(160-rh)/2;
+                    return React.createElement('g', {}
+                      , React.createElement('rect', { x: ox, y: oy, width: rw, height: rh, fill: "rgba(99,102,241,0.08)", stroke: "var(--acc)", strokeWidth: "2", rx: "3"})
+                      , React.createElement('line', { x1: ox+8, y1: oy, x2: ox+8+28, y2: oy, stroke: "var(--bg)", strokeWidth: "3"})
+                      , React.createElement('path', { d: `M${ox+8},${oy} A28,28 0 0,1 ${ox+8+19.8},${oy+19.8}`, fill: "none", stroke: "var(--acc2)", strokeWidth: "1.5", strokeDasharray: "3,2"})
+                      , React.createElement('rect', { x: ox+rw-26, y: oy-1, width: 24, height: 4, fill: "var(--s1)", stroke: "var(--cyan)", strokeWidth: "1.5"})
+                      , React.createElement('line', { x1: ox+rw-14, y1: oy-1, x2: ox+rw-14, y2: oy+3, stroke: "var(--cyan)", strokeWidth: "1"})
+                      , React.createElement('text', { x: ox+rw/2, y: oy-6, textAnchor: "middle", fill: "var(--tx)", fontSize: "10", fontWeight: "700"}, result.length.toFixed(2), " м" )
+                      , React.createElement('text', { x: ox-6, y: oy+rh/2, textAnchor: "middle", fill: "var(--tx)", fontSize: "10", fontWeight: "700", transform: `rotate(-90,${ox-6},${oy+rh/2})`}, result.width.toFixed(2), " м" )
+                    );
+                  })()
+                )
+              )
+              , React.createElement('div', { style: { display:"flex", gap:8 }}
+                , React.createElement('button', { onClick: ()=>{setStep("intro");setResult(null);}, style: { flex:1, padding:"12px", borderRadius:12, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx3)", fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Переснять")
+                , React.createElement('button', { onClick: handleCreate, style: { flex:2, padding:"12px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#6366f1,#8b5cf6)", color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "✓ Добавить помещение"  )
+              )
+            )
+          )
+
+          /* ERROR */
+          , step === "error" && (
+            React.createElement('div', { style: { textAlign:"center", padding:"28px 0" }}
+              , React.createElement('div', { style: { fontSize:48, marginBottom:12 }}, "⚠️")
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:700, color:"var(--red)", marginBottom:8 }}, "Не удалось измерить"  )
+              , React.createElement('div', { style: { fontSize:13, color:"var(--tx3)", marginBottom:20 }}, errorMsg)
+              , React.createElement('button', { onClick: ()=>setStep("intro"), style: { padding:"12px 28px", borderRadius:12, border:"none", background:"var(--acc)", color:"#fff", fontWeight:700, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Попробовать снова" )
+            )
+          )
+
+        )
+      )
+    )
+  );
+}
+
+function RoomsScreen({ state, dispatch, projectId, navigate }) {
+  const project = state.projects.find(p => p.id === projectId);
+  const [showModal, setShowModal] = useState(false);
+  const [editRoom, setEditRoom] = useState(null);
+  const priceBook = state.priceBook || {};
+
+  if (!project) return null;
+  const rooms = project.rooms || [];
+
+  const totalFloor = rooms.reduce((s, r) => s + (r.floor || 0), 0);
+  const totalWalls = rooms.reduce((s, r) => s + (r.wallsNet || 0), 0);
+  const totalPerim = rooms.reduce((s, r) => s + (r.perimeter || 0), 0);
+  const totalWorks = rooms.reduce((s, r) => s + (r.works || []).reduce((ws, w) => ws + w.qty * w.price, 0), 0);
+
+  const handleSave = (room) => {
+    const existing = editRoom ? (project.rooms || []).find(r => r.id === room.id) : null;
+    const merged = existing ? { ...room, works: existing.works || [] } : { ...room, works: [] };
+    if (editRoom) {
+      dispatch({ type: "UPDATE_ROOM", pid: projectId, room: merged });
+    } else {
+      dispatch({ type: "ADD_ROOM", pid: projectId, room: merged });
+    }
+    setShowModal(false);
+    setEditRoom(null);
+  };
+
+  const handleAddWork = (roomId, work) => {
+    const room = (project.rooms || []).find(r => r.id === roomId);
+    if (!room) return;
+    const updatedRoom = { ...room, works: [...(room.works || []), work] };
+    dispatch({ type: "UPDATE_ROOM", pid: projectId, room: updatedRoom });
+    // Auto-save to priceBook if flagged
+    if (work._saveToBook) {
+      dispatch({ type: "UPDATE_PRICE_BOOK", name: work.name, price: work.price });
+    }
+  };
+
+  const handleDeleteWork = (roomId, workId) => {
+    const room = (project.rooms || []).find(r => r.id === roomId);
+    if (!room) return;
+    const updatedRoom = { ...room, works: (room.works || []).filter(w => w.id !== workId) };
+    dispatch({ type: "UPDATE_ROOM", pid: projectId, room: updatedRoom });
+  };
+
+  return (
+    React.createElement('div', { style: { minHeight: "100%", background: "var(--bg)", paddingBottom: 100 }}
+      /* Header */
+      , React.createElement('div', { style: { background: "linear-gradient(135deg,#0f766e,#0d9488)", padding: "48px 16px 20px" }}
+        , React.createElement('button', { onClick: () => navigate("project", { projectId }), style: { background: "rgba(255,255,255,0.06)", border: "none", borderRadius: 10, padding: "7px 12px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, marginBottom: 14 }}
+          , React.createElement(Icon, { name: "back", size: 16, color: "#fff"} )
+          , React.createElement('span', { style: { color: "var(--tx)", fontSize: 13, fontWeight: 600 }}, "К проекту" )
+        )
+        , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 18, fontWeight: 800, color: "var(--tx)", marginBottom: 2 }}, "Помещения")
+        , React.createElement('div', { style: { fontSize: 12, color: "var(--tx2)", marginBottom: 14 }}, project.name)
+
+        , rooms.length > 0 && (
+          React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}
+            , [
+              { label: "Пол / Потолок", val: `${totalFloor.toFixed(2)} м²`, bg: "rgba(255,255,255,0.15)", col: "#fff" },
+              { label: "Периметр", val: `${totalPerim.toFixed(2)} м.п.`, bg: "rgba(255,255,255,0.12)", col: "#a7f3d0" },
+              { label: "Стены чист.", val: `${totalWalls.toFixed(2)} м²`, bg: "rgba(255,255,255,0.12)", col: "#fde68a" },
+              { label: "Смета работ", val: totalWorks > 0 ? fmt(totalWorks) : `${rooms.length} пом.`, bg: "rgba(255,255,255,0.12)", col: "#bfdbfe" },
+            ].map((s, i) => (
+              React.createElement('div', { key: i, style: { background: s.bg, borderRadius: 12, padding: "10px 12px", border: "1px solid rgba(255,255,255,0.1)" }}
+                , React.createElement('div', { style: { fontSize: 10, color: "rgba(255,255,255,0.6)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 }}, s.label)
+                , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 800, color: s.col }}, s.val)
+              )
+            ))
+          )
+        )
+      )
+
+      , React.createElement('div', { style: { padding: 16 }}
+        , rooms.length === 0 && (
+          React.createElement('div', { style: { textAlign: "center", padding: "48px 20px", color: "var(--tx3)" }}
+            , React.createElement('div', { style: { fontSize: 52, marginBottom: 12 }}, "🏠")
+            , React.createElement('div', { style: { fontWeight: 700, marginBottom: 6, color: "var(--tx2)" }}, "Нет помещений" )
+            , React.createElement('div', { style: { fontSize: 13 }}, "Добавьте комнату для расчёта площадей и сметы работ"       )
+          )
+        )
+
+        , rooms.map(room => (
+          React.createElement(RoomCard, {
+            key: room.id,
+            room: room,
+            projectId: projectId,
+            dispatch: dispatch,
+            navigate: navigate,
+            onEdit: () => { setEditRoom(room); setShowModal(true); }}
+          )
+        ))
+
+        , React.createElement('button', { onClick: () => { setEditRoom(null); setShowModal(true); }, style: {
+          background: "var(--s1)", border: "2px dashed #99f6e4", borderRadius: "var(--r)", padding: 16,
+          width: "100%", cursor: "pointer", color: "var(--green)", fontWeight: 700, fontSize: 14,
+          fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+        }}
+          , React.createElement(Icon, { name: "plus", size: 18, color: "#0f766e"} ), " Добавить помещение"
+        )
+      )
+
+      , showModal && (
+        React.createElement(RoomModal, {
+          open: showModal,
+          onClose: () => { setShowModal(false); setEditRoom(null); },
+          onSave: handleSave,
+          initial: editRoom,
+          priceBook: priceBook}
+        )
+      )
+    )
+  );
+}
+
+// --- Project Detail ---
+
+// ==================== PLAN RECOGNITION MODAL ====================
+function PlanRecognitionModal({ open, onClose, onRoomsDetected }) {
+  const [step, setStep]           = useState("upload"); // upload | ceiling | processing | done | error
+  const [imageFile, setImageFile] = useState(null);
+  const [imageB64, setImageB64]   = useState(null);
+  const [ceilingH, setCeilingH]   = useState("2.7");
+  const [progress, setProgress]   = useState(0);
+  const [rooms, setRooms]         = useState([]);
+  const [selected, setSelected]   = useState({}); // roomId -> bool
+  const [errorMsg, setErrorMsg]   = useState("");
+  const fileRef = useRef();
+
+  useEffect(() => {
+    if (!open) { setStep("upload"); setImageFile(null); setImageB64(null); setProgress(0); setRooms([]); setSelected({}); setErrorMsg(""); }
+  }, [open]);
+
+  const handleFile = (file) => {
+    if (!file || !file.type.startsWith("image/")) return;
+    setImageFile(file);
+    const reader = new FileReader();
+    reader.onload = e => { setImageB64(e.target.result.split(",")[1]); setStep("ceiling"); };
+    reader.readAsDataURL(file);
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    handleFile(e.dataTransfer.files[0]);
+  };
+
+  const handleRecognize = async () => {
+    if (!imageB64) return;
+    setStep("processing");
+    setProgress(0);
+
+    // Animated progress
+    const progressInterval = setInterval(() => {
+      setProgress(p => p < 85 ? p + Math.random() * 12 : p);
+    }, 400);
+
+    try {
+      const systemPrompt = `Ты — эксперт по архитектурным планам. Тебе дают фото или скан плана квартиры/дома.
+Твоя задача: найти ВСЕ помещения на плане, определить их размеры и вернуть ТОЛЬКО JSON без лишнего текста.
+
+Правила:
+1. Ищи подписи помещений (кухня, гостиная, спальня, санузел, коридор, балкон и т.д.)
+2. Ищи числовые размеры в метрах (формат: 3.2x4.5 или "3200" мм или "3,2 м")
+3. Если размеры не указаны явно — оцени пропорционально
+4. Высота потолков будет задана отдельно
+5. Верни ТОЛЬКО валидный JSON:
+
+{"rooms":[{"name":"Гостиная","length":4.5,"width":3.2},{"name":"Кухня","length":3.0,"width":2.8},...]}
+
+Если план не распознан или изображение не является планом — верни: {"error":"not_a_plan"}`;
+
+      const response = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 1000,
+          system: systemPrompt,
+          messages: [{
+            role: "user",
+            content: [
+              { type: "image", source: { type: "base64", media_type: imageFile.type, data: imageB64 } },
+              { type: "text", text: "Распознай помещения на этом плане. Верни только JSON." }
+            ]
+          }]
+        })
+      });
+
+      clearInterval(progressInterval);
+      setProgress(95);
+
+      const data = await response.json();
+      const text = (data.content || []).map(b => b.text || "").join("").trim();
+
+      // Parse JSON from response
+      let parsed;
+      try {
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        parsed = JSON.parse(jsonMatch ? jsonMatch[0] : text);
+      } catch (e2) {
+        throw new Error("Не удалось распознать план. Попробуйте другое фото.");
+      }
+
+      if (parsed.error === "not_a_plan") {
+        throw new Error("Изображение не похоже на план квартиры. Загрузите чёткий план с размерами.");
+      }
+
+      if (!parsed.rooms || parsed.rooms.length === 0) {
+        throw new Error("Помещения не найдены. Убедитесь, что план читаемый и содержит подписи комнат.");
+      }
+
+      const h = parseFloat(ceilingH) || 2.7;
+      const detectedRooms = parsed.rooms.map(r => {
+        const l = parseFloat(r.length) || 3;
+        const w = parseFloat(r.width) || 3;
+        const floor = l * w;
+        const perimeter = 2 * (l + w);
+        const wallsTotal = perimeter * h;
+        const deductions = 0;
+        return {
+          id: uid(), name: r.name || "Помещение",
+          shapeType: "standard", length: l, width: w, height: h,
+          doors: 1, windows: 1,
+          floor, ceiling: floor, perimeter,
+          wallsTotal, wallsNet: wallsTotal - deductions, deductions,
+          works: [],
+        };
+      });
+
+      setProgress(100);
+      setRooms(detectedRooms);
+      const initSelected = {};
+      detectedRooms.forEach(r => { initSelected[r.id] = true; });
+      setSelected(initSelected);
+      setStep("done");
+
+    } catch (err) {
+      clearInterval(progressInterval);
+      setErrorMsg(err.message || "Произошла ошибка при распознавании.");
+      setStep("error");
+    }
+  };
+
+  const handleApply = () => {
+    const toAdd = rooms.filter(r => selected[r.id]);
+    if (toAdd.length === 0) return;
+    onRoomsDetected(toAdd);
+    onClose();
+  };
+
+  if (!open) return null;
+
+  return (
+    React.createElement(Modal, { open: open, onClose: onClose, title: "🔍 Распознать план"  }
+      /* Upload step */
+      , step === "upload" && (
+        React.createElement('div', {}
+          , React.createElement('div', { style: { background: "var(--s2)", border: "1px solid var(--b1)", borderRadius: 10, padding: "11px 14px", marginBottom: 16, fontSize: 12, color: "var(--tx2)", lineHeight: 1.6 }}, "📐 Загрузите фото или скан плана квартиры. ИИ автоматически распознает все помещения и их размеры."
+
+          )
+
+          , React.createElement('div', {
+            onDrop: handleDrop, onDragOver: e => e.preventDefault(),
+            onClick: () => fileRef.current.click(),
+            style: {
+              border: "2px dashed rgba(124,111,255,0.4)", borderRadius: "var(--r)",
+              padding: "36px 20px", textAlign: "center", cursor: "pointer",
+              background: "var(--s2)", marginBottom: 16, transition: "all 0.2s",
+            },
+            onMouseEnter: e => { e.currentTarget.style.borderColor = "var(--acc)"; e.currentTarget.style.background = "var(--acc3)"; },
+            onMouseLeave: e => { e.currentTarget.style.borderColor = "rgba(124,111,255,0.4)"; e.currentTarget.style.background = "var(--s2)"; }}
+
+            , React.createElement('input', { ref: fileRef, type: "file", accept: "image/*", style: { display: "none" }, onChange: e => handleFile(e.target.files[0])} )
+            , React.createElement('div', { style: { fontSize: 44, marginBottom: 12 }}, "🗺️")
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 700, color: "var(--tx)", marginBottom: 6 }}, "Загрузить план" )
+            , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)" }}, "Нажмите или перетащите изображение сюда"    )
+            , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", marginTop: 6 }}, "JPG, PNG, PDF — любой формат"     )
+          )
+
+          , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}
+            , [
+              { icon: "📷", text: "Фото плана из застройщика" },
+              { icon: "🖨️", text: "Скан технического паспорта" },
+              { icon: "📱", text: "Скриншот из приложения" },
+            ].map((t, i) => (
+              React.createElement('div', { key: i, style: { background: "var(--s2)", border: "1px solid var(--b1)", borderRadius: 10, padding: "10px 8px", textAlign: "center" }}
+                , React.createElement('div', { style: { fontSize: 22, marginBottom: 5 }}, t.icon)
+                , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", lineHeight: 1.4 }}, t.text)
+              )
+            ))
+          )
+        )
+      )
+
+      /* Ceiling height step */
+      , step === "ceiling" && (
+        React.createElement('div', {}
+          /* Preview of uploaded image */
+          , imageB64 && (
+            React.createElement('div', { style: { borderRadius: 12, overflow: "hidden", marginBottom: 16, border: "1px solid var(--b2)" }}
+              , React.createElement('img', { src: `data:image/jpeg;base64,${imageB64}`, alt: "Plan", style: { width: "100%", maxHeight: 200, objectFit: "cover", display: "block" }} )
+            )
+          )
+          , React.createElement('div', { style: { background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: 10, padding: "11px 14px", marginBottom: 16, fontSize: 12, color: "var(--green)", fontWeight: 600 }}, "✅ План загружен! Укажите высоту потолков перед распознаванием."
+
+          )
+
+          , React.createElement('div', { style: { marginBottom: 16 }}
+            , React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}, "Высота потолков (м)"  )
+            , React.createElement('div', { style: { display: "flex", gap: 8, marginBottom: 10 }}
+              , ["2.5", "2.7", "2.8", "3.0", "3.2"].map(h => (
+                React.createElement('button', { key: h, onClick: () => setCeilingH(h), style: {
+                  flex: 1, padding: "9px 4px", border: ceilingH === h ? "1.5px solid var(--acc)" : "1px solid var(--b1)",
+                  borderRadius: 9, background: ceilingH === h ? "var(--acc3)" : "var(--s2)",
+                  color: ceilingH === h ? "var(--acc2)" : "var(--tx2)",
+                  fontFamily: "inherit", fontWeight: 700, fontSize: 13, cursor: "pointer",
+                }}
+                  , h
+                )
+              ))
+            )
+            , React.createElement('input', { type: "number", step: "0.05", min: "2", max: "5", value: ceilingH, onChange: e => setCeilingH(e.target.value),
+              style: { width: "100%", padding: "11px 14px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 15, fontWeight: 700, color: "var(--tx)", background: "var(--s2)", outline: "none", fontFamily: "inherit", textAlign: "center" },
+              onFocus: e => e.target.style.borderColor = "var(--acc)", onBlur: e => e.target.style.borderColor = "var(--b1)"} )
+          )
+
+          , React.createElement('div', { style: { display: "flex", gap: 10 }}
+            , React.createElement(Btn, { variant: "secondary", onClick: () => setStep("upload"), full: true}, "‹ Назад" )
+            , React.createElement(Btn, { onClick: handleRecognize, full: true}, "🤖 Распознать план"  )
+          )
+        )
+      )
+
+      /* Processing step */
+      , step === "processing" && (
+        React.createElement('div', { style: { textAlign: "center", padding: "30px 20px" }}
+          , React.createElement('div', { style: { fontSize: 54, marginBottom: 16, animation: "pulse 1.5s infinite" }}, "🤖")
+          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 800, color: "var(--tx)", marginBottom: 8 }}, "Анализирую план..." )
+          , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)", marginBottom: 24, lineHeight: 1.6 }}, "ИИ распознаёт помещения и их размеры. Обычно занимает 5–15 секунд."         )
+          /* Progress bar */
+          , React.createElement('div', { style: { background: "var(--s2)", borderRadius: 8, height: 8, overflow: "hidden", marginBottom: 12 }}
+            , React.createElement('div', { style: { height: "100%", borderRadius: 8, background: "linear-gradient(90deg, var(--acc), var(--acc2))", width: `${progress}%`, transition: "width 0.4s ease" }} )
+          )
+          , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)" }}, Math.round(progress), "%")
+          , React.createElement('div', { style: { marginTop: 20, display: "flex", flexDirection: "column", gap: 6 }}
+            , ["Загрузка изображения...", "Определение контуров помещений...", "Распознавание подписей...", "Вычисление площадей..."].map((s, i) => (
+              React.createElement('div', { key: i, style: { fontSize: 11, color: progress > i * 25 ? "var(--green)" : "var(--tx3)", transition: "color 0.5s", display: "flex", alignItems: "center", gap: 6 }}
+                , React.createElement('span', {}, progress > i * 25 ? "✓" : "○"), " " , s
+              )
+            ))
+          )
+        )
+      )
+
+      /* Done step */
+      , step === "done" && rooms.length > 0 && (() => {
+        const selectedCount = Object.values(selected).filter(Boolean).length;
+        const allSelected = selectedCount === rooms.length;
+        return (
+          React.createElement('div', {}
+            /* Header banner */
+            , React.createElement('div', { style: { background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: 10, padding: "10px 14px", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}
+              , React.createElement('div', { style: { fontSize: 12, color: "var(--green)", fontWeight: 700 }}, "✅ Найдено "
+                  , rooms.length, " помещений"
+              )
+              , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}, "Выбрано: " , selectedCount)
+            )
+
+            /* Select all / none */
+            , React.createElement('div', { style: { display: "flex", gap: 8, marginBottom: 10 }}
+              , React.createElement('button', { onClick: () => { const s = {}; rooms.forEach(r => s[r.id] = true); setSelected(s); },
+                style: { flex: 1, padding: "7px", borderRadius: 8, border: "1px solid var(--b1)", background: allSelected ? "var(--acc3)" : "var(--s2)", color: allSelected ? "var(--acc2)" : "var(--tx3)", fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}, "✓ Выбрать все"
+
+              )
+              , React.createElement('button', { onClick: () => setSelected({}),
+                style: { flex: 1, padding: "7px", borderRadius: 8, border: "1px solid var(--b1)", background: "var(--s2)", color: "var(--tx3)", fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}, "✕ Снять все"
+
+              )
+            )
+
+            /* Room list */
+            , React.createElement('div', { style: { maxHeight: 320, overflowY: "auto", marginBottom: 14, display: "flex", flexDirection: "column", gap: 6 }}
+              , rooms.map((room, i) => {
+                const isOn = !!selected[room.id];
+                const roomIcon = (room.name||"").toLowerCase().includes("кухн") ? "🍳" :
+                  (room.name||"").toLowerCase().includes("санузел") || (room.name||"").toLowerCase().includes("ванн") ? "🚿" :
+                  (room.name||"").toLowerCase().includes("коридор") || (room.name||"").toLowerCase().includes("прихож") ? "🚪" :
+                  (room.name||"").toLowerCase().includes("балкон") || (room.name||"").toLowerCase().includes("лоджия") ? "🌿" : "🛋️";
+                return (
+                  React.createElement('div', { key: room.id,
+                    onClick: () => setSelected(s => ({ ...s, [room.id]: !s[room.id] })),
+                    style: {
+                      background: isOn ? "var(--acc3)" : "var(--s2)",
+                      border: isOn ? "1.5px solid rgba(124,111,255,0.35)" : "1.5px solid var(--b1)",
+                      borderRadius: 12, padding: "11px 13px",
+                      display: "flex", alignItems: "center", gap: 11,
+                      cursor: "pointer", transition: "all 0.15s",
+                      animation: "popIn 0.25s ease both", animationDelay: `${i * 0.04}s`,
+                      opacity: isOn ? 1 : 0.55,
+                    }}
+                    /* Checkbox */
+                    , React.createElement('div', { style: {
+                      width: 22, height: 22, borderRadius: 7, flexShrink: 0,
+                      background: isOn ? "var(--acc)" : "var(--s3)",
+                      border: isOn ? "none" : "1.5px solid var(--b2)",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                      boxShadow: isOn ? "0 2px 8px rgba(108,99,255,0.4)" : "none",
+                      transition: "all 0.15s",
+                    }}
+                      , isOn && React.createElement(Icon, { name: "check", size: 13, color: "#fff"} )
+                    )
+                    /* Icon */
+                    , React.createElement('div', { style: { width: 38, height: 38, borderRadius: 10, background: isOn ? "rgba(108,99,255,0.15)" : "var(--s1)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0, overflow: "hidden" }}
+                      , room.photo
+                        ? React.createElement('img', { src: room.photo, alt: "", style: { width: "100%", height: "100%", objectFit: "cover" }} )
+                        : roomIcon
+                      
+                    )
+                    /* Info */
+                    , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+                      , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: "var(--tx)", marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}, room.name)
+                      , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}
+                        , room.length.toFixed(2), " × "  , room.width.toFixed(2), " м · h="   , room.height, " м"
+                      )
+                    )
+                    /* Area */
+                    , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 }}
+                      , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 800, color: isOn ? "var(--acc2)" : "var(--tx3)" }}, room.floor.toFixed(2))
+                      , React.createElement('div', { style: { fontSize: 9, color: "var(--tx3)" }}, "м²")
+                    )
+                  )
+                );
+              })
+            )
+
+            , React.createElement('div', { style: { display: "flex", gap: 10 }}
+              , React.createElement(Btn, { variant: "secondary", onClick: () => setStep("upload"), full: true}, "↺ Другой план"  )
+              , React.createElement(Btn, { onClick: handleApply, full: true, disabled: selectedCount === 0}, "✓ Добавить "
+                  , selectedCount > 0 ? selectedCount : "", " " , selectedCount === 1 ? "помещение" : selectedCount > 1 && selectedCount < 5 ? "помещения" : "помещений"
+              )
+            )
+          )
+        );
+      })()
+
+      /* Error step */
+      , step === "error" && (
+        React.createElement('div', { style: { textAlign: "center", padding: "20px 10px" }}
+          , React.createElement('div', { style: { fontSize: 48, marginBottom: 12 }}, "⚠️")
+          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 700, color: "var(--red)", marginBottom: 8 }}, "Ошибка распознавания" )
+          , React.createElement('div', { style: { fontSize: 13, color: "var(--tx2)", lineHeight: 1.6, marginBottom: 24 }}, errorMsg)
+          , React.createElement(Btn, { onClick: () => setStep("upload"), full: true}, "‹ Попробовать ещё раз"   )
+        )
+      )
+    )
+  );
+}
+
+// ==================== ADD SECTION PANEL ====================
+// Which room measurement field to auto-use as qty for each stage
+// Smart qty resolver: given a work item (name, unit) + room measurements + stageId -> best qty
+function resolveAutoQty(work, room, stageId) {
+  if (!room) return work.qty || 1;
+  const u = (work.unit || "").toLowerCase();
+  const n = (work.name || "").toLowerCase();
+  // Helper: round to 1 decimal
+  const r1 = v => Math.round((v || 0) * 10) / 10;
+
+  // By unit first
+  if (u === "м.п." || u === "п.м." || u === "пм" || u === "м") return r1(room.perimeter) || 1;
+  if (u === "шт" || u === "ед" || u === "к-т" || u === "компл") return work.qty || 1;
+
+  // For м² — figure out which surface by stage and name keywords
+  if (u === "м²" || u === "кв.м" || u === "кв.м.") {
+    if (/пол|стяжк|налив|ламинат|линолеум|плитк.*пол|керамогранит/i.test(n)) return r1(room.floor) || 0;
+    if (/потолок|побелк|натяжн|гипсокартон.*пот|штукатурк.*пот/i.test(n)) return r1(room.ceiling) || 0;
+    if (/стен|обои|штукатурк|шпакл|окрас|краск|грунт|плитк.*стен/i.test(n)) return r1(room.wallsNet) || 0;
+    if (stageId === "floor")   return r1(room.floor)    || 0;
+    if (stageId === "ceiling") return r1(room.ceiling)  || 0;
+    if (stageId === "walls" || stageId === "finish") return r1(room.wallsNet) || 0;
+    if (stageId === "prep")    return r1(room.floor)    || 0;
+    return r1(room.floor) || 0;
+  }
+  return work.qty || 1;
+}
+
+// Get measurement label and value for display in room cards
+function getRoomMeasurements(room) {
+  return [
+    { key: "floor",      label: "Пол",          val: room.floor,      unit: "м²",  icon: "🟫" },
+    { key: "ceiling",    label: "Потолок",       val: room.ceiling,    unit: "м²",  icon: "🔲" },
+    { key: "wallsNet",   label: "Стены (чист.)", val: room.wallsNet,   unit: "м²",  icon: "🖌️" },
+    { key: "wallsTotal", label: "Стены (общ.)",  val: room.wallsTotal, unit: "м²",  icon: "▪️" },
+    { key: "perimeter",  label: "Периметр",      val: room.perimeter,  unit: "м.п.", icon: "📐" },
+  ].filter(m => m.val > 0);
+}
+
+const STAGE_QTY_FIELD = {
+  prep:     "floor",      // Подготовка -> площадь пола
+  floor:    "floor",      // Полы -> площадь пола
+  walls:    "wallsNet",   // Стены -> стены чистые (за вычетом дверей/окон)
+  ceiling:  "ceiling",    // Потолок -> площадь потолка
+  finish:   "wallsNet",   // Финишная -> стены чистые
+  plumbing: null,         // Сантехника -> qty = 1 (штука)
+  electric: null,         // Электрика -> qty = 1
+  doors:    "doors",      // Двери -> кол-во дверей
+  other:    null,         // Прочее -> qty = 1
+};
+
+const SECTION_WORKS_MAP = {
+  prep:     ["Демонтаж покрытия пола","Демонтаж плитки","Демонтаж перегородки","Демонтаж дверного блока","Вынос мусора","Грунтовка поверхности","Выравнивание стен (черновое)"],
+  floor:    ["Стяжка цементная","Стяжка полусухая","Наливной пол","Укладка ламината","Укладка паркетной доски","Укладка плитки (пол)","Укладка тёплого пола","Монтаж плинтуса"],
+  walls:    ["Штукатурка гипсовая","Штукатурка цементная","Шпаклёвка финишная","Поклейка обоев","Укладка плитки (стены)","Покраска стен","Монтаж гипсокартона (стены)","Устройство перегородки ГКЛ"],
+  ceiling:  ["Шпаклёвка потолка","Натяжной потолок","Гипсокартон потолок","Покраска потолка","Монтаж подвесного потолка","Побелка потолка","Монтаж потолочного плинтуса"],
+  plumbing: ["Монтаж смесителя","Прокладка труб водоснабжения","Монтаж унитаза","Монтаж ванны","Монтаж душевой кабины","Монтаж полотенцесушителя","Монтаж канализации"],
+  electric: ["Монтаж розетки","Монтаж выключателя","Прокладка кабеля","Монтаж распределительного щита","Монтаж светильника","Монтаж тёплого пола (эл.)","Разводка электропроводки"],
+  doors:    ["Установка межкомнатной двери","Установка входной двери","Монтаж оконного блока","Отделка откосов","Монтаж наличников","Монтаж подоконника","Регулировка фурнитуры"],
+  finish:   ["Покраска финишная (стены)","Монтаж плинтуса напольного","Монтаж молдинга","Затирка швов плитки","Чистовая уборка","Монтаж карнизов","Декоративная штукатурка"],
+  other:    [],
+};
+
+// -- Inline group editor (lightweight, appears inside AddSectionPanel) --
+function InlineGroupEditor({ group, onClose, onSave }) {
+  const [items, setItems] = useState(group.items.map(i => ({ ...i })));
+  const [newName, setNewName] = useState("");
+  const [newUnit, setNewUnit] = useState("м²");
+  const [newPrice, setNewPrice] = useState("");
+
+  const handleAdd = () => {
+    if (!newName.trim()) return;
+    setItems(prev => [...prev, { id: uid(), name: newName.trim(), unit: newUnit, price: parseFloat(newPrice)||0, qty: 1 }]);
+    setNewName(""); setNewPrice("");
+  };
+
+  const handleSave = () => onSave({ ...group, items });
+
+  return (
+    React.createElement('div', { style: { background:"var(--s1)", border:"1.5px solid var(--gold)", borderRadius:12, padding:12, marginBottom:8 }}
+      , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:8, marginBottom:10 }}
+        , React.createElement('span', { style: { fontSize:16 }}, group.icon)
+        , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:11, fontWeight:800, color:"var(--gold)", flex:1 }}, group.name)
+        , React.createElement('button', { onClick: onClose, style: { background:"none", border:"none", cursor:"pointer", color:"var(--tx3)", fontSize:14 }}, "✕")
+      )
+      , React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:4, maxHeight:160, overflowY:"auto", marginBottom:8 }}
+        , items.map((item, i) => (
+          React.createElement('div', { key: item.id, style: { display:"flex", alignItems:"center", gap:6, padding:"5px 8px", background:"var(--s2)", borderRadius:8 }}
+            , React.createElement('div', { style: { flex:1, fontSize:11, color:"var(--tx)", fontWeight:600 }}, item.name)
+            , React.createElement('input', { type: "number", value: item.price, onChange: e => setItems(prev => prev.map((it,j) => j===i ? {...it, price:parseFloat(e.target.value)||0} : it)),
+              style: { width:60, padding:"3px 6px", borderRadius:6, border:"1px solid var(--b1)", background:"var(--s1)", color:"var(--tx)", fontSize:11, fontFamily:"inherit", outline:"none", textAlign:"center" }} )
+            , React.createElement('span', { style: { fontSize:10, color:"var(--tx3)" }}, item.unit)
+            , React.createElement('button', { onClick: () => setItems(prev => prev.filter((_,j)=>j!==i)),
+              style: { background:"none", border:"none", cursor:"pointer", color:"#ef4444", fontSize:13 }}, "✕")
+          )
+        ))
+      )
+      , React.createElement('div', { style: { display:"flex", gap:5, marginBottom:8 }}
+        , React.createElement('input', { value: newName, onChange: e=>setNewName(e.target.value), placeholder: "Название работы" ,
+          style: { flex:2, padding:"6px 8px", borderRadius:7, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:11, fontFamily:"inherit", outline:"none" }} )
+        , React.createElement('input', { type: "number", value: newPrice, onChange: e=>setNewPrice(e.target.value), placeholder: "₽",
+          style: { width:55, padding:"6px 6px", borderRadius:7, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:11, fontFamily:"inherit", outline:"none", textAlign:"center" }} )
+        , React.createElement('select', { value: newUnit, onChange: e=>setNewUnit(e.target.value),
+          style: { width:52, padding:"6px 4px", borderRadius:7, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:11, fontFamily:"inherit", outline:"none" }}
+          , ["м²","шт","м.п.","компл.","мешок"].map(u=>React.createElement('option', { key: u}, u))
+        )
+        , React.createElement('button', { onClick: handleAdd, style: { padding:"6px 10px", borderRadius:7, background:"var(--acc)", border:"none", color:"#fff", fontSize:13, fontWeight:700, cursor:"pointer" }}, "+")
+      )
+      , React.createElement('button', { onClick: handleSave, style: { width:"100%", padding:"9px", borderRadius:9, background:"var(--gold)", border:"none", color:"#000", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}, "✓ Сохранить группу"
+
+      )
+    )
+  );
+}
+
+const PRESET_SECTIONS = [
+  { name: "🔨 Подготовка",         stageId: "prep",     desc: "Демонтаж, вывоз мусора" },
+  { name: "🟫 Полы",                stageId: "floor",    desc: "Стяжка, укладка покрытий" },
+  { name: "🖌️ Стены",               stageId: "walls",    desc: "Штукатурка, шпаклёвка, обои" },
+  { name: "🔲 Потолок",             stageId: "ceiling",  desc: "Побелка, гипсокартон, натяжной" },
+  { name: "🚿 Сантехника",          stageId: "plumbing", desc: "Трубы, смесители, унитазы" },
+  { name: "⚡ Электрика",           stageId: "electric", desc: "Проводка, розетки, щит" },
+  { name: "🚪 Двери и окна",        stageId: "doors",    desc: "Установка, откосы, наличники" },
+  { name: "✨ Финишная отделка",    stageId: "finish",   desc: "Покраска, плинтусы, молдинги" },
+  { name: "🖌️ Малярные работы",     stageId: null,       desc: "Грунтовка, шпаклёвка, покраска" },
+  { name: "🪟 Остекление",          stageId: null,       desc: "Окна, лоджии, витражи" },
+  { name: "🔧 Прочие работы",       stageId: "other",    desc: "Всё остальное" },
+];
+
+
+// -- Готовые наборы материалов ---------------------------------------------
+const MATERIAL_GROUPS_CATALOG = [];
+
+
+function AddSectionPanel({ project, onAdd, onCancel, state, dispatch, projectId, editSection }) {
+  // editSection = { id, name, _stageId } when editing existing section
+  const isEditMode = !!editSection;
+  const isMatMode  = _optionalChain([project, 'optionalAccess', _66 => _66.mode]) === "materials";
+
+  // steps: "choose" -> "works" -> "rooms" -> "materials" (mat mode only)
+  const [step, setStep] = useState(isEditMode ? "works" : "choose");
+  const [inlineEditGroup, setInlineEditGroup] = useState(null); // group being edited inline
+  // Materials step state
+  const [matSuggestions, setMatSuggestions]   = useState([]);
+  const [matSelected, setMatSelected]         = useState({});
+  const [matTab, setMatTab]                   = useState("suggested");
+  const [matCatStage, setMatCatStage]         = useState("all");
+  const [matSearch, setMatSearch]             = useState("");
+  const [matSetSearch, setMatSetSearch]       = useState("");
+  const [selectedMatSets, setSelectedMatSets] = useState(new Set());
+  const [pendingSectionId, setPendingSectionId] = useState(null);
+  const [customName, setCustomName] = useState(isEditMode ? "" : "");
+  const [pickedPreset, setPickedPreset] = useState(isEditMode
+    ? { name: editSection.name, stageId: editSection._stageId, desc: "" }
+    : null);
+  const [search, setSearch] = useState("");
+  const [selectedWorks, setSelectedWorks] = useState({});
+  const [customWork, setCustomWork] = useState({ name: "", unit: "м²", price: "", qty: "1" });
+  const [customWorkSections, setCustomWorkSections] = useState([]);
+  const [selectedRooms, setSelectedRooms] = useState({});
+  const [worksTab, setWorksTab] = useState("book");
+  const rooms = project.rooms || [];
+  const workGroups = state.workGroups || [];
+  const priceBook = state.priceBook || {};
+  const existingNames = new Set((project.sections || []).map(s => s.name.toLowerCase()));
+
+  // Determine section name and stageId BEFORE useEffect (avoids TDZ error)
+  const sectionName = isEditMode ? editSection.name : (pickedPreset ? pickedPreset.name : customName.trim());
+  const stageId = isEditMode ? editSection._stageId : (_optionalChain([pickedPreset, 'optionalAccess', _67 => _67.stageId]) || null);
+
+  // Auto-switch to book tab when entering works step with a known stageId
+  useEffect(() => {
+    if (step === "works" && stageId) {
+      setWorksTab("book");
+      setSearch(""); // clear search so suggestions are visible
+    }
+  }, [step, stageId]);
+
+  // Filtered + sorted price book — relevant works first
+  const suggestedNames = stageId ? (SECTION_WORKS_MAP[stageId] || []) : [];
+  const bookEntries = Object.entries(priceBook)
+    .filter(([n]) => n.toLowerCase().includes(search.toLowerCase()))
+    .sort(([a], [b]) => {
+      const ai = suggestedNames.indexOf(a);
+      const bi = suggestedNames.indexOf(b);
+      if (ai !== -1 && bi !== -1) return ai - bi;
+      if (ai !== -1) return -1;
+      if (bi !== -1) return 1;
+      return a.localeCompare(b, "ru");
+    });
+
+  const selectedWorksCount = Object.keys(selectedWorks).length;
+  const selectedRoomsCount = Object.values(selectedRooms).filter(Boolean).length;
+
+  const toggleWork = (name, unit, price) => {
+    setSelectedWorks(s => {
+      if (s[name]) { const n = { ...s }; delete n[name]; return n; }
+      return { ...s, [name]: { name, unit: unit || "м²", price: price || 0, qty: 1 } };
+    });
+  };
+
+  // Build material suggestions from selected works + room areas
+  const buildMatSuggestions = (works) => {
+    const matById = Object.fromEntries(CATALOG.map(m => [m.id, m]));
+    const agg = {};
+
+    // Use actual room areas if rooms are selected, otherwise use work qty directly
+    const selectedRoomList = rooms.filter(r => selectedRooms[r.id]);
+
+    works.forEach(w => {
+      const map = WORK_MATERIALS_MAP[w.name];
+      if (!map) return;
+
+      // Determine effective area/qty to multiply
+      let effectiveQty = w.qty || 1;
+      if (selectedRoomList.length > 0) {
+        // Re-resolve qty from actual rooms (same logic as resolveAutoQty)
+        effectiveQty = selectedRoomList.reduce((sum, room) => {
+          return sum + resolveAutoQty(w, room, stageId || "other");
+        }, 0);
+        if (effectiveQty === 0) effectiveQty = w.qty || 1;
+      }
+
+      map.forEach(({ id, qty: qPerUnit }) => {
+        const mat = matById[id];
+        if (!mat) return;
+        const total = effectiveQty * qPerUnit;
+        if (!agg[id]) agg[id] = { mat, qty: 0, reasons: [] };
+        agg[id].qty += total;
+        agg[id].reasons.push(`${w.name} × ${effectiveQty.toFixed(1)} ${w.unit}`);
+      });
+    });
+
+    return Object.entries(agg).map(([id, { mat, qty, reasons }]) => ({
+      id, mat,
+      qty: mat.unit === "м²" || mat.unit === "м.п." ? Math.ceil(qty * 10) / 10 : Math.ceil(qty),
+      price: mat.price,
+      reason: reasons.join(", "),
+    }));
+  };
+
+  const handleFinish = () => {
+    if (!sectionName) return;
+    const works = Object.values(selectedWorks);
+    const roomIds = Object.keys(selectedRooms).filter(id => selectedRooms[id]);
+
+    if (isEditMode) {
+      // Add to section items only if NO rooms selected (avoid duplicates)
+      if (works.length > 0 && roomIds.length === 0) {
+        const items = works.map(w => ({
+          id: uid(), name: w.name, unit: w.unit, price: w.price,
+          qty: w.qty || 1, type: "work",
+        }));
+        dispatch({ type: "ADD_ITEMS_BULK", pid: projectId, sid: editSection.id, items });
+      }
+      if (works.length > 0 && roomIds.length > 0) {
+        roomIds.forEach(rid => {
+          const room = rooms.find(r => r.id === rid);
+          dispatch({
+            type: "ADD_WORKS_BULK", pid: projectId, rid,
+            works: works.map(w => ({
+              id: uid(), stageId: stageId || "other",
+              name: w.name, unit: w.unit, price: w.price,
+              qty: resolveAutoQty(w, room, stageId || "other"),
+            })),
+          });
+        });
+      }
+      // In mat mode: go to materials step
+      if (isMatMode && works.length > 0) {
+        const sugg = buildMatSuggestions(works);
+        setMatSuggestions(sugg);
+        const pre = {};
+        sugg.forEach(s => { pre[s.id] = { ...s }; });
+        setMatSelected(pre);
+        setPendingSectionId(editSection.id);
+        setStep("materials");
+      } else {
+        onCancel();
+      }
+    } else {
+      // Create section
+      // If rooms selected: works go into rooms only (synced items auto-appear in section via room-sync)
+      // If no rooms: works go directly into section as manual items
+      const newSid = uid();
+      const workItems = roomIds.length === 0 ? works.map(w => ({
+        id: uid(), name: w.name, unit: w.unit, price: w.price,
+        qty: w.qty || 1, type: "work",
+      })) : [];
+      onAdd(sectionName, stageId, newSid, workItems);
+
+      // Distribute to rooms with auto-qty (only when rooms selected)
+      if (works.length > 0 && roomIds.length > 0) {
+        roomIds.forEach(rid => {
+          const room = rooms.find(r => r.id === rid);
+          dispatch({
+            type: "ADD_WORKS_BULK", pid: projectId, rid,
+            works: works.map(w => ({
+              id: uid(), stageId: stageId || "other",
+              name: w.name, unit: w.unit, price: w.price,
+              qty: resolveAutoQty(w, room, stageId || "other"),
+            })),
+          });
+        });
+      }
+
+      // In mat mode: go to materials step
+      if (isMatMode && works.length > 0) {
+        const sugg = buildMatSuggestions(works);
+        setMatSuggestions(sugg);
+        const pre = {};
+        sugg.forEach(s => { pre[s.id] = { ...s }; });
+        setMatSelected(pre);
+        setPendingSectionId(newSid);
+        setStep("materials");
+      } else {
+        onCancel();
+      }
+    }
+  };
+
+  const handleAddMaterials = () => {
+    const items = Object.values(matSelected).map(s => ({
+      id: uid(), name: s.mat.name, unit: s.mat.unit,
+      qty: s.qty, price: s.price, type: "material", paid: 0,
+    }));
+    if (items.length > 0) {
+      let sid = pendingSectionId;
+      // pendingSectionId is now always a real uid (no __new__ prefix)
+      // Fallback: search by name if not found directly
+      if (sid && !(project.sections || []).find(s => s.id === sid)) {
+        const found = (project.sections || []).find(s => s.name === sectionName);
+        sid = _optionalChain([found, 'optionalAccess', _68 => _68.id]) || sid;
+      }
+      if (sid) {
+        // Add all materials in one bulk dispatch
+        const bulkItems = items.map(item => ({ ...item }));
+        bulkItems.forEach(item => dispatch({ type: "ADD_ITEM", pid: projectId, sid, item }));
+      }
+    }
+    onCancel();
+  };
+
+  // -- STEP: choose section --------------------------------------------------
+  if (step === "choose") {
+    // Stage colours for tiles
+    const STAGE_COLORS = {
+      prep:     { bg: "#f97316", grad: "linear-gradient(135deg,#ea580c,#f97316)", icon: "🔨" },
+      floor:    { bg: "#8b5cf6", grad: "linear-gradient(135deg,#7c3aed,#8b5cf6)", icon: "🟫" },
+      walls:    { bg: "#06b6d4", grad: "linear-gradient(135deg,#0891b2,#06b6d4)", icon: "🖌️" },
+      ceiling:  { bg: "#10b981", grad: "linear-gradient(135deg,#059669,#10b981)", icon: "🔲" },
+      plumbing: { bg: "#3b82f6", grad: "linear-gradient(135deg,#2563eb,#3b82f6)", icon: "🚿" },
+      electric: { bg: "#eab308", grad: "linear-gradient(135deg,#ca8a04,#eab308)", icon: "⚡" },
+      doors:    { bg: "#64748b", grad: "linear-gradient(135deg,#475569,#64748b)", icon: "🚪" },
+      finish:   { bg: "#ec4899", grad: "linear-gradient(135deg,#db2777,#ec4899)", icon: "✨" },
+      other:    { bg: "#6b7280", grad: "linear-gradient(135deg,#4b5563,#6b7280)", icon: "🔧" },
+    };
+    return (
+      React.createElement('div', { style: {
+        position: "absolute", inset: 0, zIndex: 400,
+        background: "var(--bg)",
+        display: "flex", flexDirection: "column",
+        overflowY: "auto",
+      }}
+        /* Header */
+        , React.createElement('div', { style: {
+          background: "linear-gradient(135deg,#1a1060,#2d1fa8)",
+          padding: "52px 20px 20px", flexShrink: 0,
+        }}
+          , React.createElement('button', { onClick: onCancel, style: {
+            background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)",
+            borderRadius: 10, padding: "7px 14px", cursor: "pointer",
+            display: "flex", alignItems: "center", gap: 6, marginBottom: 16,
+          }}
+            , React.createElement(Icon, { name: "back", size: 15, color: "#fff"} )
+            , React.createElement('span', { style: { color: "#fff", fontSize: 12, fontWeight: 700 }}, "Назад")
+          )
+          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 20, fontWeight: 900, color: "#fff", marginBottom: 4 }}, "Новый раздел"
+
+          )
+          , React.createElement('div', { style: { fontSize: 13, color: "rgba(255,255,255,0.7)" }}, "Выберите тип раздела"  )
+        )
+
+        /* Main tiles grid */
+        , React.createElement('div', { style: { padding: "20px 16px", flex: 1 }}
+          , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}
+            , PRESET_SECTIONS.filter(p => p.stageId).map((preset, i) => {
+              const alreadyExists = existingNames.has(preset.name.toLowerCase());
+              const col = STAGE_COLORS[preset.stageId] || STAGE_COLORS.other;
+              const emoji = _optionalChain([preset, 'access', _69 => _69.name, 'access', _70 => _70.match, 'call', _71 => _71(/^\S+/), 'optionalAccess', _72 => _72[0]]) || "📋";
+              const label = preset.name.replace(/^\S+\s*/, "");
+              return (
+                React.createElement('button', { key: i,
+                  onClick: () => { if (!alreadyExists) { setPickedPreset(preset); setCustomName(""); setStep("works"); }},
+                  disabled: alreadyExists,
+                  style: {
+                    background: alreadyExists ? "var(--s2)" : col.grad,
+                    border: alreadyExists ? "1.5px solid var(--b1)" : "none",
+                    borderRadius: 18, padding: "20px 14px 16px",
+                    cursor: alreadyExists ? "default" : "pointer",
+                    fontFamily: "inherit", textAlign: "left",
+                    opacity: alreadyExists ? 0.45 : 1,
+                    boxShadow: alreadyExists ? "none" : `0 4px 20px ${col.bg}55`,
+                    transition: "transform 0.12s",
+                    display: "flex", flexDirection: "column", gap: 8, minHeight: 110,
+                    position: "relative", overflow: "hidden",
+                  }}
+                  /* Decorative circle */
+                  , !alreadyExists && React.createElement('div', { style: { position:"absolute", top:-20, right:-20, width:80, height:80, borderRadius:"50%", background:"rgba(255,255,255,0.1)" }} )
+                  , React.createElement('div', { style: { fontSize: 36 }}, emoji)
+                  , React.createElement('div', {}
+                    , React.createElement('div', { style: { fontSize: 15, fontWeight: 900, color: alreadyExists ? "var(--tx3)" : "#fff", lineHeight: 1.2 }}, label)
+                    , React.createElement('div', { style: { fontSize: 11, color: alreadyExists ? "var(--tx3)" : "rgba(255,255,255,0.75)", marginTop: 3, lineHeight: 1.3 }}, preset.desc)
+                  )
+                  , alreadyExists && React.createElement('div', { style: { fontSize: 9, color: "var(--tx3)", fontWeight: 700, textTransform: "uppercase" }}, "✓ уже добавлен"  )
+                )
+              );
+            })
+          )
+
+          /* Other presets without stageId */
+          , PRESET_SECTIONS.filter(p => !p.stageId).length > 0 && (
+            React.createElement('div', { style: { marginBottom: 20 }}
+              , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 10 }}, "Другие")
+              , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 8 }}
+                , PRESET_SECTIONS.filter(p => !p.stageId).map((preset, i) => {
+                  const alreadyExists = existingNames.has(preset.name.toLowerCase());
+                  const emoji = _optionalChain([preset, 'access', _73 => _73.name, 'access', _74 => _74.match, 'call', _75 => _75(/^\S+/), 'optionalAccess', _76 => _76[0]]) || "📋";
+                  const label = preset.name.replace(/^\S+\s*/, "");
+                  return (
+                    React.createElement('button', { key: i,
+                      onClick: () => { if (!alreadyExists) { setPickedPreset(preset); setCustomName(""); setStep("works"); }},
+                      disabled: alreadyExists,
+                      style: {
+                        background: "var(--s1)", border: "1.5px solid var(--b1)",
+                        borderRadius: 14, padding: "14px 16px",
+                        cursor: alreadyExists ? "default" : "pointer", fontFamily: "inherit",
+                        display: "flex", alignItems: "center", gap: 14,
+                        opacity: alreadyExists ? 0.45 : 1, textAlign: "left",
+                      }}
+                      , React.createElement('div', { style: { fontSize: 28, flexShrink: 0 }}, emoji)
+                      , React.createElement('div', { style: { flex: 1 }}
+                        , React.createElement('div', { style: { fontSize: 14, fontWeight: 800, color: "var(--tx)", marginBottom: 2 }}, label)
+                        , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)" }}, preset.desc)
+                      )
+                      , !alreadyExists && React.createElement(Icon, { name: "chevronRight", size: 18, color: "var(--acc)"} )
+                    )
+                  );
+                })
+              )
+            )
+          )
+
+          /* Custom section */
+          , React.createElement('div', { style: { background: "var(--s1)", borderRadius: 16, padding: 16, border: "1.5px dashed var(--b2)" }}
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 800, color: "var(--tx)", marginBottom: 12 }}, "✏️ Свой раздел"
+
+            )
+            , React.createElement('input', { value: customName, onChange: e => setCustomName(e.target.value),
+              placeholder: "Например: Кровля, Бассейн…"  ,
+              style: { width: "100%", padding: "13px 14px", borderRadius: 12, border: "1.5px solid var(--b1)", background: "var(--s2)", color: "var(--tx)", fontSize: 15, fontFamily: "inherit", outline: "none", boxSizing: "border-box", marginBottom: 10 }} )
+            , React.createElement('button', { onClick: () => { if (customName.trim()) { setPickedPreset(null); setStep("works"); }},
+              disabled: !customName.trim(),
+              style: {
+                width: "100%", padding: "14px", borderRadius: 12, border: "none",
+                background: customName.trim() ? "linear-gradient(135deg,var(--acc),var(--acc2))" : "var(--s3)",
+                color: "#fff", fontWeight: 800, fontSize: 14,
+                cursor: customName.trim() ? "pointer" : "default", fontFamily: "inherit",
+              }}, "Далее →"
+
+            )
+          )
+        )
+      )
+    );
+  }
+
+  // -- STEP: pick works ------------------------------------------------------
+  if (step === "works") {
+    return (
+      React.createElement('div', { style: { position: "absolute", inset: 0, zIndex: 400, background: "var(--bg)", display: "flex", flexDirection: "column" }}
+        , React.createElement('div', { style: { background: "linear-gradient(135deg,#1a1060,#2d1fa8)", padding: "52px 20px 18px", flexShrink: 0 }}
+          , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}
+            , !isEditMode && React.createElement('button', { onClick: () => setStep("choose"), style: { background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", borderRadius: 10, padding: "7px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+              , React.createElement(Icon, { name: "back", size: 14, color: "#fff"} )
+              , React.createElement('span', { style: { color: "#fff", fontSize: 12, fontWeight: 700 }}, "Назад")
+            )
+            , isEditMode && React.createElement('button', { onClick: onCancel, style: { background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", borderRadius: 10, padding: "7px 14px", cursor: "pointer", fontSize: 12, color: "#fff", fontFamily: "inherit", fontWeight: 700 }}, "✕")
+          , React.createElement('div', { style: { flex: 1 }}
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 900, color: "#fff", display: "flex", alignItems: "center", gap: 6 }}
+              , stageId && (() => { const s = [{id:"prep",icon:"🔨"},{id:"floor",icon:"🟫"},{id:"walls",icon:"🖌️"},{id:"ceiling",icon:"🔲"},{id:"plumbing",icon:"🚿"},{id:"electric",icon:"⚡"},{id:"doors",icon:"🚪"},{id:"finish",icon:"✨"}].find(x=>x.id===stageId); return s ? React.createElement('span', { style: {fontSize:18}}, s.icon) : null; })()
+              , sectionName
+            )
+            , React.createElement('div', { style: { fontSize: 11, color: "rgba(255,255,255,0.65)", marginTop: 3 }}
+              , isEditMode ? "Добавить работы в раздел" : "Шаг 1 из 2 — выберите работы"
+              , suggestedNames.length > 0 && !isEditMode && React.createElement('span', { style: { color: "#86efac", fontWeight: 700 }}, " · ★ рекомендованные"   )
+            )
+          )
+          , selectedWorksCount > 0 && (
+            React.createElement('div', { style: { background: "rgba(255,255,255,0.2)", borderRadius: 8, padding: "4px 10px", fontSize: 11, fontWeight: 800, color: "#fff" }}, "✓ "
+               , selectedWorksCount
+            )
+          )
+        )
+        )/* end header */
+        , React.createElement('div', { style: { flex: 1, overflowY: "auto", padding: "16px", paddingBottom: 90 }}
+
+        /* Tabs */
+        , React.createElement('div', { style: { display: "flex", background: "var(--s2)", borderRadius: 9, padding: 3, gap: 2, marginBottom: 12 }}
+          , [{ id: "book", label: "📋 Мои цены" }, { id: "group", label: "⚡ Группы" }, { id: "custom", label: "✏️ Вручную" }].map(t => (
+            React.createElement('button', { key: t.id, onClick: () => setWorksTab(t.id),
+              style: { flex: 1, padding: "6px 3px", borderRadius: 7, border: "none", cursor: "pointer", fontSize: 10, fontWeight: 700, fontFamily: "inherit", background: worksTab === t.id ? "var(--s1)" : "transparent", color: worksTab === t.id ? "var(--tx)" : "var(--tx3)", boxShadow: worksTab === t.id ? "0 1px 4px rgba(0,0,0,0.2)" : "none", transition: "all 0.15s" }}
+              , t.label
+            )
+          ))
+        )
+
+        /* Price book tab */
+        , worksTab === "book" && (
+          React.createElement('div', {}
+            , React.createElement('input', { value: search, onChange: e => setSearch(e.target.value),
+              placeholder: "🔍 Поиск по прайсу..."   ,
+              style: { width: "100%", padding: "8px 12px", borderRadius: 9, border: "1.5px solid var(--b1)", background: "var(--s2)", color: "var(--tx)", fontSize: 13, fontFamily: "inherit", outline: "none", boxSizing: "border-box", marginBottom: 8 }} )
+            , bookEntries.length === 0
+              ? React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)", textAlign: "center", padding: "16px 0" }}, "Прайс пуст — добавьте работы в «Мои цены»"       )
+              : React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 6 }}
+                  , suggestedNames.length > 0 && bookEntries.some(([n]) => suggestedNames.includes(n)) && (
+                    React.createElement('div', { style: { padding: "6px 10px", background: "rgba(16,185,129,0.08)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: 8, marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}
+                      , React.createElement('span', { style: { fontSize: 14 }}, "★")
+                      , React.createElement('div', { style: { flex: 1 }}
+                        , React.createElement('div', { style: { fontSize: 10, color: "var(--green)", fontWeight: 800, textTransform: "uppercase", letterSpacing: "0.07em" }}, "Рекомендовано для «"
+                            , sectionName, "»"
+                        )
+                        , React.createElement('div', { style: { fontSize: 9, color: "var(--tx3)", marginTop: 1 }}
+                          , bookEntries.filter(([n]) => suggestedNames.includes(n)).length, " подходящих работ"
+                        )
+                      )
+                    )
+                  )
+                  , bookEntries.map(([name, { price, unit }], idx) => {
+                    const on = !!selectedWorks[name];
+                    const isSuggested = suggestedNames.includes(name);
+                    const prevEntry = bookEntries[idx - 1];
+                    const showDivider = idx > 0 && !isSuggested && prevEntry && suggestedNames.includes(prevEntry[0]) && suggestedNames.length > 0;
+                    return (
+                      React.createElement(React.Fragment, { key: name}
+                        , showDivider && (
+                          React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", padding: "8px 4px 4px", borderTop: "1px solid var(--b1)", marginTop: 2 }}, "Остальные работы" )
+                        )
+                        , React.createElement('div', { onClick: () => toggleWork(name, unit, price),
+                          style: { display: "flex", alignItems: "center", gap: 12, padding: "14px 14px", borderRadius: 14, cursor: "pointer",
+                            background: on ? "var(--acc3)" : "var(--s1)",
+                            border: `2px solid ${on ? "var(--acc)" : isSuggested && !on ? "rgba(16,185,129,0.4)" : "var(--b1)"}`,
+                            boxShadow: on ? "0 2px 12px rgba(124,111,255,0.2)" : "none",
+                            transition: "all 0.12s", marginBottom: 1 }}
+                          , React.createElement('div', { style: { width: 26, height: 26, borderRadius: 8, background: on ? "var(--acc)" : "var(--s2)", border: on ? "none" : "2px solid var(--b2)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+                            , on && React.createElement('svg', { width: "14", height: "14", viewBox: "0 0 12 12"   }, React.createElement('path', { d: "M2 6l3 3 5-5"   , stroke: "#fff", strokeWidth: "2.2", fill: "none", strokeLinecap: "round", strokeLinejoin: "round"}))
+                          )
+                          , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+                            , React.createElement('div', { style: { fontSize: 14, fontWeight: 700, color: "var(--tx)", lineHeight: 1.25 }}, name)
+                            , React.createElement('div', { style: { fontSize: 12, color: on ? "var(--acc2)" : "var(--tx3)", marginTop: 2, fontWeight: on ? 700 : 500 }}
+                              , unit, " · "  , fmt(price), " ₽"
+                              , isSuggested && !on && React.createElement('span', { style: { marginLeft: 6, fontSize: 10, background: "rgba(16,185,129,0.15)", color: "var(--green)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}, "★")
+                            )
+                          )
+                          , on && (
+                            React.createElement('div', { style: { flexShrink: 0, textAlign: "center" }}
+                              , React.createElement('div', { style: { fontSize: 9, color: "var(--tx3)", marginBottom: 2 }}, unit)
+                              , React.createElement('input', { type: "number", value: _optionalChain([selectedWorks, 'access', _77 => _77[name], 'optionalAccess', _78 => _78.qty]) || 1,
+                                onClick: e => e.stopPropagation(),
+                                onChange: e => setSelectedWorks(s => ({ ...s, [name]: { ...s[name], qty: parseFloat(e.target.value) || 1 } })),
+                                style: { width: 60, padding: "6px 6px", borderRadius: 8, border: "1.5px solid var(--acc)", background: "var(--bg)", color: "var(--tx)", fontSize: 15, fontFamily: "inherit", outline: "none", textAlign: "center", fontWeight: 700 }} )
+                            )
+                          )
+                        )
+                      )
+                    );
+                  })
+                )
+            
+          )
+        )
+
+        /* Groups tab */
+        , worksTab === "group" && (
+          React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 8 }}
+            , workGroups.length === 0
+              ? React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)", textAlign: "center", padding: "16px 0" }}, "Нет групп работ"  )
+              : workGroups.map(group => {
+                  const allOn = group.items.every(it => !!selectedWorks[it.name]);
+                  return (
+                    React.createElement('div', { key: group.id, style: { display: "flex", gap: 5, alignItems: "stretch" }}
+                      , React.createElement('div', { onClick: () => {
+                        if (allOn) {
+                          setSelectedWorks(s => { const n = { ...s }; group.items.forEach(it => delete n[it.name]); return n; });
+                        } else {
+                          setSelectedWorks(s => {
+                            const n = { ...s };
+                            group.items.forEach(it => { n[it.name] = { name: it.name, unit: it.unit || "м²", price: it.price, qty: it.qty || 1 }; });
+                            return n;
+                          });
+                        }
+                      },
+                        style: { flex: 1, display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, cursor: "pointer", background: allOn ? "var(--acc3)" : "var(--s2)", border: `1.5px solid ${allOn ? "rgba(124,111,255,0.3)" : "var(--b1)"}` }}
+                        , React.createElement('div', { style: { width: 19, height: 19, borderRadius: 5, background: allOn ? "var(--acc)" : "var(--s3)", border: allOn ? "none" : "1.5px solid var(--b2)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+                          , allOn && React.createElement(Icon, { name: "check", size: 11, color: "#fff"} )
+                        )
+                        , React.createElement('span', { style: { fontSize: 18 }}, group.icon)
+                        , React.createElement('div', { style: { flex: 1 }}
+                          , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: "var(--tx)" }}, group.name)
+                          , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)" }}, group.items.length, " работ" )
+                        )
+                      )
+                      , React.createElement('button', { onClick: () => setInlineEditGroup(group),
+                        style: { padding: "0 10px", borderRadius: 10, border: "1px solid var(--b1)", background: "var(--s2)", cursor: "pointer", color: "var(--gold)", fontSize: 14 },
+                        title: "Редактировать группу" }, "✏️"
+
+                      )
+                    )
+                  );
+                })
+            
+          )
+        )
+
+        /* Inline group editor */
+        , inlineEditGroup && (
+          React.createElement(InlineGroupEditor, {
+            group: inlineEditGroup,
+            onClose: () => setInlineEditGroup(null),
+            onSave: (updatedGroup) => {
+              dispatch({ type: "UPDATE_WORK_GROUP", group: updatedGroup });
+              setInlineEditGroup(null);
+            }}
+          )
+        )
+
+        /* Custom work tab */
+        , worksTab === "custom" && (
+          React.createElement('div', {}
+            , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 8, marginBottom: 10 }}
+              , React.createElement('input', { value: customWork.name, onChange: e => setCustomWork(s => ({ ...s, name: e.target.value })),
+                placeholder: "Название работы" ,
+                style: { padding: "9px 12px", borderRadius: 9, border: "1.5px solid var(--b1)", background: "var(--s2)", color: "var(--tx)", fontSize: 13, fontFamily: "inherit", outline: "none" }} )
+              , React.createElement('div', { style: { display: "flex", gap: 8 }}
+                , React.createElement('input', { value: customWork.unit, onChange: e => setCustomWork(s => ({ ...s, unit: e.target.value })),
+                  placeholder: "м²",
+                  style: { flex: 1, padding: "9px 10px", borderRadius: 9, border: "1.5px solid var(--b1)", background: "var(--s2)", color: "var(--tx)", fontSize: 13, fontFamily: "inherit", outline: "none" }} )
+                , React.createElement('input', { type: "number", value: customWork.price, onChange: e => setCustomWork(s => ({ ...s, price: e.target.value })),
+                  placeholder: "Цена ₽" ,
+                  style: { flex: 2, padding: "9px 10px", borderRadius: 9, border: "1.5px solid var(--b1)", background: "var(--s2)", color: "var(--tx)", fontSize: 13, fontFamily: "inherit", outline: "none" }} )
+                , React.createElement('input', { type: "number", value: customWork.qty, onChange: e => setCustomWork(s => ({ ...s, qty: e.target.value })),
+                  placeholder: "Кол.",
+                  style: { flex: 1, padding: "9px 10px", borderRadius: 9, border: "1.5px solid var(--b1)", background: "var(--s2)", color: "var(--tx)", fontSize: 13, fontFamily: "inherit", outline: "none" }} )
+              )
+              /* Section assignment for custom work */
+              , React.createElement('div', {}
+                , React.createElement('div', { style: { fontSize: 9, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 5 }}, "Раздел в «Мои цены» (можно несколько)"     )
+                , React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 4, marginBottom: 8 }}
+                  , [{id:"prep",icon:"🔨",l:"Подготовка"},{id:"floor",icon:"🪟",l:"Полы"},{id:"walls",icon:"🖌️",l:"Стены"},{id:"ceiling",icon:"🔲",l:"Потолок"},{id:"plumbing",icon:"🚿",l:"Сантех."},{id:"electric",icon:"⚡",l:"Электрик."},{id:"doors",icon:"🚪",l:"Двери"},{id:"finish",icon:"✨",l:"Финиш"}].map(s => {
+                    const on = customWorkSections.includes(s.id);
+                    return (
+                      React.createElement('button', { key: s.id, onClick: () => setCustomWorkSections(prev => on ? prev.filter(x=>x!==s.id) : [...prev, s.id]),
+                        style: { padding: "3px 7px", borderRadius: 6, border: `1px solid ${on?"var(--acc)":"var(--b1)"}`, background: on?"var(--acc3)":"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:10, fontWeight:700, color: on?"var(--acc2)":"var(--tx3)" }}
+                        , s.icon, " " , s.l
+                      )
+                    );
+                  })
+                )
+              )
+              , React.createElement('button', { onClick: () => {
+                if (!customWork.name.trim()) return;
+                const price = parseFloat(customWork.price) || 0;
+                const qty = parseFloat(customWork.qty) || 1;
+                setSelectedWorks(s => ({ ...s, [customWork.name]: { name: customWork.name, unit: customWork.unit || "м²", price, qty } }));
+                // Save to price book with explicit sections
+                const secs = customWorkSections.length > 0 ? customWorkSections : (stageId ? [stageId] : []);
+                if (price > 0) {
+                  dispatch({ type: "UPDATE_PRICE_BOOK", name: customWork.name.trim(), price, unit: customWork.unit || "м²", sections: secs });
+                }
+                setCustomWork({ name: "", unit: "м²", price: "", qty: "1" });
+                setCustomWorkSections([]);
+              },
+                style: { padding: "9px", borderRadius: 9, border: "none", background: "var(--acc)", color: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}, "+ Добавить работу"
+
+              )
+            )
+            /* Show added custom works */
+            , Object.keys(selectedWorks).length > 0 && (
+              React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 4, maxHeight: 140, overflowY: "auto" }}
+                , Object.values(selectedWorks).map(w => (
+                  React.createElement('div', { key: w.name, style: { display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", borderRadius: 8, background: "var(--acc3)", border: "1px solid rgba(124,111,255,0.2)" }}
+                    , React.createElement(Icon, { name: "check", size: 12, color: "var(--acc2)"} )
+                    , React.createElement('div', { style: { flex: 1, fontSize: 12, color: "var(--tx)", fontWeight: 600 }}, w.name)
+                    , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}, w.qty, " " , w.unit)
+                    , React.createElement('button', { onClick: () => setSelectedWorks(s => { const n = { ...s }; delete n[w.name]; return n; }),
+                      style: { background: "none", border: "none", cursor: "pointer", padding: "2px", color: "var(--tx3)" }}, "✕")
+                  )
+                ))
+              )
+            )
+          )
+        )
+
+        /* Selected works summary bar */
+        , selectedWorksCount > 0 && (
+          React.createElement('div', { style: { marginTop: 10, padding: "8px 12px", background: "var(--acc3)", border: "1px solid rgba(124,111,255,0.2)", borderRadius: 9, display: "flex", alignItems: "center", gap: 8 }}
+            , React.createElement('div', { style: { flex: 1, fontSize: 11, color: "var(--acc2)", fontWeight: 700 }}, "✓ "
+               , selectedWorksCount, " работ" , selectedWorksCount > 1 ? "" : "а", " выбрано"
+            )
+            , React.createElement('div', { style: { display: "flex", gap: 4, flexWrap: "wrap" }}
+              , Object.values(selectedWorks).slice(0, 3).map(w => (
+                React.createElement('span', { key: w.name, style: { fontSize: 9, background: "rgba(124,111,255,0.15)", borderRadius: 4, padding: "1px 6px", color: "var(--acc2)", fontWeight: 700, maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                  , w.name
+                )
+              ))
+              , selectedWorksCount > 3 && React.createElement('span', { style: { fontSize: 9, color: "var(--tx3)", fontWeight: 700 }}, "+", selectedWorksCount - 3)
+            )
+          )
+        )
+
+        )/* end scrollable */
+
+        /* -- Sticky bottom action bar -- */
+        , React.createElement('div', { style: { padding: "12px 16px 28px", borderTop: "1px solid var(--b1)", background: "var(--s1)", flexShrink: 0, display: "flex", gap: 10 }}
+          , React.createElement('button', { onClick: onCancel, style: { padding: "14px 16px", borderRadius: 14, border: "1.5px solid var(--b1)", background: "var(--s2)", color: "var(--tx3)", fontSize: 13, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}, "✕")
+          , isEditMode ? (
+            React.createElement('button', { onClick: handleFinish, disabled: selectedWorksCount === 0,
+              style: { flex: 1, padding: "14px", borderRadius: 14, border: "none",
+                background: selectedWorksCount > 0 ? "linear-gradient(135deg,var(--acc),var(--acc2))" : "var(--s3)",
+                color: selectedWorksCount > 0 ? "#fff" : "var(--tx3)", fontWeight: 900, fontSize: 15,
+                cursor: selectedWorksCount > 0 ? "pointer" : "default", fontFamily: "inherit",
+                boxShadow: selectedWorksCount > 0 ? "0 4px 16px rgba(124,111,255,0.4)" : "none" }}
+              , selectedWorksCount > 0
+                ? isMatMode ? `Добавить работы → материалы` : `✓ Добавить ${selectedWorksCount} работ`
+                : "Выберите работы"
+            )
+          ) : (
+            React.createElement('button', { onClick: () => setStep("rooms"),
+              style: { flex: 1, padding: "14px", borderRadius: 14, border: "none", cursor: "pointer", fontFamily: "inherit",
+                fontWeight: 900, fontSize: 15,
+                background: selectedWorksCount > 0 ? "linear-gradient(135deg,var(--acc),var(--acc2))" : "linear-gradient(135deg,#6b7280,#9ca3af)",
+                color: "#fff",
+                boxShadow: selectedWorksCount > 0 ? "0 4px 16px rgba(124,111,255,0.4)" : "none" }}
+              , selectedWorksCount > 0 ? `Далее: помещения (${selectedWorksCount}) →` : "Пропустить → помещения"
+            )
+          )
+        )
+      )
+    );
+  }
+
+  // -- STEP: pick rooms ------------------------------------------------------
+  if (step === "rooms") {
+    const allRoomsSelected = rooms.length > 0 && rooms.every(r => selectedRooms[r.id]);
+    const works = Object.values(selectedWorks);
+
+    // Compute total cost across selected rooms
+    const totalCostSelected = rooms
+      .filter(r => selectedRooms[r.id])
+      .reduce((sum, room) => {
+        return sum + works.reduce((s, w) => {
+          const qty = resolveAutoQty(w, room, stageId || "other");
+          return s + qty * w.price;
+        }, 0);
+      }, 0);
+
+    return (
+      React.createElement('div', { style: { position: "absolute", inset: 0, zIndex: 400, background: "var(--bg)", display: "flex", flexDirection: "column" }}
+        /* Header */
+        , React.createElement('div', { style: { background: "linear-gradient(135deg,#1a1060,#2d1fa8)", padding: "52px 20px 18px", flexShrink: 0 }}
+          , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 10, marginBottom: 14 }}
+            , React.createElement('button', { onClick: () => setStep("works"), style: { background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.3)", borderRadius: 10, padding: "7px 14px", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+              , React.createElement(Icon, { name: "back", size: 14, color: "#fff"} )
+              , React.createElement('span', { style: { color: "#fff", fontSize: 12, fontWeight: 700 }}, "Назад")
+            )
+          , React.createElement('div', { style: { flex: 1 }}
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 900, color: "#fff" }}, sectionName)
+            , React.createElement('div', { style: { fontSize: 11, color: "rgba(255,255,255,0.65)", marginTop: 2 }}, "Шаг 2 из 2 — выберите помещения"      )
+          )
+          , selectedRoomsCount > 0 && works.length > 0 && (
+            React.createElement('div', { style: { textAlign: "right", flexShrink: 0 }}
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 900, color: "#fff" }}, fmt(totalCostSelected))
+              , React.createElement('div', { style: { fontSize: 9, color: "rgba(255,255,255,0.6)" }}, selectedRoomsCount, " пом." )
+            )
+          )
+        )
+        )
+        , React.createElement('div', { style: { flex: 1, overflowY: "auto", padding: "16px", paddingBottom: 96 }}
+
+        /* Works summary with auto-qty hint */
+        , works.length > 0 && (
+          React.createElement('div', { style: { background: "var(--acc3)", border: "1px solid rgba(124,111,255,0.18)", borderRadius: 10, padding: "9px 12px", marginBottom: 10 }}
+            , React.createElement('div', { style: { fontSize: 10, fontWeight: 700, color: "var(--acc2)", marginBottom: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}, "📋 "
+               , works.length, " работ · количество подставится автоматически"
+            )
+            , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 3 }}
+              , works.map(w => (
+                React.createElement('div', { key: w.name, style: { display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}
+                  , React.createElement('span', { style: { color: "var(--tx3)", fontSize: 9 }}, "▸")
+                  , React.createElement('span', { style: { flex: 1, color: "var(--tx2)", fontWeight: 600 }}, w.name)
+                  , React.createElement('span', { style: { color: "var(--tx3)" }}, w.unit)
+                  , React.createElement('span', { style: { color: "var(--acc2)", fontWeight: 700, minWidth: 52, textAlign: "right" }}, fmt(w.price), "/ед")
+                )
+              ))
+            )
+          )
+        )
+
+        , rooms.length === 0 ? (
+          React.createElement('div', { style: { fontSize: 13, color: "var(--tx3)", textAlign: "center", padding: "20px 0" }}, "В проекте нет помещений."
+               , React.createElement('br', {} )
+            , React.createElement('span', { style: { fontSize: 11 }}, "Раздел будет создан без работ по помещениям."      )
+          )
+        ) : (
+          React.createElement(React.Fragment, null
+            , React.createElement('div', { style: { display: "flex", gap: 6, marginBottom: 8 }}
+              , React.createElement('button', { onClick: () => { const s = {}; rooms.forEach(r => s[r.id] = true); setSelectedRooms(s); },
+                style: { flex: 1, padding: "6px", borderRadius: 7, border: "1px solid var(--b1)", background: allRoomsSelected ? "var(--acc3)" : "var(--s2)", color: allRoomsSelected ? "var(--acc2)" : "var(--tx3)", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}, "✓ Все помещения"
+
+              )
+              , React.createElement('button', { onClick: () => setSelectedRooms({}),
+                style: { flex: 1, padding: "6px", borderRadius: 7, border: "1px solid var(--b1)", background: "var(--s2)", color: "var(--tx3)", fontSize: 11, fontWeight: 700, cursor: "pointer", fontFamily: "inherit" }}, "✕ Снять всё"
+
+              )
+            )
+
+            , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 6, maxHeight: 320, overflowY: "auto", marginBottom: 12 }}
+              , rooms.map(room => {
+                const on = !!selectedRooms[room.id];
+                const icon = (room.name||"").toLowerCase().includes("кухн") ? "🍳" :
+                  (room.name||"").toLowerCase().includes("санузел") || (room.name||"").toLowerCase().includes("ванн") ? "🚿" :
+                  (room.name||"").toLowerCase().includes("коридор") || (room.name||"").toLowerCase().includes("прихож") ? "🚪" :
+                  (room.name||"").toLowerCase().includes("балкон") || (room.name||"").toLowerCase().includes("лоджия") ? "🌿" : "🛋️";
+                const measurements = getRoomMeasurements(room);
+
+                // Per-work auto-qty breakdown for this room
+                const workBreakdown = works.map(w => {
+                  const qty = resolveAutoQty(w, room, stageId || "other");
+                  return { ...w, autoQty: qty, cost: qty * w.price };
+                });
+                const roomTotal = workBreakdown.reduce((s, w) => s + w.cost, 0);
+
+                return (
+                  React.createElement('div', { key: room.id,
+                    onClick: () => setSelectedRooms(s => ({ ...s, [room.id]: !s[room.id] })),
+                    style: {
+                      borderRadius: 12, cursor: "pointer",
+                      background: on ? "rgba(108,99,255,0.06)" : "var(--s2)",
+                      border: `1.5px solid ${on ? "rgba(124,111,255,0.35)" : "var(--b1)"}`,
+                      transition: "all 0.12s", overflow: "hidden",
+                    }}
+                    /* Room header row */
+                    , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 9, padding: "10px 12px" }}
+                      , React.createElement('div', { style: { width: 20, height: 20, borderRadius: 6, flexShrink: 0,
+                        background: on ? "var(--acc)" : "var(--s3)", border: on ? "none" : "1.5px solid var(--b2)",
+                        display: "flex", alignItems: "center", justifyContent: "center",
+                        boxShadow: on ? "0 2px 6px rgba(108,99,255,0.4)" : "none" }}
+                        , on && React.createElement(Icon, { name: "check", size: 12, color: "#fff"} )
+                      )
+                      , React.createElement('span', { style: { fontSize: 16 }}, icon)
+                      , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+                        , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: "var(--tx)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}, room.name)
+                        /* Measurement pills */
+                        , React.createElement('div', { style: { display: "flex", gap: 4, flexWrap: "wrap", marginTop: 3 }}
+                          , measurements.map(m => (
+                            React.createElement('span', { key: m.key, style: {
+                              fontSize: 9, fontWeight: 700, padding: "2px 5px", borderRadius: 4,
+                              background: on ? "rgba(124,111,255,0.15)" : "var(--s3)",
+                              color: on ? "var(--acc2)" : "var(--tx3)",
+                            }}
+                              , m.icon, " " , m.label, ": " , m.val.toFixed(2), " " , m.unit
+                            )
+                          ))
+                        )
+                      )
+                      , works.length > 0 && (
+                        React.createElement('div', { style: { textAlign: "right", flexShrink: 0 }}
+                          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 800, color: on ? "var(--acc2)" : "var(--tx3)" }}
+                            , fmt(roomTotal)
+                          )
+                          , React.createElement('div', { style: { fontSize: 9, color: "var(--tx3)" }}, "итого")
+                        )
+                      )
+                    )
+
+                    /* Per-work breakdown (visible when selected AND works exist) */
+                    , on && workBreakdown.length > 0 && (
+                      React.createElement('div', { style: { padding: "0 12px 10px 42px", borderTop: "1px solid rgba(124,111,255,0.12)" }}
+                        , workBreakdown.map(w => (
+                          React.createElement('div', { key: w.name, style: { display: "flex", alignItems: "center", gap: 6, padding: "4px 0", borderBottom: "1px solid var(--b1)" }}
+                            , React.createElement('div', { style: { flex: 1, fontSize: 11, color: "var(--tx2)", fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                              , w.name
+                            )
+                            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 3, flexShrink: 0 }}
+                              , React.createElement('span', { style: { fontSize: 10, color: "var(--green)", fontWeight: 700, background: "rgba(16,185,129,0.1)", borderRadius: 4, padding: "1px 5px" }}, "📐 "
+                                 , w.autoQty.toFixed(2), " " , w.unit
+                              )
+                              , React.createElement('span', { style: { fontSize: 10, color: "var(--tx3)" }}, "×")
+                              , React.createElement('span', { style: { fontSize: 10, color: "var(--tx3)" }}, fmt(w.price))
+                              , React.createElement('span', { style: { fontSize: 11, fontWeight: 800, color: "var(--acc2)", minWidth: 52, textAlign: "right", fontFamily: "'Unbounded',sans-serif" }}
+                                , fmt(w.cost)
+                              )
+                            )
+                          )
+                        ))
+                      )
+                    )
+                  )
+                );
+              })
+            )
+          )
+        )
+
+        /* Total summary bar */
+        , selectedRoomsCount > 0 && works.length > 0 && (
+          React.createElement('div', { style: { background: "linear-gradient(135deg,rgba(108,99,255,0.12),rgba(167,139,250,0.1))", border: "1px solid rgba(124,111,255,0.2)", borderRadius: 10, padding: "10px 14px", marginBottom: 10, display: "flex", justifyContent: "space-between", alignItems: "center" }}
+            , React.createElement('div', {}
+              , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", fontWeight: 700 }}, "Общая стоимость" )
+              , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)" }}, selectedRoomsCount, " помещений · "   , works.length, " видов работ"  )
+            )
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 800, color: "var(--acc2)" }}, fmt(totalCostSelected))
+          )
+        )
+
+        , React.createElement('div', { style: { display: "flex", gap: 8 }}
+          , React.createElement('button', { onClick: onCancel, style: { flex: 1, padding: "10px", borderRadius: 10, border: "1px solid var(--b1)", background: "transparent", color: "var(--tx3)", fontSize: 13, fontWeight: 600, cursor: "pointer", fontFamily: "inherit" }}, "Отмена")
+          , React.createElement('button', { onClick: handleFinish,
+            style: { flex: 2, padding: "10px", borderRadius: 10, border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: 800, fontSize: 13, color: "#fff",
+              background: isMatMode ? "linear-gradient(135deg,#065f46,#10b981)" : "linear-gradient(135deg,var(--acc),var(--acc2))",
+              boxShadow: isMatMode ? "0 3px 12px rgba(16,185,129,0.35)" : "0 3px 12px rgba(108,99,255,0.35)" }}
+            , isMatMode
+              ? (selectedRoomsCount > 0 ? `Добавить работы › материалы` : `Добавить работы ›`)
+              : (selectedRoomsCount > 0 ? `✓ Добавить в ${selectedRoomsCount} пом.` : "✓ Создать раздел")
+          )
+        )
+        )/* end scrollable */
+      )
+    );
+  }
+
+
+  // -- STEP: materials ------------------------------------------------------
+  if (step === "materials") {
+    const STAGE_ICONS_MAT = { prep:"🔨", floor:"🟫", walls:"🖌️", ceiling:"🔲", plumbing:"🚿", electric:"⚡", doors:"🚪", finish:"✨" };
+    const allMats = CATALOG;
+    const stages = ["all","prep","floor","walls","ceiling","plumbing","electric","doors","finish","other"];
+    const filteredCat = allMats.filter(m => {
+      const ms = matCatStage === "all" ? true : matCatStage === "other" ? !m.stageId : m.stageId === matCatStage;
+      const mq = !matSearch || m.name.toLowerCase().includes(matSearch.toLowerCase());
+      return ms && mq;
+    });
+
+    const toggleMat = (id, mat, qty, price) => {
+      setMatSelected(s => {
+        if (s[id]) { const n = {...s}; delete n[id]; return n; }
+        return { ...s, [id]: { id, mat, qty, price } };
+      });
+    };
+
+    const selCount = Object.keys(matSelected).length;
+    const selTotal = Object.values(matSelected).reduce((s,v) => s + (v.qty||0)*(v.price||0), 0);
+
+    const IS2 = { background:"var(--s2)", border:"1.5px solid var(--b1)", borderRadius:8, color:"var(--tx)", fontFamily:"inherit", outline:"none", fontSize:12 };
+
+    return (
+      React.createElement('div', { style: { background:"var(--s1)", borderRadius:"var(--r)", border:"1px solid var(--b1)", boxShadow:"0 4px 24px rgba(0,0,0,0.4)", overflow:"hidden" }}
+        /* Header */
+        , React.createElement('div', { style: { background:"linear-gradient(135deg,#064e3b,#065f46)", padding:"14px 16px 10px", borderBottom:"1px solid rgba(16,185,129,0.2)" }}
+          , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:10, marginBottom:6 }}
+            , React.createElement('div', { style: { width:36, height:36, borderRadius:10, background:"rgba(16,185,129,0.2)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18 }}, "🧱")
+            , React.createElement('div', { style: { flex:1 }}
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"#fff" }}, "Добавить материалы" )
+              , React.createElement('div', { style: { fontSize:10, color:"rgba(255,255,255,0.6)", marginTop:1 }}, "Раздел создан. Выберите материалы для работ."     )
+            )
+            , React.createElement('button', { onClick: onCancel, style: { background:"rgba(255,255,255,0.1)", border:"none", borderRadius:8, padding:"5px 9px", cursor:"pointer", color:"rgba(255,255,255,0.7)", fontSize:12 }}, "Пропустить →" )
+          )
+          /* Works summary chips */
+          , React.createElement('div', { style: { display:"flex", gap:4, flexWrap:"wrap" }}
+            , Object.values(selectedWorks).map(w => (
+              React.createElement('div', { key: w.name, style: { background:"rgba(255,255,255,0.1)", borderRadius:6, padding:"2px 8px", fontSize:9, color:"rgba(255,255,255,0.8)", fontWeight:600, whiteSpace:"nowrap" }}
+                , w.name, " · "  , w.qty||1, " " , w.unit
+              )
+            ))
+          )
+        )
+
+        /* Tabs */
+        , React.createElement('div', { style: { display:"flex", gap:3, padding:"8px 12px 0", background:"var(--s2)" }}
+          , [["suggested","✨ Подобранные"+(matSuggestions.length ? ` (${matSuggestions.length})` : "")],["catalog","📦 Каталог"],["sets","🗂️ Наборы"]].map(([id,lbl])=>(
+            React.createElement('button', { key: id, onClick: ()=>setMatTab(id), style: { flex:1, padding:"7px 8px", borderRadius:"8px 8px 0 0", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700, background:matTab===id?"var(--s1)":"transparent", color:matTab===id?"var(--tx)":"var(--tx3)", borderBottom:matTab===id?"2px solid var(--green)":"2px solid transparent" }}, lbl)
+          ))
+        )
+
+        , React.createElement('div', { style: { maxHeight:340, overflowY:"auto", padding:"10px 12px" }}
+
+          /* SUGGESTED */
+          , matTab === "suggested" && (
+            React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:7 }}
+              , matSuggestions.length === 0 ? (
+                React.createElement('div', { style: { textAlign:"center", padding:"20px 0", color:"var(--tx3)", fontSize:12 }}, "Нет подобранных материалов."
+                    , React.createElement('br', {}), "Переключитесь на каталог."
+                )
+              ) : (
+                React.createElement(React.Fragment, null
+                  , React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:2 }}
+                    , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)" }}, "По выбранным работам"  )
+                    , React.createElement('button', { onClick: ()=>{
+                      if(selCount===matSuggestions.length) setMatSelected({});
+                      else { const a={}; matSuggestions.forEach(s=>{a[s.id]={...s};}); setMatSelected(a); }
+                    }, style: { fontSize:10, color:"var(--green)", background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontWeight:700 }}
+                      , selCount===matSuggestions.length?"Снять все":"Выбрать все"
+                    )
+                  )
+                  , matSuggestions.map(s => {
+                    const on = !!matSelected[s.id];
+                    return (
+                      React.createElement('div', { key: s.id, style: { background:on?"rgba(16,185,129,0.06)":"var(--s2)", borderRadius:10, border:`1.5px solid ${on?"rgba(16,185,129,0.3)":"var(--b1)"}`, overflow:"hidden", transition:"all 0.1s" }}
+                        , React.createElement('div', { onClick: ()=>toggleMat(s.id, s.mat, s.qty, s.price), style: { display:"flex", alignItems:"center", gap:9, padding:"9px 11px", cursor:"pointer" }}
+                          , React.createElement('div', { style: { width:20, height:20, borderRadius:6, background:on?"var(--green)":"var(--s3)", border:on?"none":"1.5px solid var(--b2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}
+                            , on && React.createElement(Icon, { name: "check", size: 11, color: "#fff"} )
+                          )
+                          , React.createElement('div', { style: { width:30, height:30, borderRadius:8, background:"rgba(16,185,129,0.1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, flexShrink:0 }}
+                            , STAGE_ICONS_MAT[s.mat.stageId]||"📦"
+                          )
+                          , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                            , React.createElement('div', { style: { fontSize:12, fontWeight:700, color:"var(--tx)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}, s.mat.name)
+                            , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", marginTop:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}, s.reason)
+                          )
+                          , React.createElement('div', { style: { textAlign:"right", flexShrink:0 }}
+                            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:11, fontWeight:800, color:on?"var(--green)":"var(--tx2)" }}, s.qty, " " , s.mat.unit)
+                            , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)" }}, fmt(s.price), "/ед.")
+                          )
+                        )
+                        , on && (
+                          React.createElement('div', { style: { padding:"0 11px 9px" }}
+                            , React.createElement('div', { style: { display:"flex", gap:6, marginBottom: (s.mat.unit==="мешок"||s.mat.unit==="ведро") ? 6 : 0 }}
+                              , React.createElement('div', { style: { flex:1 }}
+                                , React.createElement('div', { style: { fontSize:8, color:"var(--tx3)", textTransform:"uppercase", marginBottom:3 }}, "Кол-во (" , s.mat.unit, ")")
+                                , React.createElement('input', { type: "number", value: _nullishCoalesce(_optionalChain([matSelected, 'access', _79 => _79[s.id], 'optionalAccess', _80 => _80.qty]), () => (s.qty)),
+                                  onChange: e => setMatSelected(ms => ms[s.id] ? {...ms,[s.id]:{...ms[s.id],qty:parseFloat(e.target.value)||0}} : ms),
+                                  style: {...IS2, width:"100%", padding:"5px 8px", textAlign:"center"}} )
+                              )
+                              , React.createElement('div', { style: { flex:1 }}
+                                , React.createElement('div', { style: { fontSize:8, color:"var(--tx3)", textTransform:"uppercase", marginBottom:3 }}, "Цена (₽)" )
+                                , React.createElement('input', { type: "number", value: _nullishCoalesce(_optionalChain([matSelected, 'access', _81 => _81[s.id], 'optionalAccess', _82 => _82.price]), () => (s.price)),
+                                  onChange: e => setMatSelected(ms => ms[s.id] ? {...ms,[s.id]:{...ms[s.id],price:parseFloat(e.target.value)||0}} : ms),
+                                  style: {...IS2, width:"100%", padding:"5px 8px", textAlign:"center"}} )
+                              )
+                              , React.createElement('div', { style: { flexShrink:0, display:"flex", flexDirection:"column", justifyContent:"flex-end", paddingBottom:1 }}
+                                , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"var(--green)", textAlign:"right" }}
+                                  , fmt((_optionalChain([matSelected, 'access', _83 => _83[s.id], 'optionalAccess', _84 => _84.qty])||0)*(_optionalChain([matSelected, 'access', _85 => _85[s.id], 'optionalAccess', _86 => _86.price])||0))
+                                )
+                              )
+                            )
+                            /* Thickness calc for bulk materials */
+                            , (s.mat.unit==="мешок"||s.mat.unit==="ведро") && (() => {
+                              const tc = _optionalChain([matSelected, 'access', _87 => _87[s.id], 'optionalAccess', _88 => _88._tc]) || {};
+                              const workArea = Object.values(selectedWorks).filter(w=>w.unit==="м²"||w.unit==="кв.м").reduce((sum,w)=>sum+(+w.qty||0),0);
+                              const th=+(tc.th||20), den=+(tc.den||1200), bagK=+(tc.bag||30);
+                              const bags = workArea>0 ? Math.ceil(workArea*(th/1000)*den/bagK) : 0;
+                              const updTc = (k,v) => setMatSelected(ms => ms[s.id] ? {...ms,[s.id]:{...ms[s.id],_tc:{...tc,[k]:v}}} : ms);
+                              return (
+                                React.createElement('div', {}
+                                  , React.createElement('button', { onClick: ()=>updTc("open",!tc.open),
+                                    style: { width:"100%", padding:"4px 8px", borderRadius:7, border:"1px dashed rgba(245,158,11,0.4)", background:"rgba(245,158,11,0.06)", cursor:"pointer", fontFamily:"inherit", fontSize:9, fontWeight:700, color:"var(--gold)", display:"flex", alignItems:"center", gap:4, justifyContent:"center" }}, "📐 "
+                                     , tc.open?"Скрыть":"Рассчитать по толщине"
+                                  )
+                                  , tc.open && (
+                                    React.createElement('div', { style: { background:"rgba(245,158,11,0.05)", borderRadius:8, padding:"8px", marginTop:5, border:"1px solid rgba(245,158,11,0.2)" }}
+                                      , React.createElement('div', { style: { fontSize:8, color:"var(--gold)", fontWeight:700, marginBottom:5 }}, "Площадь работ: "  , workArea>0?`${workArea} м²`:"— (добавьте работы)")
+                                      , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:4, marginBottom:6 }}
+                                        , [["Толщина мм","th","20"],["кг/м³","den","1200"],["кг/меш","bag","30"]].map(([l,k,ph])=>(
+                                          React.createElement('div', { key: k}
+                                            , React.createElement('div', { style: { fontSize:7, color:"var(--tx3)", marginBottom:2 }}, l)
+                                            , React.createElement('input', { type: "number", value: tc[k]||ph, onChange: e=>updTc(k,e.target.value),
+                                              style: {...IS2,width:"100%",padding:"4px 6px",textAlign:"center",fontSize:11}} )
+                                          )
+                                        ))
+                                      )
+                                      , React.createElement('div', { style: { display:"flex", gap:4, flexWrap:"wrap", marginBottom:6 }}
+                                        , [["Rotband","20","950","30"],["ЦПС","15","1700","50"],["Стяжка","60","1700","40"]].map(([n,t,d,b])=>(
+                                          React.createElement('button', { key: n, onClick: ()=>setMatSelected(ms=>ms[s.id]?{...ms,[s.id]:{...ms[s.id],_tc:{...tc,th:t,den:d,bag:b,open:true}}}:ms),
+                                            style: { padding:"2px 6px",borderRadius:5,border:"1px solid rgba(245,158,11,0.3)",background:"rgba(245,158,11,0.08)",cursor:"pointer",fontSize:8,fontWeight:700,color:"var(--gold)",fontFamily:"inherit" }}
+                                            , n, " " , t, "мм"
+                                          )
+                                        ))
+                                      )
+                                      , bags>0 ? (
+                                        React.createElement('div', { style: { display:"flex",justifyContent:"space-between",alignItems:"center",background:"rgba(245,158,11,0.12)",borderRadius:6,padding:"5px 8px" }}
+                                          , React.createElement('div', { style: { fontSize:10,color:"var(--gold)",fontWeight:700 }}, workArea, "м²×", th, "мм = "  , React.createElement('b', {}, bags, " мешков" ))
+                                          , React.createElement('button', { onClick: ()=>setMatSelected(ms=>ms[s.id]?{...ms,[s.id]:{...ms[s.id],qty:bags}}:ms),
+                                            style: { padding:"3px 8px",borderRadius:6,background:"var(--gold)",border:"none",color:"#000",fontWeight:800,fontSize:10,cursor:"pointer",fontFamily:"inherit" }}, "✓")
+                                        )
+                                      ) : React.createElement('div', { style: { fontSize:9,color:"var(--tx3)",textAlign:"center" }}, "Добавьте работы с ед. м²"    )
+                                    )
+                                  )
+                                )
+                              );
+                            })()
+                          )
+                        )
+                      )
+                    );
+                  })
+                )
+              )
+            )
+          )
+
+          /* CATALOG */
+          , matTab === "catalog" && (
+            React.createElement('div', {}
+              , React.createElement('div', { style: { display:"flex", gap:4, overflowX:"auto", paddingBottom:7, marginBottom:7 }}
+                , stages.map(sid => {
+                  const icon = sid==="all"?"📦":sid==="other"?"🔩":(STAGE_ICONS_MAT[sid]||"📦");
+                  const on = matCatStage===sid;
+                  return (
+                    React.createElement('button', { key: sid, onClick: ()=>setMatCatStage(sid), style: { flexShrink:0, padding:"4px 8px", borderRadius:7, border:`1.5px solid ${on?"var(--green)":"var(--b1)"}`, background:on?"rgba(16,185,129,0.12)":"var(--s2)", cursor:"pointer", fontSize:13, color:on?"var(--green)":"var(--tx3)", fontFamily:"inherit" }}
+                      , icon
+                    )
+                  );
+                })
+              )
+              , React.createElement('div', { style: { background:"var(--s2)", borderRadius:9, padding:"6px 10px", display:"flex", alignItems:"center", gap:7, marginBottom:8 }}
+                , React.createElement(Icon, { name: "search", size: 13, color: "var(--tx3)"} )
+                , React.createElement('input', { value: matSearch, onChange: e=>setMatSearch(e.target.value), placeholder: "Поиск...",
+                  style: { background:"none", border:"none", outline:"none", color:"var(--tx)", fontSize:12, width:"100%", fontFamily:"inherit" }} )
+                , matSearch && React.createElement('button', { onClick: ()=>setMatSearch(""), style: { background:"none",border:"none",cursor:"pointer",color:"var(--tx3)",fontSize:13 }}, "✕")
+              )
+              , React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:5 }}
+                , filteredCat.map(mat => {
+                  const on = !!matSelected[mat.id];
+                  return (
+                    React.createElement('div', { key: mat.id, onClick: ()=>toggleMat(mat.id, mat, 1, mat.price),
+                      style: { display:"flex", alignItems:"center", gap:9, padding:"9px 11px", borderRadius:10, border:`1.5px solid ${on?"rgba(16,185,129,0.35)":"var(--b1)"}`, background:on?"rgba(16,185,129,0.07)":"var(--s2)", cursor:"pointer" }}
+                      , React.createElement('div', { style: { width:18, height:18, borderRadius:5, background:on?"var(--green)":"var(--s3)", border:on?"none":"1.5px solid var(--b2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}
+                        , on && React.createElement(Icon, { name: "check", size: 10, color: "#fff"} )
+                      )
+                      , React.createElement('div', { style: { width:28, height:28, borderRadius:7, background:"rgba(16,185,129,0.1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, flexShrink:0 }}
+                        , STAGE_ICONS_MAT[mat.stageId]||"📦"
+                      )
+                      , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                        , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:"var(--tx)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}, mat.name)
+                        , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)" }}, mat.unit, " · "  , mat.category)
+                      )
+                      , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:11, fontWeight:800, color:on?"var(--green)":"var(--acc2)", flexShrink:0 }}, fmt(mat.price))
+                    )
+                  );
+                })
+              )
+            )
+          )
+
+          , matTab === "sets" && (
+            React.createElement(React.Fragment, null
+              , React.createElement('input', { value: matSetSearch, onChange: e=>setMatSetSearch(e.target.value), placeholder: "🔍 Поиск набора..."  ,
+                style: { width:"100%", padding:"9px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:13, fontFamily:"inherit", outline:"none", boxSizing:"border-box", marginBottom:8 }} )
+              , React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:6 }}
+                , [...(state.userMatGroups||[]),...MATERIAL_GROUPS_CATALOG].filter(function(g){ return !matSetSearch||g.name.toLowerCase().includes(matSetSearch.toLowerCase()); }).map(function(grp){
+                  const isSel = selectedMatSets.has(grp.id);
+                  return (
+                    React.createElement('div', { key: grp.id, onClick: function(){ setSelectedMatSets(function(prev){ const n=new Set(prev); if(n.has(grp.id)) n.delete(grp.id); else n.add(grp.id); return n; }); },
+                      style: { background:isSel?"rgba(16,185,129,0.07)":"var(--s1)", borderRadius:14, border:isSel?"2px solid rgba(16,185,129,0.5)":"1px solid var(--b1)", padding:"13px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:12, boxShadow:isSel?"0 2px 10px rgba(16,185,129,0.12)":"none", transition:"all 0.12s" }}
+                      , React.createElement('div', { style: { width:24, height:24, borderRadius:7, border:isSel?"2px solid var(--green)":"2px solid var(--b2)", background:isSel?"var(--green)":"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, transition:"all 0.12s" }}
+                        , isSel && React.createElement('svg', { width: "13", height: "13", viewBox: "0 0 12 12"   }, React.createElement('path', { d: "M2 6l3 3 5-5"   , stroke: "#fff", strokeWidth: "2.2", fill: "none", strokeLinecap: "round", strokeLinejoin: "round"}))
+                      )
+                      , React.createElement('div', { style: { width:42, height:42, borderRadius:11, background:isSel?"rgba(16,185,129,0.12)":"var(--s2)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0 }}, grp.icon)
+                      , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                        , React.createElement('div', { style: { fontSize:14, fontWeight:800, color:isSel?"var(--green)":"var(--tx)", marginBottom:2, lineHeight:1.25 }}, grp.name)
+                        , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" }}, grp.desc||((grp.items||[]).length+" материалов"))
+                        , React.createElement('div', { style: { display:"flex", gap:4, flexWrap:"wrap", marginTop:3 }}
+                          , (grp.items||[]).slice(0,3).map(function(item,i){ return React.createElement('span', { key: i, style: { fontSize:9, padding:"1px 5px", borderRadius:4, background:"var(--s2)", color:"var(--tx3)", fontWeight:600 }}, item.name.length>20?item.name.slice(0,20)+"…":item.name); })
+                          , (grp.items||[]).length>3 && React.createElement('span', { style: { fontSize:9, color:"var(--tx3)" }}, "+", (grp.items||[]).length-3)
+                        )
+                      )
+                    )
+                  );
+                })
+              )
+              , React.createElement('div', { style: { paddingTop:10, borderTop:"1px solid var(--b1)", marginTop:6 }}
+                , React.createElement('button', {
+                  disabled: selectedMatSets.size===0,
+                  onClick: function(){
+                    const allSets=[...(state.userMatGroups||[]),...MATERIAL_GROUPS_CATALOG];
+                    allSets.filter(function(g){ return selectedMatSets.has(g.id); }).forEach(function(grp){
+                      const area=(project.rooms||[]).reduce(function(s,r){ return s+(r[grp.areaField||"floor"]||0); },0)||1;
+                      (grp.items||[]).forEach(function(item){
+                        const qty=Math.ceil(area*(parseFloat(item.qtyPer)||0.1)*10)/10||1;
+                        const price=parseFloat(item.price)||0;
+                        setMatSelected(function(prev){ const id=uid(); return {...prev,[id]:{id,name:item.name,unit:item.unit||"шт",qty,price}}; });
+                      });
+                    });
+                    setSelectedMatSets(new Set());
+                  },
+                  style: { width:"100%", padding:"14px", borderRadius:13, border:"none",
+                    background:selectedMatSets.size>0?"linear-gradient(135deg,#065f46,#10b981)":"var(--s3)",
+                    color:selectedMatSets.size>0?"#fff":"var(--tx3)", fontWeight:900, fontSize:15,
+                    cursor:selectedMatSets.size>0?"pointer":"default", fontFamily:"inherit",
+                    boxShadow:selectedMatSets.size>0?"0 4px 16px rgba(16,185,129,0.4)":"none" }}
+                  , selectedMatSets.size>0?"✓ Добавить "+selectedMatSets.size+(selectedMatSets.size===1?" набор":" наборов"):"Выберите наборы"
+                )
+              )
+            )
+          )
+
+        )
+
+        /* Footer */
+        , React.createElement('div', { style: { padding:"10px 12px 14px", borderTop:"1px solid var(--b1)", background:"var(--s1)" }}
+          , selCount > 0 && (
+            React.createElement('div', { style: { display:"flex", justifyContent:"space-between", marginBottom:8 }}
+              , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" }}, selCount, " позиций" )
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:900, color:"var(--green)" }}, fmt(selTotal), " ₽" )
+            )
+          )
+          , React.createElement('div', { style: { display:"flex", gap:8 }}
+            , React.createElement('button', { onClick: onCancel, style: { flex:1, padding:"10px", borderRadius:10, border:"1px solid var(--b1)", background:"transparent", color:"var(--tx3)", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}, "Пропустить →"
+
+            )
+            , React.createElement('button', { onClick: handleAddMaterials, style: { flex:2, padding:"10px", borderRadius:10, border:"none", background:"linear-gradient(135deg,#065f46,#10b981)", color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 3px 12px rgba(16,185,129,0.35)" }}
+              , selCount > 0 ? `✓ Добавить ${selCount} матер.` : "Готово"
+            )
+          )
+        )
+      )
+    );
+  }
+
+  return null;
+}
+
+
+// ==================== ESTIMATE MODAL ====================
+function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTotal, displaySections, profile }) {
+  const { lang: ctxLang } = useApp();
+  const lang = ctxLang || "ru";
+  const [tab, setTab]             = useState("sections");
+  const [viewMode, setViewMode]   = useState("edit"); // "edit" | "preview"
+  const [exportGroupBy, setExportGroupBy] = useState("sections"); // "sections" | "rooms"
+  const [exporting, setExporting] = useState(null);
+  const [exportDone, setExportDone] = useState(null);
+
+  // Editable header fields (auto-filled from project + profile)
+  const [header, setHeader] = useState(null);
+  useEffect(() => {
+    if (open && !header) {
+      const today = new Date();
+      const dd = String(today.getDate()).padStart(2,"0");
+      const mm = String(today.getMonth()+1).padStart(2,"0");
+      const yyyy = today.getFullYear();
+      setHeader({
+        companyName: _optionalChain([profile, 'optionalAccess', _89 => _89.companyName]) || "СтройМастер ИП",
+        logo: (profile && profile.logo) || "",
+        contractNo:  "1",
+        contractDate: `${dd}.${mm}.${yyyy}`,
+        objectName:  (project.name||"") || "",
+        objectAddress: project.address || "",
+        phone:       _optionalChain([profile, 'optionalAccess', _90 => _90.phone]) || "",
+        inn:         _optionalChain([profile, 'optionalAccess', _91 => _91.companyInn]) || "",
+        email:       _optionalChain([profile, 'optionalAccess', _92 => _92.email]) || "",
+        site:        _optionalChain([profile, 'optionalAccess', _93 => _93.site]) || "",
+        executor:    _optionalChain([profile, 'optionalAccess', _94 => _94.name]) || "",
+        client:      "",
+      });
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) { setViewMode("edit"); setHeader(null); setExportDone(null); }
+  }, [open]);
+
+  if (!open || !header || !project) return null;
+
+  const safeDisplaySections = (displaySections || []).map(s => ({
+    ...s, items: Array.isArray(s.items) ? s.items : []
+  }));
+  const rooms = project.rooms || [];
+
+  // -- HTML preview styles --
+  // -- Preview HTML (matches М-Ремонт style) ------------------
+  const previewCSS = `
+    @page { size: A4; margin: 15mm 12mm; }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: #fff; }
+    .sw {
+      font-family: Arial, Helvetica, sans-serif;
+      font-size: 8.5pt;
+      color: #111;
+      background: #fff;
+      padding: 10px 8px;
+      max-width: 100%;
+      margin: 0 auto;
+      overflow-x: hidden;
+    }
+    /* -- Header -- */
+    .sh { text-align: center; margin-bottom: 14px; }
+    .sh-company {
+      font-size: 14pt;
+      font-weight: bold;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: #1a2530;
+      margin-bottom: 4px;
+    }
+    .sh-line { height: 2px; background: #2c3e50; margin: 6px 0; }
+    .sh-meta { font-size: 8.5pt; color: #555; margin-bottom: 2px; }
+    .sh-contract {
+      font-size: 9pt;
+      color: #333;
+      margin: 10px 0 3px;
+      font-weight: bold;
+    }
+    .sh-address { font-size: 9pt; color: #555; margin-bottom: 4px; }
+    .sh-title {
+      font-size: 11.5pt;
+      font-weight: bold;
+      color: #1a2530;
+      margin: 8px 0 2px;
+    }
+    .sh-sub {
+      font-size: 10pt;
+      font-weight: bold;
+      color: #2c3e50;
+      margin-bottom: 14px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+    /* -- Table -- */
+    .st { width: 100%; border-collapse: collapse; margin-bottom: 0; table-layout: fixed; }
+    .st thead th {
+      background: #2c3e50;
+      color: #fff;
+      font-size: 7.5pt;
+      font-weight: bold;
+      padding: 5px 3px;
+      border: 1px solid #2c3e50;
+      text-align: center;
+      white-space: nowrap;
+      overflow: hidden;
+    }
+    .st thead th.left { text-align: left; }
+    .st tbody td {
+      padding: 4px 3px;
+      border: 1px solid #c5d0da;
+      font-size: 8pt;
+      vertical-align: middle;
+      line-height: 1.3;
+      overflow: hidden;
+      word-break: break-word;
+    }
+    .st tbody tr:nth-child(even) td { background: #f8fafc; }
+    .st tbody tr.sr td {
+      background: #dce9f7;
+      font-weight: bold;
+      font-size: 8.5pt;
+      padding: 5px 4px;
+      border-top: 1.5px solid #2c3e50;
+      border-bottom: 1.5px solid #2c3e50;
+      border-left: 1px solid #aabfd8;
+      border-right: 1px solid #aabfd8;
+      color: #1a2530;
+    }
+    .st tbody tr.mat td { background: #fefaf2; }
+    .num { text-align: center !important; color: #666; width: 22px; }
+    .ctr { text-align: center !important; }
+    .rgt { text-align: right !important; }
+    .col-unit  { width: 36px; }
+    .col-qty   { width: 36px; }
+    .col-price { width: 56px; }
+    .col-sum   { width: 60px; }
+    /* -- Footer totals -- */
+    .sf { margin-top: 0; }
+    .sf-totals {
+      border-top: 2px solid #2c3e50;
+      border-bottom: none;
+      padding-top: 8px;
+      margin-bottom: 8px;
+    }
+    .sf-row {
+      display: flex;
+      justify-content: flex-end;
+      align-items: baseline;
+      gap: 0;
+      margin-bottom: 3px;
+      font-size: 9.5pt;
+    }
+    .sf-row-label {
+      min-width: 200px;
+      text-align: left;
+      padding-right: 12px;
+      color: #333;
+    }
+    .sf-row-val {
+      min-width: 90px;
+      text-align: right;
+      font-weight: bold;
+      color: #1a2530;
+    }
+    .sf-row-grand {
+      font-size: 10.5pt;
+      font-weight: bold;
+      border-top: 1px solid #bbb;
+      padding-top: 5px;
+      margin-top: 3px;
+    }
+    .sf-words {
+      font-size: 8.5pt;
+      color: #333;
+      margin: 10px 0 22px;
+      line-height: 1.5;
+    }
+    .sf-signs {
+      display: flex;
+      justify-content: space-between;
+      margin-top: 24px;
+      padding-top: 4px;
+    }
+    .sf-sign { width: 45%; }
+    .sf-sign-title {
+      font-weight: bold;
+      font-size: 9.5pt;
+      margin-bottom: 28px;
+      color: #1a2530;
+    }
+    .sf-sign-line { border-bottom: 1px solid #444; margin-bottom: 4px; }
+    .sf-sign-hint {
+      font-size: 8pt;
+      color: #666;
+      display: flex;
+      justify-content: space-between;
+    }
+  `;
+
+  const fmtN = n => Math.round(n).toLocaleString("ru");
+  const fmtD = n => Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+
+  const numToWords = (n) => {
+    const ones = ["","один","два","три","четыре","пять","шесть","семь","восемь","девять","десять","одиннадцать","двенадцать","тринадцать","четырнадцать","пятнадцать","шестнадцать","семнадцать","восемнадцать","девятнадцать"];
+    const tens = ["","","двадцать","тридцать","сорок","пятьдесят","шестьдесят","семьдесят","восемьдесят","девяносто"];
+    const hunds = ["","сто","двести","триста","четыреста","пятьсот","шестьсот","семьсот","восемьсот","девятьсот"];
+    const t = Math.round(n);
+    if (t === 0) return "ноль";
+    const th = Math.floor(t/1000), rem = t % 1000;
+    let res = "";
+    if (th > 0) {
+      const h3 = Math.floor(th/100), t2 = th%100, o = th%10;
+      if (hunds[h3]) res += hunds[h3]+" ";
+      if (t2 >= 10 && t2 < 20) res += ones[t2]+" тысяч ";
+      else { if (tens[Math.floor(t2/10)]) res += tens[Math.floor(t2/10)]+" "; const tw = ["","одна","две","три","четыре","пять","шесть","семь","восемь","девять"]; if (tw[o]) res += tw[o]+" "; res += o===1?"тысяча ":o===2||o===3||o===4?"тысячи ":"тысяч "; }
+    }
+    if (rem > 0) {
+      const h = Math.floor(rem/100), t2 = rem%100, o = rem%10;
+      if (hunds[h]) res += hunds[h]+" ";
+      if (t2 >= 10 && t2 < 20) res += ones[t2]+" ";
+      else { if (tens[Math.floor(t2/10)]) res += tens[Math.floor(t2/10)]+" "; if (ones[o]) res += ones[o]+" "; }
+    }
+    return res.trim();
+  };
+
+  // Capitalise first letter
+  const cap = s => s ? s.charAt(0).toUpperCase() + s.slice(1) : s;
+
+  const totalWords = `${cap(numToWords(Math.floor(total)))} рублей ${String(Math.round((total%1)*100)).padStart(2,"0")} копеек`;
+
+  // Build rows — group items by section, sections act as "room" headers
+  const buildRowsBySections = () => {
+    const rows = [];
+    let n = 0;
+    safeDisplaySections.forEach(sec => {
+      if (!sec.items.length) return;
+      rows.push({ type: "section", name: sec.name });
+      sec.items.forEach(item => {
+        n++;
+        rows.push({ type: "item", n, name: item.name, unit: item.unit, qty: item.qty, price: item.price, total: item.qty * item.price, itemType: item.type });
+      });
+    });
+    return rows;
+  };
+
+  const buildRowsByRooms = () => {
+    const rows = [];
+    let n = 0;
+    const rooms = project.rooms || [];
+    if (rooms.length === 0) return buildRowsBySections();
+    rooms.forEach(room => {
+      const works = room.works || [];
+      const mats = [];
+      safeDisplaySections.forEach(sec => {
+        sec.items.filter(i => i.type === "material" && i._roomName === room.name).forEach(mat => {
+          mats.push({ type: "item", n: 0, name: mat.name, unit: mat.unit, qty: mat.qty, price: mat.price, total: mat.qty * mat.price, itemType: "material" });
+        });
+      });
+      if (!works.length && !mats.length) return;
+      rows.push({ type: "section", name: room.name });
+      works.forEach(w => {
+        n++;
+        rows.push({ type: "item", n, name: w.name, unit: w.unit, qty: w.qty, price: w.price, total: w.qty * w.price, itemType: "work" });
+      });
+      mats.forEach(m => { n++; rows.push({ ...m, n }); });
+      // Room subtotal
+      const roomTotal = works.reduce((s,w)=>s+w.qty*w.price,0) + mats.reduce((s,m)=>s+m.total,0);
+      rows.push({ type: "room_total", name: room.name, total: roomTotal });
+    });
+    // Add section items NOT linked to any room
+    safeDisplaySections.forEach(sec => {
+      const unlinked = sec.items.filter(i => !i._roomWorkId && !i._roomName);
+      if (!unlinked.length) return;
+      rows.push({ type: "section", name: sec.name });
+      unlinked.forEach(item => {
+        n++;
+        rows.push({ type: "item", n, name: item.name, unit: item.unit, qty: item.qty, price: item.price, total: item.qty * item.price, itemType: item.type });
+      });
+    });
+    return rows;
+  };
+
+  const buildRows = () => exportGroupBy === "rooms" ? buildRowsByRooms() : buildRowsBySections();
+  const rows = buildRows();
+
+  const buildPreviewHTML = () => {
+    const cl = (t) => "</" + t + ">";
+
+    const rowsHtml = rows.map(r => {
+      if (r.type === "section") {
+        return `<tr class="sr"><td colspan="6" class="left">${r.name}${cl("td")}${cl("tr")}`;
+      }
+      if (r.type === "room_total") {
+        return `<tr style="background:#eef7f0;border-top:2px solid #22c55e"><td colspan="5" style="padding:5px 8px;font-weight:800;font-size:8.5pt;color:#065f46;text-align:right">Итого по помещению «${r.name}»${cl("td")}<td class="col-sum rgt" style="font-weight:900;font-size:9.5pt;color:#065f46">${fmtD(r.total)}${cl("td")}${cl("tr")}`;
+      }
+      const isMat = r.itemType === "material";
+      return `<tr${isMat ? ' class="mat"' : ""}>` +
+        `<td class="num">${r.n}${cl("td")}` +
+        `<td>${r.name}${isMat ? ' <span style="font-size:8pt;color:#999;font-style:italic"> (мат.)</span>' : ""}${cl("td")}` +
+        `<td class="col-unit ctr">${r.unit}${cl("td")}` +
+        `<td class="col-qty ctr">${Number(r.qty).toFixed(2)}${cl("td")}` +
+        `<td class="col-price rgt">${fmtD(r.price)}${cl("td")}` +
+        `<td class="col-sum rgt">${fmtD(r.total)}${cl("td")}` +
+        cl("tr");
+    }).join("\n");
+
+    const metaLine = [
+      header.phone ? `Тел.: ${header.phone}` : "",
+      header.inn   ? `ИНН: ${header.inn}`     : "",
+      header.email ? header.email             : "",
+      header.site  ? header.site              : "",
+    ].filter(Boolean).join("  |  ");
+
+    return `<style>${previewCSS}${cl("style")}
+<div class="sw">
+  <div class="sh" style="display:flex;align-items:flex-start;gap:14px;justify-content:space-between;">
+    <div style="flex:1;">
+    <div class="sh-company">${header.companyName}${cl("div")}
+    <div class="sh-line">${cl("div")}
+    ${metaLine ? `<div class="sh-meta">${metaLine}${cl("div")}` : ""}
+    <div class="sh-contract">Приложение №1 к Договору №${header.contractNo} от ${header.contractDate}${cl("div")}
+    ${header.objectAddress ? `<div class="sh-address">${header.objectAddress}${cl("div")}` : ""}
+    <div class="sh-title">${header.objectName}${cl("div")}
+    <div class="sh-sub">Смета на ремонтные работы${cl("div")}
+    </div>
+    ${header.logo ? `<div style="flex-shrink:0;margin-left:10px;"><img src="${header.logo}" style="width:80px;height:80px;object-fit:contain;border-radius:10px;display:block;border:1px solid #e5e7eb;" /></div>` : ""}
+  ${cl("div")}
+
+  <table class="st">
+    <thead>
+      <tr>
+        <th class="num">№${cl("th")}
+        <th class="left" style="min-width:260px">Наименование работ${cl("th")}
+        <th class="col-unit">Ед. изм.${cl("th")}
+        <th class="col-qty">Кол-во${cl("th")}
+        <th class="col-price">Цена${cl("th")}
+        <th class="col-sum">Сумма${cl("th")}
+      ${cl("tr")}
+    ${cl("thead")}
+    <tbody>
+      ${rowsHtml}
+    ${cl("tbody")}
+  ${cl("table")}
+
+  <div class="sf">
+    <div class="sf-totals">
+      <div class="sf-row">
+        <div class="sf-row-label">Итого:${cl("div")}
+        <div class="sf-row-val">${fmtD(workTotal)}${cl("div")}
+      ${cl("div")}
+      <div class="sf-row">
+        <div class="sf-row-label">Итого по работам:${cl("div")}
+        <div class="sf-row-val">${fmtD(workTotal)}${cl("div")}
+      ${cl("div")}
+      ${matTotal > 0 ? `<div class="sf-row"><div class="sf-row-label">Итого по материалам:${cl("div")}<div class="sf-row-val">${fmtD(matTotal)}${cl("div")}${cl("div")}` : ""}
+      <div class="sf-row sf-row-grand">
+        <div class="sf-row-label">Итого общее:${cl("div")}
+        <div class="sf-row-val">${fmtD(total)}${cl("div")}
+      ${cl("div")}
+    ${cl("div")}
+    <div class="sf-words">Итоговая сумма составляет ${fmtD(total)} (${totalWords}) рублей 00 копеек${cl("div")}
+    <div class="sf-signs">
+      <div class="sf-sign">
+        <div class="sf-sign-title">Заказчик${cl("div")}
+        <div class="sf-sign-line">${cl("div")}
+        <div class="sf-sign-hint">
+          <span>${header.client || "____________"}${cl("span")}
+          <span>/&nbsp;______________________&nbsp;/${cl("span")}
+        ${cl("div")}
+      ${cl("div")}
+      <div class="sf-sign">
+        <div class="sf-sign-title">Подрядчик${cl("div")}
+        <div class="sf-sign-line">${cl("div")}
+        <div class="sf-sign-hint">
+          <span>${header.executor || header.companyName}${cl("span")}
+          <span>/&nbsp;______________________&nbsp;/${cl("span")}
+        ${cl("div")}
+      ${cl("div")}
+    ${cl("div")}
+  ${cl("div")}
+${cl("div")}`;
+  };
+  const previewHTML = buildPreviewHTML();
+
+  // -- Export PDF via print --
+  const exportPDF = () => {
+    setExporting("pdf");
+    try {
+      const win = window.open("", "_blank", "width=900,height=700");
+      win.document.write(`<!DOCTYPE html><html><head><meta charset="utf-8"><title>Смета — ${project.name}</title></head><body style="margin:0;padding:0">${previewHTML}</body></html>`);
+      win.document.close();
+      win.focus();
+      setTimeout(() => { win.print(); setExporting(null); setExportDone("pdf"); setTimeout(()=>setExportDone(null),2000); }, 600);
+    } catch(e) { setExporting(null); console.error(e); }
+  };
+
+  // -- Export XLSX (CSV) --
+  const exportXLSX = () => {
+    setExporting("xlsx");
+    try {
+      const rows2 = [];
+      rows2.push([t(lang,"company"), header.companyName]);
+      rows2.push(["Договор №", header.contractNo, "от", header.contractDate]);
+      rows2.push(["Объект", header.objectName]);
+      rows2.push(["Адрес", header.objectAddress]);
+      rows2.push([]);
+      rows2.push(["№","Наименование работ","Ед. изм.","Кол-во","Цена","Сумма"]);
+      let n2 = 0;
+      safeDisplaySections.forEach(sec => {
+        if (!sec.items.length) return;
+        rows2.push([sec.name]);
+        sec.items.forEach(item => {
+          n2++;
+          rows2.push([n2, item.name, item.unit, item.qty, item.price, item.qty*item.price]);
+        });
+        rows2.push(["","","","","Итого:", sec.items.reduce((s,i)=>s+i.qty*i.price,0)]);
+      });
+      rows2.push([]);
+      rows2.push(["","","","","ИТОГО:", total]);
+      const csv = rows2.map(r => r.map(c => `"${String(_nullishCoalesce(c, () => (''))).replace(/"/g,'""')}"`).join(",")).join("\n");
+      const blob = new Blob(["\uFEFF"+csv], { type:"text/csv;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href=url; a.download=`smeta_${project.name.replace(/\s+/g,"_")}.csv`; a.click();
+      setTimeout(()=>URL.revokeObjectURL(url),1000);
+      setExporting(null); setExportDone("xlsx"); setTimeout(()=>setExportDone(null),2000);
+    } catch(e) { setExporting(null); }
+  };
+
+  const IS = { width:"100%", padding:"8px 10px", borderRadius:8, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:12, fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+
+  return (
+    React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.85)", zIndex:500, display:"flex", flexDirection:"column" }}
+      , React.createElement('div', { style: { background:"var(--s1)", flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}
+
+        /* Header bar */
+        , React.createElement('div', { style: { padding:"12px 16px", borderBottom:"1px solid var(--b1)", display:"flex", alignItems:"center", gap:10, flexShrink:0, background:"var(--s1)" }}
+          , React.createElement('div', { style: { flex:1 }}
+            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:800, color:"var(--tx)" }}, "Смета")
+            , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", marginTop:1 }}, project.name)
+          )
+          /* View toggle */
+          , React.createElement('div', { style: { display:"flex", background:"var(--s2)", borderRadius:10, padding:3, gap:2 }}
+            , [["edit","✏️ Данные"],["preview","👁 Просмотр"]].map(([id,lbl])=>(
+              React.createElement('button', { key: id, onClick: ()=>setViewMode(id), style: { padding:"6px 10px", borderRadius:8, border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700, background:viewMode===id?"var(--s1)":"transparent", color:viewMode===id?"var(--tx)":"var(--tx3)", boxShadow:viewMode===id?"0 1px 4px rgba(0,0,0,0.2)":"none" }}, lbl)
+            ))
+          )
+          , React.createElement('button', { onClick: onClose, style: { background:"var(--s2)", border:"none", borderRadius:9, padding:"7px 11px", cursor:"pointer", color:"var(--tx3)", fontSize:13 }}, "✕")
+        )
+
+        /* GroupBy toggle — prominent, below header */
+        , React.createElement('div', { style: { padding:"8px 16px", borderBottom:"1px solid var(--b1)", background:"var(--s2)", display:"flex", gap:8 }}
+          , [["sections","📋 "+t(lang,"sections")],["rooms","🏠 "+t(lang,"rooms")]].map(([id,lbl])=>(
+            React.createElement('button', { key: id, onClick: ()=>setExportGroupBy(id), style: {
+              flex:1, padding:"10px 8px", borderRadius:10, border:`2px solid ${exportGroupBy===id?"var(--acc)":"var(--b1)"}`,
+              background:exportGroupBy===id?"var(--acc3)":"var(--s1)", cursor:"pointer", fontFamily:"inherit",
+              fontSize:12, fontWeight:800, color:exportGroupBy===id?"var(--acc2)":"var(--tx3)",
+              transition:"all 0.15s",
+            }}, lbl)
+          ))
+        )
+
+        /* -- EDIT MODE -- */
+        , viewMode === "edit" && (
+          React.createElement('div', { style: { flex:1, overflowY:"auto", padding:"14px 16px" }}
+
+            /* Editable header */
+            , React.createElement('div', { style: { background:"var(--s2)", borderRadius:14, padding:14, marginBottom:14, border:"1px solid var(--b1)" }}
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:11, fontWeight:800, color:"var(--tx)", marginBottom:12 }}, "📋 Шапка сметы"  )
+              , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:8 }}
+                , React.createElement('div', {}
+                  , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:4 }}, "Компания")
+                  , React.createElement('input', { value: header.companyName, onChange: e=>setHeader(h=>({...h,companyName:e.target.value})), style: IS, placeholder: "Название компании" } )
+                )
+                , React.createElement('div', {}
+                  , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:4 }}, "Телефон")
+                  , React.createElement('input', { value: header.phone, onChange: e=>setHeader(h=>({...h,phone:e.target.value})), style: IS, placeholder: "+7 900 000-00-00"  } )
+                )
+                , React.createElement('div', {}
+                  , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:4 }}, "Номер договора" )
+                  , React.createElement('input', { value: header.contractNo, onChange: e=>setHeader(h=>({...h,contractNo:e.target.value})), style: IS, placeholder: "1"} )
+                )
+                , React.createElement('div', {}
+                  , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:4 }}, "Дата договора" )
+                  , React.createElement('input', { value: header.contractDate, onChange: e=>setHeader(h=>({...h,contractDate:e.target.value})), style: IS, placeholder: "01.01.2025"} )
+                )
+                , React.createElement('div', {}
+                  , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:4 }}, "Объект / проект"  )
+                  , React.createElement('input', { value: header.objectName, onChange: e=>setHeader(h=>({...h,objectName:e.target.value})), style: IS} )
+                )
+                , React.createElement('div', {}
+                  , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:4 }}, "Адрес объекта" )
+                  , React.createElement('input', { value: header.objectAddress, onChange: e=>setHeader(h=>({...h,objectAddress:e.target.value})), style: IS} )
+                )
+                , React.createElement('div', {}
+                  , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:4 }}, "ИНН")
+                  , React.createElement('input', { value: header.inn, onChange: e=>setHeader(h=>({...h,inn:e.target.value})), style: IS} )
+                )
+                , React.createElement('div', {}
+                  , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:4 }}, "Email")
+                  , React.createElement('input', { value: header.email||"", onChange: e=>setHeader(h=>({...h,email:e.target.value})), style: IS, placeholder: "info@company.ru"} )
+                )
+                , React.createElement('div', {}
+                  , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:4 }}, "Сайт")
+                  , React.createElement('input', { value: header.site||"", onChange: e=>setHeader(h=>({...h,site:e.target.value})), style: IS, placeholder: "www.company.ru"} )
+                )
+                , React.createElement('div', {}
+                  , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:4 }}, "Исполнитель")
+                  , React.createElement('input', { value: header.executor, onChange: e=>setHeader(h=>({...h,executor:e.target.value})), style: IS} )
+                )
+              )
+              , React.createElement('div', {}
+                , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:4 }}, "Заказчик (ФИО)" )
+                , React.createElement('input', { value: header.client, onChange: e=>setHeader(h=>({...h,client:e.target.value})), style: IS, placeholder: "ФИО Заказчика" } )
+              )
+            )
+
+            /* Sections summary */
+            , React.createElement('div', { style: { background:"var(--s2)", borderRadius:14, padding:12, border:"1px solid var(--b1)" }}
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:11, fontWeight:800, color:"var(--tx)", marginBottom:10 }}, "Разделы сметы" )
+              , safeDisplaySections.filter(s=>s.items.length>0).map(sec => {
+                const secTotal = sec.items.reduce((s,i)=>s+i.qty*i.price,0);
+                return (
+                  React.createElement('div', { key: sec.id, style: { display:"flex", justifyContent:"space-between", padding:"7px 10px", borderRadius:9, background:"var(--s1)", marginBottom:5, border:"1px solid var(--b1)" }}
+                    , React.createElement('div', { style: { fontSize:12, fontWeight:600, color:"var(--tx)" }}, sec.name, " " , React.createElement('span', { style: { fontSize:10, color:"var(--tx3)"}}, "(", sec.items.length, " поз.)" ))
+                    , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:700, color:"var(--acc2)" }}, fmt(secTotal))
+                  )
+                );
+              })
+              , React.createElement('div', { style: { display:"flex", justifyContent:"space-between", padding:"10px", borderTop:"2px solid var(--b1)", marginTop:4 }}
+                , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"var(--tx)" }}, "ИТОГО")
+                , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:900, color:"var(--acc2)" }}, fmt(total))
+              )
+            )
+          )
+        )
+
+        /* -- PREVIEW MODE -- */
+        , viewMode === "preview" && (
+          React.createElement('div', { style: { flex:1, overflowY:"auto", overflowX:"hidden", background:"#e8e8e8", padding:"8px 4px" }}
+            , React.createElement('div', { dangerouslySetInnerHTML: { __html: previewHTML }, style: { background:"#fff", boxShadow:"0 2px 12px rgba(0,0,0,0.25)", borderRadius:4, overflowX:"hidden" }} )
+          )
+        )
+
+        /* Footer — 3 export buttons */
+        , React.createElement('div', { style: { padding:"10px 16px 24px", borderTop:"1px solid var(--b1)", flexShrink:0, background:"var(--s1)" }}
+          , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700, textTransform:"uppercase", letterSpacing:"0.07em", textAlign:"center", marginBottom:8 }}, "Группировка: "
+             , exportGroupBy === "rooms" ? "По помещениям" : "По разделам"
+          )
+          , React.createElement('div', { style: { display:"flex", gap:8 }}
+            , React.createElement('button', { onClick: () => { setViewMode("preview"); setTimeout(() => _optionalChain([window, 'access', _95 => _95.print, 'optionalCall', _96 => _96()]), 400); }, style: { flex:1, padding:"11px 6px", borderRadius:12, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx2)", fontWeight:700, fontSize:11, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}
+              , React.createElement('span', { style: { fontSize:18 }}, "🖨️")
+              , React.createElement('span', {}, "Печать")
+            )
+            , React.createElement('button', { onClick: exportPDF, disabled: !!exporting, style: { flex:2, padding:"11px 6px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#1e40af,#3b82f6)", color:"#fff", fontWeight:800, fontSize:11, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}
+              , React.createElement('span', { style: { fontSize:18 }}, "📄")
+              , React.createElement('span', {}, exportDone==="pdf" ? "✓ Открыт!" : exporting==="pdf" ? "⏳..." : "Экспорт PDF")
+            )
+            , React.createElement('button', { onClick: exportXLSX, disabled: !!exporting, style: { flex:2, padding:"11px 6px", borderRadius:12, border:"none", background:"linear-gradient(135deg,#065f46,#10b981)", color:"#fff", fontWeight:700, fontSize:11, cursor:"pointer", fontFamily:"inherit", display:"flex", flexDirection:"column", alignItems:"center", gap:3 }}
+              , React.createElement('span', { style: { fontSize:18 }}, "📊")
+              , React.createElement('span', {}, exportDone==="xlsx" ? "✓ Готово!" : exporting==="xlsx" ? "⏳..." : "Экспорт Excel")
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+function RoomEstimateCard({ room, roomIcon, roomTotal, matTotal, stageGroups, dispatch, projectId, navigate, onAddMaterials, isMatsMode }) {
+  const [collapsed, setCollapsed] = useState(true);
+  const [editWork, setEditWork] = useState(null);
+  const [editForm, setEditForm] = useState({});
+  const [showEditRoom, setShowEditRoom] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  // Editable room fields
+  const [editName, setEditName] = useState(room.name);
+  const [editL, setEditL]       = useState(String(room.length || ""));
+  const [editW, setEditW]       = useState(String(room.width  || ""));
+  const [editH, setEditH]       = useState(String(room.height || "2.7"));
+  const measurements = getRoomMeasurements(room);
+  const photoRef = useRef(null);
+
+  const handlePhoto = (e) => {
+    const file = _optionalChain([e, 'access', _97 => _97.target, 'access', _98 => _98.files, 'optionalAccess', _99 => _99[0]]);
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => dispatch({ type: "UPDATE_ROOM", pid: projectId, room: { ...room, photo: ev.target.result } });
+    reader.readAsDataURL(file);
+    e.target.value = "";
+  };
+
+  const startEdit = (w) => { setEditWork(w); setEditForm({ qty: String(w.qty), price: String(w.price), name: w.name }); };
+  const saveEdit = () => {
+    if (!editForm.qty || !editForm.price) return;
+    dispatch({ type: "UPDATE_ROOM_WORK", pid: projectId, rid: room.id, work: { ...editWork, qty: +editForm.qty, price: +editForm.price, name: editForm.name } });
+    setEditWork(null);
+  };
+  const [confirmDeleteWid, setConfirmDeleteWid] = useState(null);
+  const deleteWork = (wid) => setConfirmDeleteWid(wid);
+  const confirmDeleteWork = () => { if(confirmDeleteWid) { dispatch({ type: "DELETE_ROOM_WORK", pid: projectId, rid: room.id, wid: confirmDeleteWid }); setConfirmDeleteWid(null); } };
+
+  return (
+    React.createElement('div', { style: { background: "var(--s1)", borderRadius: "var(--r)", marginBottom: 12, overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.3)", border: "1px solid var(--b1)" }}
+      /* Room header — always readable layout */
+      , React.createElement('div', { style: { borderBottom: collapsed ? "none" : "1px solid var(--b1)" }}
+        /* Room card header */
+        , React.createElement('div', { style: { padding: "12px 14px 10px" }}
+          /* Top: icon + name (full) + edit button */
+          , React.createElement('div', { style: { display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 8 }}
+            /* Photo / Icon — square, click to change */
+            , React.createElement('div', {
+              onClick: e => { e.stopPropagation(); _optionalChain([photoRef, 'access', _100 => _100.current, 'optionalAccess', _101 => _101.click, 'call', _102 => _102()]); },
+              title: "Нажмите чтобы добавить фото"   ,
+              style: { width: 48, height: 48, borderRadius: 12, background: room.photo ? "transparent" : "var(--acc3)", border: `1.5px solid ${room.photo ? "var(--b1)" : "rgba(124,111,255,0.25)"}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, flexShrink: 0, cursor: "pointer", overflow: "hidden", position: "relative" }}
+              , room.photo
+                ? React.createElement('img', { src: room.photo, alt: "", style: { width: "100%", height: "100%", objectFit: "cover" }} )
+                : React.createElement('span', {}, roomIcon)
+              
+              , React.createElement('div', { style: { position: "absolute", bottom: 0, right: 0, width: 16, height: 16, background: "var(--acc)", borderRadius: "4px 0 0 0", display: "flex", alignItems: "center", justifyContent: "center" }}
+                , React.createElement('svg', { width: "9", height: "9", viewBox: "0 0 24 24"   , fill: "none", stroke: "#fff", strokeWidth: "2.5"}, React.createElement('path', { d: "M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"                      }), React.createElement('circle', { cx: "12", cy: "13", r: "4"}))
+              )
+            )
+            , React.createElement('input', { ref: photoRef, type: "file", accept: "image/*", style: { display: "none" }, onChange: handlePhoto} )
+
+            /* Name — always fully visible */
+            , React.createElement('div', { style: { flex: 1, minWidth: 0, cursor: "pointer" }, onClick: () => setCollapsed(c => !c)}
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 900, color: "var(--tx)", lineHeight: 1.25, whiteSpace: "normal", wordBreak: "break-word" }}, room.name)
+              , React.createElement('div', { style: { display: "flex", gap: 4, flexWrap: "wrap", marginTop: 4 }}
+                , measurements.slice(0, 3).map(m => (
+                  React.createElement('span', { key: m.key, style: { fontSize: 9, fontWeight: 700, padding: "1px 5px", borderRadius: 4, background: "var(--s2)", color: "var(--tx3)" }}
+                    , m.icon, " " , m.val.toFixed(1), " " , m.unit
+                  )
+                ))
+              )
+            )
+
+            /* Edit button — always visible */
+            , React.createElement('button', { onClick: e => { e.stopPropagation(); setEditName(room.name); setEditL(String(room.length||"")); setEditW(String(room.width||"")); setEditH(String(room.height||"2.7")); setShowEditRoom(true); },
+              style: { background: "rgba(124,111,255,0.12)", border: "none", borderRadius: 9, padding: "8px 10px", cursor: "pointer", flexShrink: 0, display: "flex", alignItems: "center", gap: 4 }}
+              , React.createElement(Icon, { name: "edit", size: 14, color: "var(--acc)"} )
+            )
+          )
+
+          /* Bottom: sum row + collapse */
+          , React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", cursor: "pointer" }, onClick: () => setCollapsed(c => !c)}
+            , React.createElement('div', { style: { display: "flex", gap: 6, alignItems: "center" }}
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 16, fontWeight: 900, color: "var(--acc2)" }}, fmt(roomTotal))
+              , matTotal > 0 && React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: "var(--cyan)", background: "rgba(6,182,212,0.1)", borderRadius: 6, padding: "2px 7px" }}, "🧱 " , fmt(matTotal))
+            )
+            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6 }}
+              , React.createElement('span', { style: { fontSize: 11, color: "var(--tx3)" }}, stageGroups.reduce((s,g)=>s+g.works.length,0), " работ" )
+              , React.createElement(Icon, { name: collapsed ? "chevronDown" : "chevronDown", size: 14, color: "var(--acc2)", style: { transform: collapsed ? "none" : "rotate(180deg)" }} )
+            )
+          )
+        )
+
+        /* Bottom action row: Works / Materials / Delete */
+        , React.createElement('div', { style: { display: "flex", gap: 6, padding: "0 14px 10px" }}
+          , React.createElement('button', { onClick: () => navigate("roomdetail", { projectId, roomId: room.id }),
+            style: { flex: 1, background: "var(--acc3)", border: "none", borderRadius: 9, padding: "7px 8px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}
+            , React.createElement(Icon, { name: "plus", size: 13, color: "var(--acc2)"} )
+            , React.createElement('span', { style: { fontSize: 11, fontWeight: 700, color: "var(--acc2)" }}, "+ Работы" )
+          )
+          , isMatsMode && (
+            React.createElement('button', { onClick: () => onAddMaterials && onAddMaterials(room),
+              style: { flex: 1, background: "rgba(6,182,212,0.1)", border: "none", borderRadius: 9, padding: "7px 8px", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 4 }}
+              , React.createElement(Icon, { name: "plus", size: 13, color: "var(--cyan)"} )
+              , React.createElement('span', { style: { fontSize: 11, fontWeight: 700, color: "var(--cyan)" }}, "+ Материалы" )
+            )
+          )
+          , React.createElement('button', { onClick: e => { e.stopPropagation(); setConfirmDelete(true); },
+            style: { background: "rgba(239,68,68,0.08)", border: "none", borderRadius: 9, padding: "7px 10px", cursor: "pointer" }}
+            , React.createElement(Icon, { name: "trash", size: 13, color: "#ef4444"} )
+          )
+        )
+      )
+
+      /* Expanded: works grouped by stage */
+      , !collapsed && (
+        React.createElement('div', {}
+          , stageGroups.length === 0 ? (
+            React.createElement('div', { style: { padding: "20px 14px", textAlign: "center" }}
+              , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)", marginBottom: 12 }}, "Нет работ в этом помещении"    )
+              , React.createElement('button', { onClick: () => navigate("roomdetail", { projectId, roomId: room.id }),
+                style: { background: "var(--acc)", border: "none", borderRadius: 10, padding: "9px 18px", color: "#fff", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: "inherit" }}, "+ Добавить работы"
+
+              )
+            )
+          ) : stageGroups.map(({ stage, works }) => {
+            const stageTotal = works.reduce((s, w) => s + w.qty * w.price, 0);
+            return (
+              React.createElement('div', { key: stage.id}
+                , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", background: `${stage.color}12`, borderBottom: "1px solid var(--b1)", borderTop: "1px solid var(--b1)" }}
+                  , React.createElement('span', { style: { fontSize: 14 }}, stage.icon)
+                  , React.createElement('div', { style: { flex: 1, fontSize: 11, fontWeight: 800, color: "var(--tx2)", textTransform: "uppercase", letterSpacing: "0.06em" }}, stage.label)
+                  , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 11, fontWeight: 800, color: "var(--tx)" }}, fmt(stageTotal))
+                )
+                , works.map((w, i) => {
+                  const total = w.qty * w.price;
+                  const isEditing = _optionalChain([editWork, 'optionalAccess', _103 => _103.id]) === w.id;
+                  return (
+                    React.createElement('div', { key: w.id, style: { borderBottom: i < works.length - 1 ? "1px solid var(--b1)" : "none", background: isEditing ? "rgba(124,111,255,0.06)" : "transparent" }}
+                      , isEditing ? (
+                        /* Inline edit row */
+                        React.createElement('div', { style: { padding: "10px 12px", display: "flex", flexDirection: "column", gap: 8 }}
+                          , React.createElement('input', { value: editForm.name, onChange: e => setEditForm(f => ({ ...f, name: e.target.value })),
+                            style: { width: "100%", padding: "7px 10px", borderRadius: 8, border: "1.5px solid var(--acc)", background: "var(--s2)", color: "var(--tx)", fontSize: 12, fontFamily: "inherit", outline: "none", boxSizing: "border-box" }, placeholder: "Название работы" } )
+                          , React.createElement('div', { style: { display: "flex", gap: 8 }}
+                            , React.createElement('div', { style: { flex: 1 }}
+                              , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", fontWeight: 600, marginBottom: 3 }}, "Кол-во (" , w.unit, ")")
+                              , React.createElement('input', { type: "number", value: editForm.qty, onChange: e => setEditForm(f => ({ ...f, qty: e.target.value })),
+                                style: { width: "100%", padding: "7px 10px", borderRadius: 8, border: "1.5px solid var(--b1)", background: "var(--s2)", color: "var(--tx)", fontSize: 13, fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} )
+                            )
+                            , React.createElement('div', { style: { flex: 1 }}
+                              , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", fontWeight: 600, marginBottom: 3 }}, "Цена (₽/" , w.unit, ")")
+                              , React.createElement('input', { type: "number", value: editForm.price, onChange: e => setEditForm(f => ({ ...f, price: e.target.value })),
+                                style: { width: "100%", padding: "7px 10px", borderRadius: 8, border: "1.5px solid var(--b1)", background: "var(--s2)", color: "var(--tx)", fontSize: 13, fontFamily: "inherit", outline: "none", boxSizing: "border-box" }} )
+                            )
+                            , React.createElement('div', { style: { flexShrink: 0, display: "flex", flexDirection: "column", justifyContent: "flex-end", gap: 4 }}
+                              , React.createElement('button', { onClick: saveEdit, style: { background: "var(--green)", border: "none", borderRadius: 8, padding: "7px 12px", color: "#fff", fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}, "✓")
+                              , React.createElement('button', { onClick: () => setEditWork(null), style: { background: "var(--s2)", border: "1px solid var(--b1)", borderRadius: 8, padding: "6px 10px", color: "var(--tx3)", fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}, "✕")
+                            )
+                          )
+                          , React.createElement('div', { style: { fontSize: 11, color: "var(--acc2)", fontWeight: 700, textAlign: "right" }}, "Итого: "
+                             , fmt((+editForm.qty || 0) * (+editForm.price || 0))
+                          )
+                        )
+                      ) : (
+                        /* Normal row */
+                        React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px 9px 34px" }}
+                          , React.createElement('div', { style: { width: 5, height: 5, borderRadius: "50%", background: stage.color, flexShrink: 0 }} )
+                          , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+                            , React.createElement('div', { style: { fontSize: 12, fontWeight: 600, color: "var(--tx)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}, w.name)
+                            , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", marginTop: 1 }}
+                              , React.createElement('span', { style: { background: "rgba(16,185,129,0.12)", color: "var(--green)", fontWeight: 700, borderRadius: 4, padding: "1px 5px" }}, "📐 " , w.qty, " " , w.unit)
+                              , " × ", fmt(w.price)
+                            )
+                          )
+                          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 12, fontWeight: 700, color: "var(--tx)", flexShrink: 0 }}, fmt(total))
+                          , React.createElement('div', { style: { display: "flex", gap: 3, flexShrink: 0 }}
+                            , React.createElement('button', { onClick: () => startEdit(w), style: { background: "rgba(124,111,255,0.12)", border: "none", borderRadius: 7, padding: "4px 7px", cursor: "pointer" }}
+                              , React.createElement(Icon, { name: "edit", size: 12, color: "var(--acc)"} )
+                            )
+                            , React.createElement('button', { onClick: () => { deleteWork(w.id); }, style: { background: "rgba(239,68,68,0.1)", border: "none", borderRadius: 7, padding: "4px 7px", cursor: "pointer" }}
+                              , React.createElement(Icon, { name: "trash", size: 12, color: "#ef4444"} )
+                            )
+                          )
+                        )
+                      )
+                    )
+                  );
+                })
+              )
+            );
+          })
+          /* Room subtotal + add work */
+          , React.createElement('div', { style: { borderTop: "1px solid var(--b1)", background: "rgba(108,99,255,0.04)" }}
+            , React.createElement('div', { style: { padding: "10px 14px", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+              , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", fontWeight: 700 }}, "Итого работы" )
+              , React.createElement('div', { style: { display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 2 }}
+                , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 900, color: "var(--acc2)" }}, fmt(roomTotal))
+                , matTotal > 0 && React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: "var(--cyan)" }}, "🧱 материалы "  , fmt(matTotal))
+                , matTotal > 0 && React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)" }}, "= " , fmt(roomTotal + matTotal), " всего" )
+              )
+            )
+            , React.createElement('div', { style: { padding: "0 12px 10px" }}
+              , React.createElement('button', { onClick: () => navigate("roomdetail", { projectId, roomId: room.id }),
+                style: { width: "100%", background: "transparent", border: "2px dashed var(--b2)", borderRadius: 10, padding: "8px", color: "var(--acc2)", fontWeight: 600, fontSize: 12, cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}
+                , React.createElement(Icon, { name: "plus", size: 14, color: "var(--acc2)"} ), " Добавить работу"
+              )
+            )
+          )
+
+      /* Edit room modal */
+      , showEditRoom && (
+        React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", zIndex:500, display:"flex", alignItems:"flex-end", justifyContent:"center" }, onClick: () => setShowEditRoom(false)}
+          , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", padding:"16px", width:"100%", maxWidth: "min(480px, 95vw)" }, onClick: e => e.stopPropagation()}
+            , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"0 auto 14px" }} )
+            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:800, color:"var(--tx)", marginBottom:14 }}, "✏️ Редактировать помещение"  )
+            , React.createElement('div', { style: { marginBottom:10 }}
+              , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700, textTransform:"uppercase", marginBottom:4 }}, "Название")
+              , React.createElement('input', { value: editName, onChange: e=>setEditName(e.target.value),
+                style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontFamily:"inherit", fontSize:14, outline:"none", boxSizing:"border-box" }} )
+            )
+            , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:16 }}
+              , [["Длина (м)","editL",editL,setEditL],["Ширина (м)","editW",editW,setEditW],["Высота (м)","editH",editH,setEditH]].map(([lbl,key,val,set])=>(
+                React.createElement('div', { key: key}
+                  , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700, textTransform:"uppercase", marginBottom:4 }}, lbl)
+                  , React.createElement('input', { type: "number", value: val, onChange: e=>set(e.target.value),
+                    style: { width:"100%", padding:"9px 10px", borderRadius:9, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontFamily:"inherit", fontSize:13, outline:"none", textAlign:"center", boxSizing:"border-box" }} )
+                )
+              ))
+            )
+            , React.createElement('div', { style: { display:"flex", gap:8 }}
+              , React.createElement('button', { onClick: () => setShowEditRoom(false),
+                style: { flex:1, padding:"12px", borderRadius:12, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx3)", fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Отмена"
+
+              )
+              , React.createElement('button', { onClick: () => {
+                if (!editName.trim()) return;
+                const L = +editL || room.length;
+                const W = +editW || room.width;
+                const H = +editH || room.height;
+                const floor = L && W ? +(L*W).toFixed(2) : room.floor;
+                const ceiling = floor;
+                const perimeter = L && W ? +(2*(L+W)).toFixed(2) : room.perimeter;
+                const wallsTotal = perimeter && H ? +(perimeter*H).toFixed(2) : room.wallsTotal;
+                dispatch({ type:"UPDATE_ROOM", pid:projectId, room:{ ...room, name:editName.trim(), length:L, width:W, height:H, floor, ceiling, perimeter, wallsTotal } });
+                setShowEditRoom(false);
+              },
+                style: { flex:2, padding:"12px", borderRadius:12, border:"none", background:"linear-gradient(135deg,var(--acc),var(--acc2))", color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "✓ Сохранить"
+
+              )
+            )
+          )
+        )
+      )
+
+      /* Delete confirm */
+      , confirmDelete && (
+        React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", zIndex:500, display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+          , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", padding:"20px 16px 32px", width:"100%", maxWidth: "min(480px, 95vw)" }}
+            , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"0 auto 16px" }} )
+            , React.createElement('div', { style: { fontSize:18, textAlign:"center", marginBottom:8 }}, "🗑️")
+            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:800, color:"var(--tx)", textAlign:"center", marginBottom:6 }}, "Удалить помещение?" )
+            , React.createElement('div', { style: { fontSize:12, color:"var(--tx3)", textAlign:"center", marginBottom:4 }}, "«", room.name, "»")
+            , React.createElement('div', { style: { fontSize:11, color:"#ef4444", textAlign:"center", marginBottom:20 }}, "Все работы и данные помещения будут удалены"      )
+            , React.createElement('div', { style: { display:"flex", gap:8 }}
+              , React.createElement('button', { onClick: () => setConfirmDelete(false),
+                style: { flex:1, padding:"12px", borderRadius:12, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx3)", fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Отмена"
+
+              )
+              , React.createElement('button', { onClick: () => { dispatch({ type:"DELETE_ROOM", pid:projectId, rid:room.id }); setConfirmDelete(false); },
+                style: { flex:1, padding:"12px", borderRadius:12, border:"none", background:"#ef4444", color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Удалить"
+
+              )
+            )
+          )
+        )
+      )
+        )
+      )
+    )
+  );
+}
+
+// ======================================================
+// RoomMaterialsModal — add materials to a room's section
+// with optional thickness/consumption calculation
+// ======================================================
+function RoomMaterialsModal({ open, onClose, room, project, dispatch, projectId, state }) {
+  const [tab, setTab]               = useState("suggested"); // "suggested" | "catalog" | "sets"
+  const [selected, setSelected]     = useState({});
+  const [thickness, setThickness]   = useState({});
+  const [catStage, setCatStage]     = useState("all");
+  const [catSearch, setCatSearch]   = useState("");
+  const [setsSearch, setSetsSearch] = useState("");
+  const [selectedSets, setSelectedSets] = useState(new Set());
+
+  const STAGE_ICONS = { prep:"🔨", floor:"🟫", walls:"🖌️", ceiling:"🔲", plumbing:"🚿", electric:"⚡", doors:"🚪", finish:"✨" };
+  const stages = ["all","prep","floor","walls","ceiling","plumbing","electric","doors","finish","other"];
+
+  // Build suggestions from works in this room
+  const works = _optionalChain([room, 'optionalAccess', _104 => _104.works]) || [];
+  const matById = Object.fromEntries(CATALOG.map(m => [m.id, m]));
+
+  const suggestions = useMemo(() => {
+    const agg = {};
+    works.forEach(w => {
+      const map = WORK_MATERIALS_MAP[w.name];
+      if (!map) return;
+      map.forEach(({ id, qty: qpu }) => {
+        const mat = matById[id];
+        if (!mat) return;
+        const total = w.qty * qpu;
+        if (!agg[id]) agg[id] = { mat, qty: 0, reasons: [] };
+        agg[id].qty += total;
+        agg[id].reasons.push(`${w.name} × ${w.qty} ${w.unit}`);
+      });
+    });
+    return Object.entries(agg).map(([id, { mat, qty, reasons }]) => ({
+      id, mat,
+      qty: mat.unit === "м²" || mat.unit === "м.п." ? Math.ceil(qty * 10) / 10 : Math.ceil(qty),
+      price: mat.price,
+      reason: reasons.join(", "),
+    }));
+  }, [_optionalChain([room, 'optionalAccess', _105 => _105.id])]);
+
+  // Pre-select all on open
+  useEffect(() => {
+    if (!open) { setSelected({}); setThickness({}); return; }
+    const pre = {};
+    suggestions.forEach(s => { pre[s.id] = { ...s }; });
+    setSelected(pre);
+  }, [open, _optionalChain([room, 'optionalAccess', _106 => _106.id])]);
+
+  if (!open || !room) return null;
+
+  // Compute room area dimensions for thickness calc
+  const roomFloor   = room.floor   || (room.length && room.width ? room.length * room.width : 0);
+  const roomWalls   = room.wallsNet || 0;
+  const roomCeiling = room.ceiling || roomFloor;
+
+  const getArea = (matId) => {
+    const c = MATERIAL_CONSUMPTION[matId];
+    if (!c) return roomFloor;
+    const stageId = _optionalChain([matById, 'access', _107 => _107[matId], 'optionalAccess', _108 => _108.stageId]);
+    if (stageId === "walls")   return roomWalls   || roomFloor;
+    if (stageId === "ceiling") return roomCeiling || roomFloor;
+    return roomFloor;
+  };
+
+  const calcThicknessQty = (matId) => {
+    const mm = parseFloat(thickness[matId]);
+    if (!mm || mm <= 0) return null;
+    const area = getArea(matId);
+    if (!area) return null;
+    return calcMaterialByThickness(matId, area, mm);
+  };
+
+  const toggleSelect = (id, mat, qty, price) => {
+    setSelected(s => {
+      if (s[id]) { const n = { ...s }; delete n[id]; return n; }
+      return { ...s, [id]: { id, mat, qty, price } };
+    });
+  };
+
+  const updateQty = (id, val) => {
+    setSelected(s => s[id] ? { ...s, [id]: { ...s[id], qty: parseFloat(val) || 0 } } : s);
+  };
+  const updatePrice = (id, val) => {
+    setSelected(s => s[id] ? { ...s, [id]: { ...s[id], price: parseFloat(val) || 0 } } : s);
+  };
+
+  const applyThickness = (id) => {
+    const calc = calcThicknessQty(id);
+    if (!calc) return;
+    setSelected(s => s[id] ? { ...s, [id]: { ...s[id], qty: calc.bags } } : s);
+  };
+
+  const filteredCatalog = CATALOG.filter(m => {
+    const ms = catStage === "all" ? true : catStage === "other" ? !m.stageId : m.stageId === catStage;
+    const mq = !catSearch || m.name.toLowerCase().includes(catSearch.toLowerCase());
+    return ms && mq;
+  });
+
+  const selCount = Object.keys(selected).length;
+  const selTotal = Object.values(selected).reduce((s, v) => s + (v.qty || 0) * (v.price || 0), 0);
+
+  const handleAdd = () => {
+    // Find or create a "Материалы" section
+    let targetSid = _optionalChain([(project.sections || []), 'access', _109 => _109.find, 'call', _110 => _110(s => s.name === "Материалы" || s.name === "Материалы помещений"), 'optionalAccess', _111 => _111.id]);
+    if (!targetSid) {
+      targetSid = uid();
+      dispatch({ type: "ADD_SECTION", pid: projectId, name: "Материалы", sid: targetSid, items: [] });
+    }
+    Object.values(selected).forEach(s => {
+      dispatch({ type: "ADD_ITEM", pid: projectId, sid: targetSid, item: {
+        id: uid(), name: s.mat.name, unit: s.mat.unit,
+        qty: s.qty, price: s.price, type: "material", paid: 0,
+        _roomName: room.name,
+      }});
+    });
+    onClose();
+  };
+
+  const IS = { background:"var(--s2)", border:"1.5px solid var(--b1)", borderRadius:8, color:"var(--tx)", fontFamily:"inherit", outline:"none", fontSize:12 };
+
+  return (
+    React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.82)", zIndex:600, display:"flex", flexDirection:"column" }}
+      , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", marginTop:"auto", height:"92vh", display:"flex", flexDirection:"column", overflow:"hidden" }}
+
+        /* Handle */
+        , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"10px auto 0", flexShrink:0 }} )
+
+        /* Header */
+        , React.createElement('div', { style: { padding:"12px 16px 0", borderBottom:"1px solid var(--b1)", flexShrink:0 }}
+          , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:10, marginBottom:8 }}
+            , React.createElement('div', { style: { width:38, height:38, borderRadius:11, background:"linear-gradient(135deg,#0891b2,#06b6d4)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:18, flexShrink:0 }}, "🧱")
+            , React.createElement('div', { style: { flex:1 }}
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"var(--tx)" }}, "Материалы")
+              , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", marginTop:1 }}, room.name, roomFloor > 0 ? ` · ${roomFloor.toFixed(1)} м² пол` : "")
+            )
+            , React.createElement('button', { onClick: onClose, style: { background:"var(--s2)", border:"none", borderRadius:9, padding:"6px 10px", cursor:"pointer", color:"var(--tx3)" }}, "✕")
+          )
+
+          /* Works chips */
+          , works.length > 0 && (
+            React.createElement('div', { style: { display:"flex", gap:4, overflowX:"auto", paddingBottom:6 }}
+              , works.map(w => (
+                React.createElement('div', { key: w.id, style: { flexShrink:0, background:"rgba(59,130,246,0.1)", border:"1px solid rgba(59,130,246,0.2)", borderRadius:6, padding:"2px 7px", fontSize:9, color:"#93c5fd", fontWeight:700, whiteSpace:"nowrap" }}
+                  , w.name, " · "  , w.qty, " " , w.unit
+                )
+              ))
+            )
+          )
+
+          /* Tabs */
+          , React.createElement('div', { style: { display:"flex", gap:3, background:"var(--bg)", borderRadius:10, padding:3 }}
+            , [["suggested", `✨ Подобранные${suggestions.length ? ` (${suggestions.length})` : ""}`], ["catalog","📦 Каталог"], ["sets","🗂️ Наборы"]].map(([id,lbl]) => (
+              React.createElement('button', { key: id, onClick: () => setTab(id), style: { flex:1, padding:"7px 6px", borderRadius:8, border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700, background:tab===id?"var(--s1)":"transparent", color:tab===id?"var(--tx)":"var(--tx3)" }}, lbl)
+            ))
+          )
+        )
+
+        /* Content */
+        , React.createElement('div', { style: { flex:1, overflowY:"auto", padding:"10px 14px" }}
+
+          /* SUGGESTED */
+          , tab === "suggested" && (
+            React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:8 }}
+              , suggestions.length === 0 ? (
+                React.createElement('div', { style: { textAlign:"center", padding:"28px 0" }}
+                  , React.createElement('div', { style: { fontSize:36, marginBottom:8 }}, "🔍")
+                  , React.createElement('div', { style: { fontSize:12, color:"var(--tx3)" }}, "Нет подобранных материалов."  , React.createElement('br', {}), "Добавьте работы в помещение."   )
+                  , React.createElement('button', { onClick: () => setTab("catalog"), style: { marginTop:12, padding:"9px 18px", borderRadius:10, background:"var(--acc)", border:"none", color:"#fff", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}, "Открыть каталог" )
+                )
+              ) : suggestions.map(s => {
+                const on = !!selected[s.id];
+                const c = MATERIAL_CONSUMPTION[s.id];
+                const thickVal = thickness[s.id] || "";
+                const calc = c ? calcThicknessQty(s.id) : null;
+                return (
+                  React.createElement('div', { key: s.id, style: { background:on?"rgba(6,182,212,0.05)":"var(--s2)", borderRadius:13, border:`1.5px solid ${on?"rgba(6,182,212,0.3)":"var(--b1)"}`, overflow:"hidden" }}
+                    /* Row */
+                    , React.createElement('div', { onClick: () => toggleSelect(s.id, s.mat, s.qty, s.price), style: { display:"flex", alignItems:"center", gap:9, padding:"10px 11px", cursor:"pointer" }}
+                      , React.createElement('div', { style: { width:20, height:20, borderRadius:6, background:on?"var(--cyan)":"var(--s3)", border:on?"none":"1.5px solid var(--b2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}
+                        , on && React.createElement(Icon, { name: "check", size: 11, color: "#fff"} )
+                      )
+                      , React.createElement('div', { style: { width:30, height:30, borderRadius:8, background:"rgba(6,182,212,0.1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:14, flexShrink:0 }}
+                        , STAGE_ICONS[s.mat.stageId] || "📦"
+                      )
+                      , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                        , React.createElement('div', { style: { fontSize:12, fontWeight:700, color:"var(--tx)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}, s.mat.name)
+                        , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", marginTop:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}, s.reason)
+                      )
+                      , React.createElement('div', { style: { textAlign:"right", flexShrink:0 }}
+                        , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:11, fontWeight:800, color:on?"var(--cyan)":"var(--tx2)" }}, _nullishCoalesce(_optionalChain([selected, 'access', _112 => _112[s.id], 'optionalAccess', _113 => _113.qty]), () => ( s.qty)), " " , s.mat.unit)
+                        , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)" }}, fmt(s.price), "/ед.")
+                      )
+                    )
+
+                    /* Expanded: thickness calc + qty/price edit */
+                    , on && (
+                      React.createElement('div', { style: { padding:"0 11px 10px", display:"flex", flexDirection:"column", gap:7 }}
+                        /* Thickness calculator — only for supported materials */
+                        , c && (
+                          React.createElement('div', { style: { background:"rgba(6,182,212,0.08)", borderRadius:9, padding:"8px 10px", border:"1px solid rgba(6,182,212,0.15)" }}
+                            , React.createElement('div', { style: { fontSize:9, color:"var(--cyan)", fontWeight:800, textTransform:"uppercase", marginBottom:6, display:"flex", alignItems:"center", gap:4 }}, "📐 Расчёт по толщине"
+
+                              , React.createElement('span', { style: { fontSize:8, opacity:0.7, fontWeight:400 }}, c.note)
+                            )
+                            , React.createElement('div', { style: { display:"flex", gap:6, alignItems:"flex-end" }}
+                              , React.createElement('div', { style: { flex:1 }}
+                                , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", marginBottom:3 }}, "Толщина (мм)" )
+                                , React.createElement('input', { type: "number", value: thickVal, min: "1", max: "200",
+                                  onChange: e => setThickness(t => ({ ...t, [s.id]: e.target.value })),
+                                  placeholder: "напр. 15" ,
+                                  style: { ...IS, width:"100%", padding:"5px 8px", textAlign:"center" }} )
+                              )
+                              , React.createElement('div', { style: { flex:1 }}
+                                , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", marginBottom:3 }}, "Площадь (м²)" )
+                                , React.createElement('div', { style: { padding:"5px 8px", borderRadius:8, background:"var(--s3)", fontSize:12, fontWeight:700, color:"var(--tx2)", textAlign:"center" }}
+                                  , getArea(s.id).toFixed(1)
+                                )
+                              )
+                              , calc && (
+                                React.createElement('div', { style: { flex:1 }}
+                                  , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", marginBottom:3 }}, "Итого кг" )
+                                  , React.createElement('div', { style: { padding:"5px 8px", borderRadius:8, background:"var(--s3)", fontSize:12, fontWeight:700, color:"var(--cyan)", textAlign:"center" }}
+                                    , calc.totalKg, " кг"
+                                  )
+                                )
+                              )
+                              , React.createElement('button', { onClick: () => applyThickness(s.id), disabled: !calc,
+                                style: { padding:"5px 10px", borderRadius:8, border:"none", background:calc?"var(--cyan)":"var(--s3)", color:calc?"#fff":"var(--tx3)", fontSize:11, fontWeight:700, cursor:calc?"pointer":"default", fontFamily:"inherit", flexShrink:0, whiteSpace:"nowrap" }}
+                                , calc ? `→ ${calc.bags} ${c.unit}` : "Введите мм"
+                              )
+                            )
+                          )
+                        )
+
+                        /* Manual qty + price */
+                        , React.createElement('div', { style: { display:"flex", gap:6 }}
+                          , React.createElement('div', { style: { flex:1 }}
+                            , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", marginBottom:3 }}, "Кол-во (" , s.mat.unit, ")")
+                            , React.createElement('input', { type: "number", value: _nullishCoalesce(_optionalChain([selected, 'access', _114 => _114[s.id], 'optionalAccess', _115 => _115.qty]), () => ( s.qty)),
+                              onChange: e => updateQty(s.id, e.target.value),
+                              style: { ...IS, width:"100%", padding:"5px 8px", textAlign:"center" }} )
+                          )
+                          , React.createElement('div', { style: { flex:1 }}
+                            , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", marginBottom:3 }}, "Цена (₽)" )
+                            , React.createElement('input', { type: "number", value: _nullishCoalesce(_optionalChain([selected, 'access', _116 => _116[s.id], 'optionalAccess', _117 => _117.price]), () => ( s.price)),
+                              onChange: e => updatePrice(s.id, e.target.value),
+                              style: { ...IS, width:"100%", padding:"5px 8px", textAlign:"center" }} )
+                          )
+                          , React.createElement('div', { style: { flexShrink:0, display:"flex", flexDirection:"column", justifyContent:"flex-end" }}
+                            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:800, color:"var(--cyan)", textAlign:"right" }}
+                              , fmt((_optionalChain([selected, 'access', _118 => _118[s.id], 'optionalAccess', _119 => _119.qty]) || 0) * (_optionalChain([selected, 'access', _120 => _120[s.id], 'optionalAccess', _121 => _121.price]) || 0))
+                            )
+                          )
+                        )
+                      )
+                    )
+                  )
+                );
+              })
+            )
+          )
+
+          /* CATALOG */
+          , tab === "sets" && (
+            React.createElement(React.Fragment, null
+              , React.createElement('input', { value: setsSearch, onChange: e=>setSetsSearch(e.target.value), placeholder: "🔍 Поиск набора..."  ,
+                style: { width:"100%", padding:"9px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:13, fontFamily:"inherit", outline:"none", boxSizing:"border-box", marginBottom:8 }} )
+              , React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:6, flex:1, overflowY:"auto" }}
+                , [...(state&&state.userMatGroups||[]),...MATERIAL_GROUPS_CATALOG].filter(function(g){ return !setsSearch||g.name.toLowerCase().includes(setsSearch.toLowerCase()); }).map(function(grp){
+                  const isSel = selectedSets.has(grp.id);
+                  return (
+                    React.createElement('div', { key: grp.id, onClick: function(){ setSelectedSets(function(prev){ const n=new Set(prev); if(n.has(grp.id)) n.delete(grp.id); else n.add(grp.id); return n; }); },
+                      style: { background:isSel?"rgba(6,182,212,0.07)":"var(--s1)", borderRadius:14, border:isSel?"2px solid rgba(6,182,212,0.5)":"1px solid var(--b1)", padding:"12px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:12, transition:"all 0.12s" }}
+                      , React.createElement('div', { style: { width:22, height:22, borderRadius:6, border:isSel?"2px solid var(--cyan)":"2px solid var(--b2)", background:isSel?"var(--cyan)":"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}
+                        , isSel && React.createElement('svg', { width: "12", height: "12", viewBox: "0 0 12 12"   }, React.createElement('path', { d: "M2 6l3 3 5-5"   , stroke: "#fff", strokeWidth: "2.2", fill: "none", strokeLinecap: "round", strokeLinejoin: "round"}))
+                      )
+                      , React.createElement('div', { style: { width:40, height:40, borderRadius:10, background:isSel?"rgba(6,182,212,0.12)":"var(--s2)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:20, flexShrink:0 }}, grp.icon)
+                      , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                        , React.createElement('div', { style: { fontSize:14, fontWeight:800, color:isSel?"var(--cyan)":"var(--tx)", marginBottom:2 }}, grp.name)
+                        , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" }}, grp.desc||((grp.items||[]).length+" материалов"))
+                        , React.createElement('div', { style: { display:"flex", gap:4, flexWrap:"wrap", marginTop:3 }}
+                          , (grp.items||[]).slice(0,3).map(function(item,i){ return React.createElement('span', { key: i, style: { fontSize:9, padding:"1px 5px", borderRadius:4, background:"var(--s2)", color:"var(--tx3)", fontWeight:600 }}, item.name.length>20?item.name.slice(0,20)+"…":item.name); })
+                          , (grp.items||[]).length>3 && React.createElement('span', { style: { fontSize:9, color:"var(--tx3)" }}, "+", (grp.items||[]).length-3)
+                        )
+                      )
+                    )
+                  );
+                })
+                , [...(state&&state.userMatGroups||[]),...MATERIAL_GROUPS_CATALOG].filter(function(g){ return !setsSearch||g.name.toLowerCase().includes(setsSearch.toLowerCase()); }).length===0 && (
+                  React.createElement('div', { style: { textAlign:"center", padding:"24px 0", color:"var(--tx3)", fontSize:13 }}, "Наборов не найдено"  )
+                )
+              )
+              , React.createElement('div', { style: { paddingTop:8, borderTop:"1px solid var(--b1)", marginTop:6, flexShrink:0 }}
+                , React.createElement('button', { disabled: selectedSets.size===0,
+                  onClick: function(){
+                    const allSets=[...(state&&state.userMatGroups||[]),...MATERIAL_GROUPS_CATALOG];
+                    allSets.filter(function(g){ return selectedSets.has(g.id); }).forEach(function(grp){
+                      const area=(_optionalChain([room, 'optionalAccess', _122 => _122.works])||[]).reduce(function(s,w){ return s+(parseFloat(w.qty)||0); },0)||1;
+                      (grp.items||[]).forEach(function(item){
+                        const qty=Math.ceil(area*(parseFloat(item.qtyPer)||0.1)*10)/10||1;
+                        const price=parseFloat(item.price)||0;
+                        const newSel={};
+                        newSel[uid()]={mat:{name:item.name,unit:item.unit||"шт",stageId:grp.stageId},qty,price};
+                        setSelected(function(prev){ return {...prev,...newSel}; });
+                      });
+                    });
+                    setSelectedSets(new Set());
+                  },
+                  style: { width:"100%", padding:"13px", borderRadius:12, border:"none",
+                    background:selectedSets.size>0?"linear-gradient(135deg,#0891b2,#06b6d4)":"var(--s3)",
+                    color:selectedSets.size>0?"#fff":"var(--tx3)", fontWeight:900, fontSize:14,
+                    cursor:selectedSets.size>0?"pointer":"default", fontFamily:"inherit",
+                    boxShadow:selectedSets.size>0?"0 4px 14px rgba(6,182,212,0.4)":"none" }}
+                  , selectedSets.size>0?"✓ Выбрать "+selectedSets.size+(selectedSets.size===1?" набор":" наборов"):"Выберите наборы"
+                )
+              )
+            )
+          )
+
+          , tab === "catalog" && (
+            React.createElement('div', { style: { display:"flex", flexDirection:"column", flex:1, overflow:"hidden" }}
+              , React.createElement('div', { style: { display:"flex", gap:4, overflowX:"auto", paddingBottom:6, marginBottom:6, flexShrink:0 }}
+                , stages.map(sid => {
+                  const icon = sid==="all"?"📦":sid==="other"?"🔩":(STAGE_ICONS[sid]||"📦");
+                  const on = catStage===sid;
+                  return (
+                    React.createElement('button', { key: sid, onClick: () => setCatStage(sid), style: { flexShrink:0, padding:"4px 8px", borderRadius:16, border:`1.5px solid ${on?"var(--cyan)":"var(--b1)"}`, background:on?"rgba(6,182,212,0.12)":"var(--s2)", cursor:"pointer", fontSize:12, color:on?"var(--cyan)":"var(--tx3)", fontFamily:"inherit" }}
+                      , icon
+                    )
+                  );
+                })
+              )
+              , React.createElement('div', { style: { background:"var(--s2)", borderRadius:9, padding:"6px 10px", display:"flex", alignItems:"center", gap:7, marginBottom:8 }}
+                , React.createElement(Icon, { name: "search", size: 13, color: "var(--tx3)"} )
+                , React.createElement('input', { value: catSearch, onChange: e => setCatSearch(e.target.value), placeholder: "Поиск...",
+                  style: { background:"none", border:"none", outline:"none", color:"var(--tx)", fontSize:12, width:"100%", fontFamily:"inherit" }} )
+                , catSearch && React.createElement('button', { onClick: () => setCatSearch(""), style: { background:"none", border:"none", cursor:"pointer", color:"var(--tx3)" }}, "✕")
+              )
+              , filteredCatalog.map(mat => {
+                const on = !!selected[mat.id];
+                const c = MATERIAL_CONSUMPTION[mat.id];
+                return (
+                  React.createElement('div', { key: mat.id, style: { marginBottom:5 }}
+                    , React.createElement('div', { onClick: () => toggleSelect(mat.id, mat, 1, mat.price),
+                      style: { display:"flex", alignItems:"center", gap:9, padding:"9px 11px", borderRadius:11, border:`1.5px solid ${on?"rgba(6,182,212,0.35)":"var(--b1)"}`, background:on?"rgba(6,182,212,0.07)":"var(--s2)", cursor:"pointer" }}
+                      , React.createElement('div', { style: { width:18, height:18, borderRadius:5, background:on?"var(--cyan)":"var(--s3)", border:on?"none":"1.5px solid var(--b2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}
+                        , on && React.createElement(Icon, { name: "check", size: 10, color: "#fff"} )
+                      )
+                      , React.createElement('div', { style: { width:28, height:28, borderRadius:7, background:"rgba(6,182,212,0.1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:13, flexShrink:0 }}
+                        , STAGE_ICONS[mat.stageId] || "📦"
+                      )
+                      , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                        , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:"var(--tx)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}, mat.name)
+                        , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)" }}, mat.unit, " · "  , mat.category, c ? " · 📐 расчёт по толщине" : "")
+                      )
+                      , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:11, fontWeight:800, color:on?"var(--cyan)":"var(--acc2)", flexShrink:0 }}, fmt(mat.price))
+                    )
+                    , on && c && (
+                      React.createElement('div', { style: { background:"rgba(6,182,212,0.06)", borderRadius:"0 0 10px 10px", padding:"7px 11px", border:"1.5px solid rgba(6,182,212,0.2)", borderTop:"none" }}
+                        , React.createElement('div', { style: { fontSize:9, color:"var(--cyan)", fontWeight:700, marginBottom:5 }}, "📐 Расчёт по толщине: "    , c.note)
+                        , React.createElement('div', { style: { display:"flex", gap:6, alignItems:"flex-end" }}
+                          , React.createElement('div', { style: { flex:1 }}
+                            , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", marginBottom:3 }}, "Толщина (мм)" )
+                            , React.createElement('input', { type: "number", value: thickness[mat.id] || "", min: "1",
+                              onChange: e => setThickness(t => ({ ...t, [mat.id]: e.target.value })),
+                              placeholder: "мм",
+                              style: { ...IS, width:"100%", padding:"5px 8px", textAlign:"center" }} )
+                          )
+                          , (() => {
+                            const calc = calcThicknessQty(mat.id);
+                            return calc ? (
+                              React.createElement(React.Fragment, null
+                                , React.createElement('div', { style: { flex:1, fontSize:11, color:"var(--cyan)", fontWeight:700, textAlign:"center", paddingBottom:2 }}, calc.totalKg, " кг" )
+                                , React.createElement('button', { onClick: () => { setSelected(s => ({...s, [mat.id]:{...s[mat.id], qty: calc.bags}})); },
+                                  style: { padding:"5px 10px", borderRadius:8, border:"none", background:"var(--cyan)", color:"#fff", fontSize:11, fontWeight:700, cursor:"pointer", fontFamily:"inherit", flexShrink:0 }}, "→ "
+                                   , calc.bags, " " , c.unit
+                                )
+                              )
+                            ) : null;
+                          })()
+                        )
+                      )
+                    )
+                  )
+                );
+              })
+            )
+          )
+        )
+
+        /* Footer */
+        , React.createElement('div', { style: { padding:"10px 14px 28px", borderTop:"1px solid var(--b1)", flexShrink:0, background:"var(--s1)" }}
+          , selCount > 0 && (
+            React.createElement('div', { style: { display:"flex", justifyContent:"space-between", marginBottom:8 }}
+              , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" }}, selCount, " позиций" )
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:900, color:"var(--cyan)" }}, fmt(selTotal), " ₽" )
+            )
+          )
+          , React.createElement('div', { style: { display:"flex", gap:8 }}
+            , React.createElement('button', { onClick: onClose, style: { flex:1, padding:"11px", borderRadius:12, border:"1px solid var(--b1)", background:"transparent", color:"var(--tx3)", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }}, "Отмена")
+            , React.createElement('button', { onClick: handleAdd, disabled: selCount === 0,
+              style: { flex:2, padding:"11px", borderRadius:12, border:"none", background:selCount>0?"linear-gradient(135deg,#0891b2,#06b6d4)":"var(--s3)", color:selCount>0?"#fff":"var(--tx3)", fontWeight:800, fontSize:13, cursor:selCount>0?"pointer":"default", fontFamily:"inherit", boxShadow:selCount>0?"0 4px 16px rgba(6,182,212,0.35)":"none" }}
+              , selCount > 0 ? `✓ Добавить ${selCount} матер.` : "Выберите материалы"
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+
+// ==================== ADD MATERIALS MODAL ====================
+// Shown in materials-mode project sections. Analyzes work items in a section,
+// matches them to CATALOG via WORK_MATERIALS_MAP, calculates quantities from
+// actual work quantities, and lets user edit/select before adding.
+
+
+
+function AddMaterialsModal({ open, onClose, section, project, dispatch, projectId, state }) {
+  const [suggestions, setSuggestions] = useState([]);
+  const [selected, setSelected]       = useState({}); // matId -> { ...mat, qty, price }
+  const [tab, setTab]                 = useState("suggested"); // "suggested" | "catalog" | "sets"
+  const [setsSearch, setSetsSearch]     = useState("");
+  const [selectedSets, setSelectedSets] = useState(new Set()); // set of group ids
+  const [catStage, setCatStage]       = useState("all");
+  const [catSearch, setCatSearch]     = useState("");
+  const [editingQty, setEditingQty]   = useState({}); // matId -> string
+  const [thicknessSec, setThicknessSec] = useState({}); // matId -> mm, "_area" -> area
+  // Thickness calculator for bulk materials
+  const [thickCalc, setThickCalc]     = useState({}); // matId -> { open, thickness, unit }
+
+  // Build suggestions when modal opens
+  useEffect(() => {
+    if (!open || !section) return;
+
+    const workItems = (section.items || []).filter(i => i.type === "work");
+    const matById   = Object.fromEntries([...CATALOG, ...(project._customMats||[])].map(m => [m.id, m]));
+
+    // Aggregate: matId -> total suggested qty
+    const agg = {}; // matId -> { mat, qty, reason }
+    workItems.forEach(workItem => {
+      const map = WORK_MATERIALS_MAP[workItem.name];
+      if (!map) return;
+      map.forEach(({ id, qty: qtyPerUnit }) => {
+        const mat = matById[id];
+        if (!mat) return;
+        const totalQty = workItem.qty * qtyPerUnit;
+        if (!agg[id]) agg[id] = { mat, qty: 0, reasons: [] };
+        agg[id].qty       += totalQty;
+        agg[id].reasons.push(`${workItem.name} × ${workItem.qty} ${workItem.unit}`);
+      });
+    });
+
+    // Convert to array, round up quantities smartly
+    const result = Object.entries(agg).map(([id, { mat, qty, reasons }]) => {
+      const roundedQty = mat.unit === "м²" || mat.unit === "м.п."
+        ? Math.ceil(qty * 10) / 10   // round to 0.1
+        : Math.ceil(qty);             // whole units
+      return {
+        id, mat,
+        qty:    roundedQty,
+        price:  mat.price,
+        reason: reasons.join(", "),
+      };
+    });
+
+    setSuggestions(result);
+
+    // Pre-select all suggestions
+    const preSelected = {};
+    result.forEach(s => {
+      preSelected[s.id] = { ...s };
+    });
+    setSelected(preSelected);
+    setEditingQty({});
+    setThicknessSec({});
+  }, [open, section]);
+
+  if (!open || !section) return null;
+
+  const handleAddSet = (grp, closeAfter) => {
+    const area = (project.rooms||[]).reduce(function(s,r){ return s+(r[grp.areaField||"floor"]||0); }, 0) || 1;
+    (grp.items||[]).forEach(function(item) {
+      const qty = Math.ceil(area*(parseFloat(item.qtyPer)||0.1)*10)/10 || 1;
+      const price = parseFloat(item.price)||0;
+      dispatch({type:"ADD_ITEM", pid:projectId, sid:section.id, item:{id:uid(), name:item.name, unit:item.unit||"шт", qty, price, type:"material", paid:0}});
+    });
+    if (closeAfter !== false) onClose();
+  };
+
+  const workItems = (section.items || []).filter(i => i.type === "work");
+  const customMats = (state && state.customMaterials) ? state.customMaterials : (project._customMats || []);
+  const allMats = [...CATALOG, ...customMats];
+
+  // Catalog filter
+  const STAGE_ICONS = { prep:"🔨", floor:"🟫", walls:"🖌️", ceiling:"🔲", plumbing:"🚿", electric:"⚡", doors:"🚪", finish:"✨" };
+  const stages = ["all","prep","floor","walls","ceiling","plumbing","electric","doors","finish","other"];
+  const filteredCatalog = allMats.filter(m => {
+    const matchStage = catStage === "all" ? true : catStage === "other" ? !m.stageId : m.stageId === catStage;
+    const matchSearch = !catSearch || m.name.toLowerCase().includes(catSearch.toLowerCase());
+    return matchStage && matchSearch;
+  });
+
+  const toggleSelect = (id, mat, qty, price) => {
+    setSelected(s => {
+      if (s[id]) { const n={...s}; delete n[id]; return n; }
+      return { ...s, [id]: { id, mat, qty, price } };
+    });
+  };
+
+  const updateQty = (id, val) => {
+    setSelected(s => s[id] ? { ...s, [id]: { ...s[id], qty: parseFloat(val)||0 } } : s);
+    setEditingQty(e => ({ ...e, [id]: val }));
+  };
+
+  const updatePrice = (id, val) => {
+    setSelected(s => s[id] ? { ...s, [id]: { ...s[id], price: parseFloat(val)||0 } } : s);
+  };
+
+  const handleAdd = () => {
+    const items = Object.values(selected).map(s => ({
+      id: uid(), name: s.mat.name, unit: s.mat.unit,
+      qty: s.qty, price: s.price, type: "material", paid: 0,
+    }));
+    items.forEach(item => {
+      dispatch({ type: "ADD_ITEM", pid: projectId, sid: section.id, item });
+    });
+    onClose();
+  };
+
+  const selCount  = Object.keys(selected).length;
+  const selTotal  = Object.values(selected).reduce((s,v) => s + v.qty * v.price, 0);
+
+  const IS = { background:"var(--s2)", border:"1.5px solid var(--b1)", borderRadius:9, color:"var(--tx)", fontFamily:"inherit", outline:"none", fontSize:13 };
+
+  return (
+    React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.82)", zIndex:600, display:"flex", flexDirection:"column" }}
+      , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", marginTop:"auto", height:"90vh", display:"flex", flexDirection:"column", overflow:"hidden" }}
+
+        /* Handle */
+        , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"10px auto 0", flexShrink:0 }} )
+
+        /* Header */
+        , React.createElement('div', { style: { padding:"12px 16px 0", borderBottom:"1px solid var(--b1)", flexShrink:0 }}
+          , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:10, marginBottom:10 }}
+            , React.createElement('div', { style: { width:38, height:38, borderRadius:11, background:"linear-gradient(135deg,#0f766e,#10b981)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:20, flexShrink:0 }}, "🧱")
+            , React.createElement('div', { style: { flex:1 }}
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"var(--tx)" }}, "Добавить материалы" )
+              , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", marginTop:1 }}, section.name)
+            )
+            , React.createElement('button', { onClick: onClose, style: { background:"var(--s2)", border:"none", borderRadius:9, padding:"6px 10px", cursor:"pointer", color:"var(--tx3)" }}, "✕")
+          )
+
+          /* Context: works in section */
+          , workItems.length > 0 && (
+            React.createElement('div', { style: { display:"flex", gap:5, overflowX:"auto", paddingBottom:8 }}
+              , workItems.map(w => (
+                React.createElement('div', { key: w.id, style: { flexShrink:0, background:"rgba(59,130,246,0.1)", border:"1px solid rgba(59,130,246,0.2)", borderRadius:7, padding:"3px 8px", fontSize:10, color:"#93c5fd", fontWeight:600, whiteSpace:"nowrap" }}
+                  , w.name, " · "  , w.qty, " " , w.unit
+                )
+              ))
+            )
+          )
+
+          /* Tabs */
+          , React.createElement('div', { style: { display:"flex", gap:3, background:"var(--bg)", borderRadius:10, padding:3, marginBottom:0 }}
+            , [["suggested","✨ Подобранные"+(suggestions.length?` (${suggestions.length})`:"")],["catalog","📦 Каталог"],["sets","🗂️ Наборы"]].map(([id,lbl])=>(
+              React.createElement('button', { key: id, onClick: ()=>setTab(id), style: { flex:1, padding:"7px 8px", borderRadius:8, border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700, background:tab===id?"var(--s1)":"transparent", color:tab===id?"var(--tx)":"var(--tx3)" }}, lbl)
+            ))
+          )
+        )
+
+        /* Content */
+        , React.createElement('div', { style: { flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minHeight:0 }}
+
+          /* SUGGESTED TAB */
+          , tab === "suggested" && (
+            React.createElement('div', { style: { flex:1, overflowY:"auto", padding:"12px 16px 0" }}
+              , suggestions.length === 0 ? (
+                React.createElement('div', { style: { textAlign:"center", padding:"32px 0" }}
+                  , React.createElement('div', { style: { fontSize:40, marginBottom:10 }}, "🔍")
+                  , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:700, color:"var(--tx)", marginBottom:6 }}, "Нет подобранных материалов"  )
+                  , React.createElement('div', { style: { fontSize:12, color:"var(--tx3)", lineHeight:1.5 }}, "Добавьте работы в раздел — система автоматически подберёт материалы"        )
+                  , React.createElement('button', { onClick: ()=>setTab("catalog"), style: { marginTop:14, padding:"10px 20px", borderRadius:10, background:"var(--acc)", border:"none", color:"#fff", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}, "Открыть каталог" )
+                )
+              ) : (
+                React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:8 }}
+                  , React.createElement('div', { style: { display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:2 }}
+                    , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" }}, "На основе работ в разделе"    )
+                    , React.createElement('button', { onClick: ()=>{
+                      if(selCount===suggestions.length) setSelected({});
+                      else { const all={}; suggestions.forEach(s=>{all[s.id]={...s};}); setSelected(all); }
+                    }, style: { fontSize:11, color:"var(--acc2)", background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontWeight:700 }}
+                      , selCount===suggestions.length?"Снять все":"Выбрать все"
+                    )
+                  )
+                  , suggestions.map(s => {
+                    const on = !!selected[s.id];
+                    const qtyVal = editingQty[s.id] !== undefined ? editingQty[s.id] : String(_nullishCoalesce(_optionalChain([selected, 'access', _123 => _123[s.id], 'optionalAccess', _124 => _124.qty]), () => ( s.qty)));
+                    return (
+                      React.createElement('div', { key: s.id, style: { background:on?"rgba(16,185,129,0.06)":"var(--s2)", borderRadius:13, border:`1.5px solid ${on?"rgba(16,185,129,0.3)":"var(--b1)"}`, overflow:"hidden", transition:"all 0.12s" }}
+                        , React.createElement('div', { onClick: ()=>toggleSelect(s.id, s.mat, s.qty, s.price), style: { display:"flex", alignItems:"center", gap:10, padding:"10px 12px", cursor:"pointer" }}
+                          , React.createElement('div', { style: { width:22, height:22, borderRadius:6, background:on?"var(--green)":"var(--s3)", border:on?"none":"1.5px solid var(--b2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}
+                            , on && React.createElement(Icon, { name: "check", size: 12, color: "#fff"} )
+                          )
+                          , React.createElement('div', { style: { width:34, height:34, borderRadius:9, background:"rgba(16,185,129,0.1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, flexShrink:0 }}
+                            , STAGE_ICONS[s.mat.stageId]||"📦"
+                          )
+                          , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                            , React.createElement('div', { style: { fontSize:12, fontWeight:700, color:"var(--tx)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}, s.mat.name)
+                            , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", marginTop:1, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}
+                              , s.mat.unit, " · "  , s.reason
+                            )
+                          )
+                        )
+                        , on && (
+                          React.createElement('div', { style: { padding:"0 12px 10px" }}
+                            /* Qty / Price / Total row */
+                            , React.createElement('div', { style: { display:"flex", gap:8, alignItems:"center", marginBottom: (s.mat.unit==="мешок"||s.mat.unit==="ведро") ? 6 : 0 }}
+                              , React.createElement('div', { style: { flex:1 }}
+                                , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", textTransform:"uppercase", fontWeight:700, marginBottom:3 }}, "Кол-во (" , s.mat.unit, ")")
+                                , React.createElement('input', { type: "number", value: qtyVal,
+                                  onChange: e => updateQty(s.id, e.target.value),
+                                  onBlur: e => setEditingQty(eq=>({...eq,[s.id]:undefined})),
+                                  style: { ...IS, width:"100%", padding:"6px 10px", textAlign:"center" }} )
+                              )
+                              , React.createElement('div', { style: { flex:1 }}
+                                , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", textTransform:"uppercase", fontWeight:700, marginBottom:3 }}, "Цена (₽/" , s.mat.unit, ")")
+                                , React.createElement('input', { type: "number", value: selected[s.id].price,
+                                  onChange: e => updatePrice(s.id, e.target.value),
+                                  style: { ...IS, width:"100%", padding:"6px 10px", textAlign:"center" }} )
+                              )
+                              , React.createElement('div', { style: { textAlign:"right", flexShrink:0 }}
+                                , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", textTransform:"uppercase", fontWeight:700, marginBottom:3 }}, "Итого")
+                                , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:800, color:"var(--green)" }}, fmt(selected[s.id].qty * selected[s.id].price))
+                              )
+                            )
+
+                            /* Thickness calculator — only for bag/bucket materials */
+                            , (s.mat.unit === "мешок" || s.mat.unit === "ведро") && (() => {
+                              const tc = thickCalc[s.id] || {};
+                              // total work area = sum of work item qtys with unit м²
+                              const workItems = (_optionalChain([section, 'optionalAccess', _125 => _125.items])||[]).filter(i => i.type==="work" && (i.unit==="м²"||i.unit==="кв.м"));
+                              const workArea = workItems.reduce((s,w) => s + (+w.qty||0), 0);
+                              const isOpen = tc.open;
+                              const th = +(tc.thickness||20), den = +(tc.density||1200), bagK = +(tc.bagKg||30);
+                              const computedBags = workArea > 0 ? Math.ceil(workArea * (th/1000) * den / bagK) : 0;
+                              return (
+                                React.createElement('div', {}
+                                  , React.createElement('button', { onClick: () => setThickCalc(t=>({...t,[s.id]:{...tc,open:!isOpen,thickness:tc.thickness||"20",density:tc.density||"1200",bagKg:tc.bagKg||"30"}})),
+                                    style: { width:"100%", padding:"5px 10px", borderRadius:8, border:"1.5px dashed rgba(245,158,11,0.4)", background:"rgba(245,158,11,0.06)", cursor:"pointer", fontFamily:"inherit", fontSize:10, fontWeight:700, color:"var(--gold)", display:"flex", alignItems:"center", gap:5, justifyContent:"center" }}, "📐 "
+                                     , isOpen ? "Скрыть расчёт" : "Рассчитать по толщине слоя"
+                                  )
+                                  , isOpen && (
+                                    React.createElement('div', { style: { background:"rgba(245,158,11,0.05)", borderRadius:9, padding:"10px", marginTop:6, border:"1px solid rgba(245,158,11,0.2)" }}
+                                      , React.createElement('div', { style: { fontSize:9, color:"var(--gold)", fontWeight:700, textTransform:"uppercase", marginBottom:6 }}, "Площадь работ: "
+                                          , workArea > 0 ? `${workArea} м²` : "—", " (из работ раздела)"
+                                      )
+                                      , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6, marginBottom:8 }}
+                                        , React.createElement('div', {}
+                                          , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", fontWeight:700, marginBottom:3 }}, "Толщина мм" )
+                                          , React.createElement('input', { type: "number", value: tc.thickness||"20", onChange: e=>setThickCalc(t=>({...t,[s.id]:{...tc,thickness:e.target.value}})),
+                                            style: { ...IS, width:"100%", padding:"5px 8px", textAlign:"center", fontSize:12 }} )
+                                        )
+                                        , React.createElement('div', {}
+                                          , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", fontWeight:700, marginBottom:3 }}, "кг/м³")
+                                          , React.createElement('input', { type: "number", value: tc.density||"1200", onChange: e=>setThickCalc(t=>({...t,[s.id]:{...tc,density:e.target.value}})),
+                                            style: { ...IS, width:"100%", padding:"5px 8px", textAlign:"center", fontSize:12 }} )
+                                        )
+                                        , React.createElement('div', {}
+                                          , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", fontWeight:700, marginBottom:3 }}, "кг/мешок")
+                                          , React.createElement('input', { type: "number", value: tc.bagKg||"30", onChange: e=>setThickCalc(t=>({...t,[s.id]:{...tc,bagKg:e.target.value}})),
+                                            style: { ...IS, width:"100%", padding:"5px 8px", textAlign:"center", fontSize:12 }} )
+                                        )
+                                      )
+                                      /* Preset mixes */
+                                      , React.createElement('div', { style: { display:"flex", gap:4, flexWrap:"wrap", marginBottom:8 }}
+                                        , [["Rotband 20мм","20","950"],["ЦПС 15мм","15","1700"],["Наливной 10мм","10","1600"],["Стяжка 60мм","60","1700"]].map(([n,t,d])=>(
+                                          React.createElement('button', { key: n, onClick: ()=>setThickCalc(tc2=>({...tc2,[s.id]:{...tc,thickness:t,density:d,bagKg:"30",open:true}})),
+                                            style: { padding:"3px 7px", borderRadius:6, border:"1px solid rgba(245,158,11,0.3)", background:"rgba(245,158,11,0.08)", cursor:"pointer", fontSize:9, fontWeight:700, color:"var(--gold)", fontFamily:"inherit" }}
+                                            , n
+                                          )
+                                        ))
+                                      )
+                                      , workArea > 0 ? (
+                                        React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"center", background:"rgba(245,158,11,0.12)", borderRadius:8, padding:"8px 12px" }}
+                                          , React.createElement('div', { style: { fontSize:11, color:"var(--gold)", fontWeight:700 }}
+                                            , workArea, " м² × "   , tc.thickness||20, "мм = "  , React.createElement('span', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14 }}, computedBags), " мешков"
+                                          )
+                                          , React.createElement('button', { onClick: ()=>updateQty(s.id, String(computedBags)),
+                                            style: { padding:"5px 12px", borderRadius:8, background:"var(--gold)", border:"none", color:"#000", fontWeight:800, fontSize:11, cursor:"pointer", fontFamily:"inherit" }}, "✓ Применить"
+
+                                          )
+                                        )
+                                      ) : (
+                                        React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", textAlign:"center", padding:"4px 0" }}, "Добавьте работы с единицей м² в раздел чтобы площадь определилась автоматически"
+
+                                        )
+                                      )
+                                    )
+                                  )
+                                )
+                              );
+                            })()
+                          )
+                        )
+                      )
+                    );
+                  })
+                )
+              )
+            )
+          )
+
+          /* CATALOG TAB */
+          , tab === "catalog" && (
+            React.createElement('div', { style: { flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minHeight:0, padding:"12px 16px 0", minHeight:0 }}
+              /* Stage filter */
+              , React.createElement('div', { style: { display:"flex", gap:5, overflowX:"auto", paddingBottom:8, marginBottom:8, flexShrink:0 }}
+                , stages.map(sid => {
+                  const icon = sid==="all"?"📦":sid==="other"?"🔩":(STAGE_ICONS[sid]||"📦");
+                  const on   = catStage===sid;
+                  return (
+                    React.createElement('button', { key: sid, onClick: ()=>setCatStage(sid), style: { flexShrink:0, padding:"5px 9px", borderRadius:8, border:`1.5px solid ${on?"var(--green)":"var(--b1)"}`, background:on?"rgba(16,185,129,0.12)":"var(--s2)", cursor:"pointer", fontSize:11, fontWeight:700, color:on?"var(--green)":"var(--tx3)", fontFamily:"inherit", whiteSpace:"nowrap" }}
+                      , icon
+                    )
+                  );
+                })
+              )
+              /* Search */
+              , React.createElement('div', { style: { background:"var(--s2)", borderRadius:10, padding:"8px 12px", display:"flex", alignItems:"center", gap:8, marginBottom:10 }}
+                , React.createElement(Icon, { name: "search", size: 14, color: "var(--tx3)"} )
+                , React.createElement('input', { value: catSearch, onChange: e=>setCatSearch(e.target.value), placeholder: "Поиск материала..." ,
+                  style: { background:"none", border:"none", outline:"none", color:"var(--tx)", fontSize:13, width:"100%", fontFamily:"inherit" }} )
+                , catSearch && React.createElement('button', { onClick: ()=>setCatSearch(""), style: { background:"none",border:"none",cursor:"pointer",color:"var(--tx3)",fontSize:14 }}, "✕")
+              )
+              , React.createElement('div', { style: { flex:1, overflowY:"auto", display:"flex", flexDirection:"column", gap:6, paddingBottom:4 }}
+                , filteredCatalog.map(mat => {
+                  const on = !!selected[mat.id];
+                  return (
+                    React.createElement('div', { key: mat.id, onClick: ()=>toggleSelect(mat.id, mat, 1, mat.price),
+                      style: { display:"flex", alignItems:"center", gap:10, padding:"10px 12px", borderRadius:11, border:`1.5px solid ${on?"rgba(16,185,129,0.35)":"var(--b1)"}`, background:on?"rgba(16,185,129,0.08)":"var(--s2)", cursor:"pointer", transition:"all 0.1s" }}
+                      , React.createElement('div', { style: { width:20, height:20, borderRadius:6, background:on?"var(--green)":"var(--s3)", border:on?"none":"1.5px solid var(--b2)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}
+                        , on && React.createElement(Icon, { name: "check", size: 11, color: "#fff"} )
+                      )
+                      , React.createElement('div', { style: { width:32, height:32, borderRadius:8, background:"rgba(16,185,129,0.1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:15, flexShrink:0 }}
+                        , STAGE_ICONS[mat.stageId]||"📦"
+                      )
+                      , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                        , React.createElement('div', { style: { fontSize:12, fontWeight:700, color:"var(--tx)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}, mat.name)
+                        , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", marginTop:1 }}, mat.unit, " · "  , mat.category)
+                      )
+                      , React.createElement('div', { style: { textAlign:"right", flexShrink:0 }}
+                        , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:on?"var(--green)":"var(--acc2)" }}, fmt(mat.price))
+                        , on && (
+                          React.createElement('div', { style: { fontSize:10, color:"var(--green)", fontWeight:700 }}, "✓ выбран" )
+                        )
+                      )
+                    )
+                  );
+                })
+              )
+            )
+          )
+          , tab === "sets" && (
+            React.createElement('div', { style: { flex:1, display:"flex", flexDirection:"column", overflow:"hidden", minHeight:0, padding:"12px 16px 0" }}
+              /* Search */
+              , React.createElement('input', { value: setsSearch, onChange: e=>setSetsSearch(e.target.value), placeholder: "🔍 Поиск набора..."  ,
+                style: { width:"100%", padding:"9px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:13, fontFamily:"inherit", outline:"none", boxSizing:"border-box", marginBottom:8 }} )
+              /* List — fills all available space */
+              , React.createElement('div', { style: { flex:1, overflowY:"auto", display:"flex", flexDirection:"column", gap:6, paddingBottom:4 }}
+                , [...(state.userMatGroups||[]),...MATERIAL_GROUPS_CATALOG].filter(function(g){ return !setsSearch||g.name.toLowerCase().includes(setsSearch.toLowerCase()); }).map(function(grp){
+                  const isSelected = selectedSets.has(grp.id);
+                  return (
+                    React.createElement('div', { key: grp.id, onClick: function(){ setSelectedSets(function(prev){ const n=new Set(prev); if(n.has(grp.id)) n.delete(grp.id); else n.add(grp.id); return n; }); },
+                      style: { background: isSelected?"rgba(16,185,129,0.07)":"var(--s1)", borderRadius:14, border: isSelected?"2px solid rgba(16,185,129,0.5)":"1px solid var(--b1)", padding:"13px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:12, boxShadow: isSelected?"0 2px 10px rgba(16,185,129,0.15)":"none", transition:"all 0.12s" }}
+                      /* Checkbox */
+                      , React.createElement('div', { style: { width:24, height:24, borderRadius:7, border: isSelected?"2px solid var(--green)":"2px solid var(--b2)", background: isSelected?"var(--green)":"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, transition:"all 0.12s" }}
+                        , isSelected && React.createElement('svg', { width: "13", height: "13", viewBox: "0 0 12 12"   }, React.createElement('path', { d: "M2 6l3 3 5-5"   , stroke: "#fff", strokeWidth: "2.2", fill: "none", strokeLinecap: "round", strokeLinejoin: "round"}))
+                      )
+                      /* Icon */
+                      , React.createElement('div', { style: { width:44, height:44, borderRadius:11, background: isSelected?"rgba(16,185,129,0.12)":"var(--s2)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0 }}, grp.icon)
+                      /* Text */
+                      , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                        , React.createElement('div', { style: { fontSize:14, fontWeight:800, color: isSelected?"var(--green)":"var(--tx)", marginBottom:3, lineHeight:1.25 }}, grp.name)
+                        , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", lineHeight:1.4 }}, grp.desc||((grp.items||[]).length+" материалов"))
+                        , React.createElement('div', { style: { display:"flex", gap:4, flexWrap:"wrap", marginTop:4 }}
+                          , (grp.items||[]).slice(0,3).map(function(item,i){ return (
+                            React.createElement('span', { key: i, style: { fontSize:9, padding:"1px 6px", borderRadius:4, background:"var(--s2)", color:"var(--tx3)", fontWeight:600 }}, item.name.length>22?item.name.slice(0,22)+"…":item.name)
+                          ); })
+                          , (grp.items||[]).length>3 && React.createElement('span', { style: { fontSize:9, color:"var(--tx3)" }}, "+", (grp.items||[]).length-3, " ещё" )
+                        )
+                      )
+                    )
+                  );
+                })
+                , [...(state.userMatGroups||[]),...MATERIAL_GROUPS_CATALOG].filter(function(g){ return !setsSearch||g.name.toLowerCase().includes(setsSearch.toLowerCase()); }).length===0 && (
+                  React.createElement('div', { style: { textAlign:"center", padding:"32px 0", color:"var(--tx3)", fontSize:13 }}, "Наборов не найдено"  )
+                )
+              )
+              /* Sticky add button */
+              , React.createElement('div', { style: { paddingTop:10, borderTop:"1px solid var(--b1)", marginTop:6 }}
+                , React.createElement('button', {
+                  disabled: selectedSets.size===0,
+                  onClick: function(){
+                    const allSets=[...(state.userMatGroups||[]),...MATERIAL_GROUPS_CATALOG];
+                    allSets.filter(function(g){ return selectedSets.has(g.id); }).forEach(function(grp){
+                      handleAddSet(grp);
+                    });
+                    setSelectedSets(new Set());
+                    onClose();
+                  },
+                  style: { width:"100%", padding:"14px", borderRadius:13, border:"none",
+                    background: selectedSets.size>0?"linear-gradient(135deg,#065f46,#10b981)":"var(--s3)",
+                    color: selectedSets.size>0?"#fff":"var(--tx3)", fontWeight:900, fontSize:15,
+                    cursor: selectedSets.size>0?"pointer":"default", fontFamily:"inherit",
+                    boxShadow: selectedSets.size>0?"0 4px 16px rgba(16,185,129,0.4)":"none" }}
+                  , selectedSets.size>0
+                    ? "✓ Добавить "+selectedSets.size+(selectedSets.size===1?" набор":" наборов")
+                    : "Выберите наборы"
+                )
+              )
+            )
+          )
+        )
+
+        /* Footer */
+        , selCount > 0 && tab !== "sets" && (
+          React.createElement('div', { style: { padding:"10px 16px 28px", borderTop:"1px solid var(--b1)", flexShrink:0, background:"var(--s1)" }}
+            , React.createElement('div', { style: { display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 }}
+              , React.createElement('div', { style: { fontSize:12, color:"var(--tx3)" }}, selCount, " поз. выбрано"  )
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:900, color:"var(--green)" }}, fmt(selTotal), " ₽" )
+            )
+            , React.createElement('button', { onClick: handleAdd, style: { width:"100%", padding:"14px", borderRadius:13, border:"none", background:"linear-gradient(135deg,#0f766e,#10b981)", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 20px rgba(16,185,129,0.4)" }}, "✓ Добавить "
+                , selCount, " материал" , selCount===1?"":"ов", " в раздел"
+            )
+          )
+        )
+        , selCount === 0 && (
+          React.createElement('div', { style: { padding:"10px 16px 28px", borderTop:"1px solid var(--b1)", flexShrink:0 }}
+            , React.createElement('div', { style: { textAlign:"center", fontSize:12, color:"var(--tx3)", padding:"6px 0" }}, "Выберите материалы для добавления"   )
+          )
+        )
+      )
+    )
+  );
+}
+
+
+function ProjectScreen({ state, dispatch, projectId, navigate, mode: navMode, profile, authUser, setShowAuth }) {
+  const projectRaw = state.projects.find(p => p.id === projectId);
+  const project = projectRaw ? { ...projectRaw, sections: projectRaw.sections || [], rooms: projectRaw.rooms || [] } : null;
+  const priceBook = state.priceBook || {};
+  const mode = navMode || _optionalChain([project, 'optionalAccess', _126 => _126.mode]) || "estimate"; // "estimate" | "materials"
+  const isEst = mode === "estimate";
+
+  const [showAddSection, setShowAddSection] = useState(false);
+  const [editingSectionContent, setEditingSectionContent] = useState(null); // section obj | null
+  const [editingRoomWork, setEditingRoomWork] = useState(null);
+  const [sectionName, setSectionName] = useState("");
+  const [showItemModal, setShowItemModal] = useState(null);
+  const [showMatModal, setShowMatModal]   = useState(null); // section id for materials modal
+  const [offerConvertToMat, setOfferConvertToMat] = useState(false); // show convert-to-materials modal
+  const [itemExtraSections, setItemExtraSections] = useState([]); // extra section ids to add to
+  const [itemForm, setItemForm] = useState({ name: "", unit: "м²", qty: "", price: "", type: isEst ? "work" : "material", paid: "" });
+  const [editItem, setEditItem] = useState(null);
+  const [showEstimateModal, setShowEstimateModal] = useState(false);
+  const [showEstimateModalWarn, setShowEstimateModalWarn] = useState(false);
+  const [insertGroupTarget, setInsertGroupTarget] = useState(null);
+  const [showPlanModal, setShowPlanModal] = useState(false);
+  const [showMeasureModal, setShowMeasureModal] = useState(false);
+  const [showAddRoomModal, setShowAddRoomModal] = useState(false);
+  const [confirmDeleteSid, setConfirmDeleteSid] = useState(null);
+  const [confirmDeleteItem, setConfirmDeleteItem] = useState(null);
+  const [showRoomMatModal, setShowRoomMatModal] = useState(null); // room object
+  const [viewMode, setViewMode] = useState("rooms"); // "sections" | "rooms"
+  const [dragIdx, setDragIdx]   = useState(null);
+  const [dragOver, setDragOver] = useState(null);
+
+  if (!project) return React.createElement('div', { style: { padding: 20 }}, "Проект не найден"  );
+
+  // Only show sections that were explicitly added by the user (_explicit flag)
+  // Auto-synced-only sections (created by room sync without user action) stay hidden
+  const explicitSections = (project.sections || []).filter(s => s._explicit || !s._stageId);
+  const displaySections = isEst
+    ? explicitSections.map(s => ({ ...s, items: (s.items||[]).filter(i => i.type === "work") }))
+    : explicitSections;
+
+  const total = isEst
+    ? (project.sections || []).reduce((s, sec) => s + (sec.items || []).filter(i => i.type === "work").reduce((ss, i) => ss + ((i.qty||0) * (i.price||0)), 0), 0)
+    : calcTotal((project.sections || []));
+  const workTotal = (project.sections || []).reduce((s, sec) => s + (sec.items || []).filter(i => i.type === "work").reduce((ss, i) => ss + (i.qty || 0) * (i.price || 0), 0), 0);
+  const matTotal = (project.sections || []).reduce((s, sec) => s + (sec.items || []).filter(i => i.type === "material").reduce((ss, i) => ss + ((i.qty||0) * (i.price||0)), 0), 0);
+
+  const accent = isEst ? "#1e40af" : "#0f766e";
+  const accentLight = isEst ? "#3b82f6" : "#0d9488";
+
+  const openAddItem = (sid) => {
+    setShowItemModal(sid);
+    setItemForm({ name: "", unit: "м²", qty: "", price: "", type: isEst ? "work" : "material", paid: "", _priceManuallyEdited: false });
+    setEditItem(null);
+    setItemExtraSections([]);
+  };
+
+  const openEditItem = (sid, item) => {
+    setShowItemModal(sid);
+    setItemForm({ name: item.name, unit: item.unit, qty: String(item.qty), price: String(item.price), type: item.type, paid: String(item.paid || ""), _priceManuallyEdited: true });
+    setEditItem(item);
+  };
+
+  const handleSaveItem = () => {
+    if (!itemForm.name || !itemForm.qty || !itemForm.price) return;
+    const itemType = isEst ? "work" : itemForm.type;
+    const item = { id: _optionalChain([editItem, 'optionalAccess', _127 => _127.id]) || uid(), name: itemForm.name, unit: itemForm.unit, qty: +itemForm.qty, price: +itemForm.price, type: itemType, paid: +itemForm.paid || 0 };
+    if (editItem) {
+      dispatch({ type: "UPDATE_ITEM", pid: projectId, sid: showItemModal, item });
+    } else {
+      // Add to primary section
+      dispatch({ type: "ADD_ITEM", pid: projectId, sid: showItemModal, item });
+      // Also add to extra sections
+      itemExtraSections.forEach(sid => {
+        dispatch({ type: "ADD_ITEM", pid: projectId, sid, item: { ...item, id: uid() } });
+      });
+    }
+    setItemExtraSections([]);
+    setShowItemModal(null);
+  };
+
+  const units = ["м²", "шт", "м.п.", "мешок", "рул.", "л", "кг", "компл."];
+
+  const handleAddSection = (name, stageId, sid, items) => {
+    dispatch({ type: "ADD_SECTION", pid: projectId, name, stageId, sid, items });
+  };
+  const handleCancelSection = () => { setShowAddSection(false); setViewMode("sections"); };
+  const handleOpenAddSection = () => { setViewMode("sections"); setShowAddSection(true); };
+
+  return (
+    React.createElement('div', { style: { minHeight: "100%", background: "var(--bg)", paddingBottom: 100 }}
+
+      /* -- Project Header -- */
+      , React.createElement('div', { style: { background: isEst
+        ? "linear-gradient(160deg, #1a1060 0%, #2d1fa8 45%, #4f3ef7 100%)"
+        : "linear-gradient(160deg, #064e3b 0%, #065f46 45%, #059669 100%)",
+        padding: "52px 16px 20px", position: "relative", overflow: "hidden" }}
+
+        /* Decorative circles */
+        , React.createElement('div', { style: { position:"absolute", top:-40, right:-30, width:180, height:180, borderRadius:"50%", background:"rgba(255,255,255,0.05)", pointerEvents:"none" }} )
+        , React.createElement('div', { style: { position:"absolute", bottom:-60, left:-40, width:200, height:200, borderRadius:"50%", background:"rgba(255,255,255,0.04)", pointerEvents:"none" }} )
+
+        /* Back button */
+        , React.createElement('button', { onClick: () => navigate("home"), style: {
+          background: "rgba(255,255,255,0.15)", border: "1px solid rgba(255,255,255,0.25)",
+          backdropFilter: "blur(8px)", borderRadius: 10, padding: "6px 12px",
+          cursor: "pointer", display: "flex", alignItems: "center", gap: 6, marginBottom: 16,
+        }}
+          , React.createElement(Icon, { name: "back", size: 15, color: "#fff"} )
+          , React.createElement('span', { style: { color: "#fff", fontSize: 12, fontWeight: 700 }}, "Проекты")
+        )
+
+        /* Project name + badge */
+        , React.createElement('div', { style: { display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 3 }}
+          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 17, fontWeight: 900, color: "#fff", flex: 1, lineHeight: 1.2 }}, project.name)
+          , React.createElement('div', { style: {
+            fontSize: 9, padding: "3px 8px", borderRadius: 6, fontWeight: 800, letterSpacing: "0.07em",
+            background: "rgba(255,255,255,0.2)", color: "#fff", border: "1px solid rgba(255,255,255,0.35)",
+            whiteSpace: "nowrap", marginTop: 2, backdropFilter: "blur(4px)",
+          }}, isEst ? "📋 СМЕТА" : "📦 МАТЕРИАЛЫ")
+        )
+        , project.address ? React.createElement('div', { style: { fontSize: 11, color: "rgba(255,255,255,0.7)", marginBottom: 18 }}, project.address) : React.createElement('div', { style: { marginBottom: 18 }} )
+
+        /* -- Action tiles -- */
+        , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}
+          , [
+            { icon: "🔍", label: "Распознать", sub: "план", color: "#fbbf24", bg: "rgba(251,191,36,0.18)", border: "rgba(251,191,36,0.45)", action: () => setShowPlanModal(true) },
+            { icon: "📐", label: "Измерить",   sub: "по фото", color: "#a5b4fc", bg: "rgba(165,180,252,0.18)", border: "rgba(165,180,252,0.45)", action: () => setShowMeasureModal(true) },
+            { icon: "🏠", label: "Помещения",  sub: `${(project.rooms||[]).length} шт.`, color: "#6ee7b7", bg: "rgba(110,231,183,0.18)", border: "rgba(110,231,183,0.45)", action: () => setShowAddRoomModal(true) },
+          ].map(t => (
+            React.createElement('button', { key: t.label, onClick: t.action, style: {
+              background: t.bg, border: `1.5px solid ${t.border}`,
+              borderRadius: 14, padding: "13px 8px 11px", cursor: "pointer",
+              fontFamily: "inherit", textAlign: "center",
+              backdropFilter: "blur(8px)", display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+            }}
+              , React.createElement('div', { style: { fontSize: 24 }}, t.icon)
+              , React.createElement('div', { style: { fontSize: 11, fontWeight: 800, color: "#fff", letterSpacing: "0.01em", lineHeight: 1.2 }}, t.label)
+              , React.createElement('div', { style: { fontSize: 9, color: "rgba(255,255,255,0.65)", fontWeight: 600 }}, t.sub)
+            )
+          ))
+        )
+
+        /* -- Estimate / totals button -- */
+        , isEst ? (
+          React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 2fr", gap: 8 }}
+            , React.createElement('div', { style: { background: "rgba(255,255,255,0.12)", border: "1px solid rgba(255,255,255,0.2)", borderRadius: 12, padding: "10px 12px", backdropFilter: "blur(6px)" }}
+              , React.createElement('div', { style: { fontSize: 9, color: "rgba(255,255,255,0.65)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 3 }}, "Работы")
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 12, fontWeight: 800, color: "#fff" }}, fmt(workTotal))
+            )
+            , React.createElement('button', { onClick: () => { if(!authUser){ setShowEstimateModalWarn(true); } else { setShowEstimateModal(true); } }, style: {
+              background: "rgba(255,255,255,0.18)", border: "1.5px solid rgba(255,255,255,0.4)",
+              borderRadius: 12, padding: "10px 14px", cursor: "pointer", fontFamily: "inherit",
+              backdropFilter: "blur(8px)", display: "flex", alignItems: "center", gap: 10,
+            }}
+              , React.createElement('div', { style: { flex: 1, textAlign: "left" }}
+                , React.createElement('div', { style: { fontSize: 9, color: "rgba(255,255,255,0.7)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 2 }}, "📋 Смета" )
+                , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 900, color: "#fff" }}, fmt(total))
+              )
+              , React.createElement('div', { style: { fontSize: 20, color: "#fff", opacity: 0.8 }}, "›")
+            )
+          )
+        ) : (
+          React.createElement(React.Fragment, null
+            , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 8 }}
+              , [
+                { label: "Итого",      val: fmt(total),     col: "#fff" },
+                { label: "Работы",     val: fmt(workTotal), col: "#a5b4fc" },
+                { label: "Материалы",  val: fmt(matTotal),  col: "#fde68a" },
+              ].map((item, i) => (
+                React.createElement('div', { key: i, style: { background: "rgba(255,255,255,0.12)", border: "1px solid rgba(255,255,255,0.18)", borderRadius: 12, padding: "9px 10px", backdropFilter: "blur(6px)" }}
+                  , React.createElement('div', { style: { fontSize: 9, color: "rgba(255,255,255,0.6)", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 3 }}, item.label)
+                  , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 12, fontWeight: 800, color: item.col }}, item.val)
+                )
+              ))
+            )
+            , React.createElement('button', { onClick: () => { if(!authUser){ setShowEstimateModalWarn(true); } else { setShowEstimateModal(true); } }, style: {
+              width: "100%", background: "rgba(255,255,255,0.18)", border: "1.5px solid rgba(255,255,255,0.4)",
+              borderRadius: 12, padding: "11px 16px", cursor: "pointer", fontFamily: "inherit",
+              backdropFilter: "blur(8px)", display: "flex", alignItems: "center", gap: 12,
+            }}
+              , React.createElement('div', { style: { fontSize: 18 }}, "📋")
+              , React.createElement('div', { style: { flex: 1, textAlign: "left" }}
+                , React.createElement('div', { style: { fontSize: 9, color: "rgba(255,255,255,0.7)", textTransform: "uppercase", letterSpacing: "0.08em" }}, "Смета")
+                , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 800, color: "#fff" }}, fmt(total), " ›" )
+              )
+            )
+          )
+        )
+      )
+
+      /* View mode toggle + Sections/Rooms content */
+      , React.createElement('div', { style: { padding: "16px" }}
+
+        /* Toggle: по помещениям / по разделам */
+        , React.createElement('div', { style: { display: "flex", background: "var(--s1)", borderRadius: 12, padding: 4, gap: 3, marginBottom: 16, boxShadow: "0 2px 10px rgba(0,0,0,0.25)" }}
+          , [
+            { id: "rooms",    icon: "🏠", label: "По помещениям" },
+            { id: "sections", icon: "📋", label: "По разделам" },
+          ].map(tab => (
+            React.createElement('button', { key: tab.id, onClick: () => setViewMode(tab.id), style: {
+              flex: 1, padding: "9px 8px", borderRadius: 9, border: "none", cursor: "pointer",
+              fontFamily: "inherit", fontSize: 12, fontWeight: 700, transition: "all 0.18s",
+              background: viewMode === tab.id
+                ? "linear-gradient(135deg,var(--acc),var(--acc2))"
+                : "transparent",
+              color: viewMode === tab.id ? "#fff" : "var(--tx3)",
+              boxShadow: viewMode === tab.id ? "0 3px 10px rgba(108,99,255,0.4)" : "none",
+            }}
+              , tab.icon, " " , tab.label
+            )
+          ))
+        )
+
+        /* ===========================================
+            VIEW: По разделам
+            =========================================== */
+        , viewMode === "sections" && (
+          React.createElement(React.Fragment, null
+            , displaySections.map(sec => {
+              const secTotal = (sec.items || []).reduce((s, i) => s + ((i.qty||0) * (i.price||0)), 0);
+              const syncedCount = (sec.items || []).filter(i => i._roomWorkId).length;
+              const manualCount = (sec.items || []).length - syncedCount;
+              const isAutoSection = !!sec._stageId;
+              const isEditing = false;
+              const rooms = project.rooms || [];
+              const sectionStageId = sec._stageId;
+              const roomTotals = sectionStageId ? rooms.map(room => {
+                const roomWorks = (room.works || []).filter(w => w.stageId === sectionStageId);
+                const total = roomWorks.reduce((s, w) => s + (w.qty || 0) * (w.price || 0), 0);
+                return { room, works: roomWorks, total };
+              }).filter(rt => rt.total > 0) : [];
+
+              return (
+              React.createElement(React.Fragment, { key: sec.id}
+                , React.createElement(SwipeRow, {
+                  key2: sec.id,
+                  onSwipeLeft: () => setConfirmDeleteSid(sec.id),
+                  threshold: 80,
+                  style: { marginBottom:12 }}
+                  , React.createElement('div', { style: { background: "var(--s1)", borderRadius: "var(--r)", overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.35)", border: isAutoSection && syncedCount > 0 ? "1px solid rgba(124,111,255,0.2)" : "1px solid var(--b1)" }}
+                  /* Section header */
+                  , React.createElement('div', { style: { display: "flex", alignItems: "center", padding: "12px 14px", cursor: "pointer", borderBottom: sec.collapsed ? "none" : "1px solid var(--b1)", gap: 8 },
+                    onClick: () => dispatch({ type: "TOGGLE_SECTION", pid: projectId, sid: sec.id })}
+                    , React.createElement(Icon, { name: sec.collapsed ? "chevronRight" : "chevronDown", size: 17, color: accentLight} )
+                    , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+                      , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 700, color: "var(--tx)", display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}
+                        , sec.name
+                        , isAutoSection && syncedCount > 0 && React.createElement('span', { style: { fontSize: 9, background: "var(--acc3)", color: "var(--acc2)", border: "1px solid rgba(124,111,255,0.25)", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}, "🔄 авто "  , syncedCount)
+                      )
+                      , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", marginTop: 1 }}
+                        , (sec.items || []).length, " позиций" , syncedCount > 0 && manualCount > 0 && ` • ${manualCount} ручных`
+                      )
+                    )
+                    , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 }}, React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 700, color: accent }}, fmt(secTotal)))
+                    , React.createElement('div', { style: { display: "flex", gap: 4, flexShrink: 0 }, onClick: e => e.stopPropagation()}
+                      , React.createElement('button', { onClick: () => { setEditingSectionContent(sec); setShowAddSection(false); },
+                        style: { background: "rgba(124,111,255,0.1)", border: "none", borderRadius: 8, padding: 6, cursor: "pointer" }, title: "Добавить работы в раздел"   }
+                        , React.createElement(Icon, { name: "edit", size: 13, color: "var(--acc)"} )
+                      )
+                      , React.createElement('button', { onClick: () => setConfirmDeleteSid(sec.id), style: { background: "rgba(239,68,68,0.1)", border: "none", borderRadius: 8, padding: 6, cursor: "pointer" }}, React.createElement(Icon, { name: "trash", size: 13, color: "#ef4444"} ))
+                    )
+                  )
+
+                  /* Collapsed: room pills */
+                  , sec.collapsed && !isEditing && roomTotals.length > 0 && (
+                    React.createElement('div', { style: { padding: "8px 14px", display: "flex", gap: 6, flexWrap: "wrap", background: "rgba(108,99,255,0.03)" }}
+                      , roomTotals.map(({ room, total }) => {
+                        const icon = (room.name||"").toLowerCase().includes("кухн") ? "🍳" : (room.name||"").toLowerCase().includes("санузел") || (room.name||"").toLowerCase().includes("ванн") ? "🚿" : (room.name||"").toLowerCase().includes("коридор") ? "🚪" : (room.name||"").toLowerCase().includes("балкон") ? "🌿" : "🛋️";
+                        return (
+                          React.createElement('div', { key: room.id, style: { background: "var(--s2)", border: "1px solid var(--b1)", borderRadius: 8, padding: "4px 9px", display: "flex", alignItems: "center", gap: 5 }}
+                            , React.createElement('span', { style: { fontSize: 11 }}, icon)
+                            , React.createElement('div', {}
+                              , React.createElement('div', { style: { fontSize: 10, fontWeight: 700, color: "var(--tx2)", whiteSpace: "nowrap", maxWidth: 80, overflow: "hidden", textOverflow: "ellipsis" }}, room.name)
+                              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 10, fontWeight: 800, color: "var(--acc2)" }}, fmt(total))
+                            )
+                          )
+                        );
+                      })
+                    )
+                  )
+
+                  /* Expanded body */
+                  , !sec.collapsed && !isEditing && (
+                    React.createElement('div', {}
+                      , roomTotals.length > 0 && (
+                        React.createElement('div', { style: { padding: "10px 14px 0", borderBottom: "1px solid var(--b1)" }}
+                          , React.createElement('div', { style: { fontSize: 10, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}, "По помещениям" )
+                          , React.createElement('div', { style: { display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}
+                            , roomTotals.map(({ room, works: rw, total }) => {
+                              const icon = (room.name||"").toLowerCase().includes("кухн") ? "🍳" : (room.name||"").toLowerCase().includes("санузел") || (room.name||"").toLowerCase().includes("ванн") ? "🚿" : (room.name||"").toLowerCase().includes("коридор") ? "🚪" : (room.name||"").toLowerCase().includes("балкон") ? "🌿" : "🛋️";
+                              const qtyField = STAGE_QTY_FIELD[sectionStageId || "other"];
+                              const measVal = qtyField ? parseFloat(room[qtyField] || 0) : 0;
+                              return (
+                                React.createElement('div', { key: room.id, style: { background: "var(--s2)", border: "1px solid var(--b1)", borderRadius: 10, padding: "7px 11px", minWidth: 110 }}
+                                  , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 5, marginBottom: 4 }}
+                                    , React.createElement('span', { style: { fontSize: 13 }}, icon)
+                                    , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: "var(--tx)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 90 }}, room.name)
+                                  )
+                                  , measVal > 0 && qtyField && React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", marginBottom: 2 }}, "📐 " , measVal.toFixed(2), " " , qtyField === "perimeter" ? "м.п." : "м²")
+                                  , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                                    , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)" }}, rw.length, " работ" )
+                                    , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 11, fontWeight: 800, color: "var(--acc2)" }}, fmt(total))
+                                  )
+                                )
+                              );
+                            })
+                          )
+                        )
+                      )
+
+                      , (sec.items || []).map((item, itemIdx) => {
+                        const itemTotal = ((item.qty||0) * (item.price||0));
+                        const isSynced = !!item._roomWorkId;
+                        
+                        return (
+                          React.createElement('div', { key: item.id,
+                            draggable: true,
+                            onDragStart: () => setDragIdx(itemIdx),
+                            onDragOver: e => { e.preventDefault(); setDragOver(itemIdx); },
+                            onDrop: () => {
+                              if (dragIdx !== null && dragIdx !== itemIdx) {
+                                dispatch({ type: "REORDER_SECTION_ITEMS", pid: projectId, sid: sec.id, fromIdx: dragIdx, toIdx: itemIdx });
+                              }
+                              setDragIdx(null); setDragOver(null);
+                            },
+                            onDragEnd: () => { setDragIdx(null); setDragOver(null); },
+                            style: { padding: "11px 14px", borderBottom: "1px solid var(--b1)",
+                              background: dragOver === itemIdx ? "rgba(124,111,255,0.08)" : item.type === "material" ? "rgba(6,182,212,0.03)" : isSynced ? "rgba(108,99,255,0.03)" : "transparent",
+                              opacity: dragIdx === itemIdx ? 0.5 : 1, cursor: "grab", borderTop: dragOver === itemIdx ? "2px solid var(--acc)" : "none" }}
+                            , React.createElement('div', { style: { display: "flex", alignItems: "flex-start", gap: 10 }}
+                              /* Drag handle */
+                              , React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:2, paddingTop:5, flexShrink:0, opacity:0.35, cursor:"grab" }}
+                                , React.createElement('div', { style: { width:12, height:2, borderRadius:1, background:"var(--tx3)" }} )
+                                , React.createElement('div', { style: { width:12, height:2, borderRadius:1, background:"var(--tx3)" }} )
+                                , React.createElement('div', { style: { width:12, height:2, borderRadius:1, background:"var(--tx3)" }} )
+                              )
+                              , React.createElement('div', { style: { width: 6, height: 6, borderRadius: "50%", marginTop: 6, flexShrink: 0, background: item.type === "material" ? "var(--cyan)" : isSynced ? "var(--acc)" : "#3b82f6" }} )
+                              , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+                                , React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: item.type === "material" ? "var(--cyan)" : "var(--tx)", marginBottom: 3, display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}
+                                  , item.name
+                                  , item.type === "material" && React.createElement('span', { style: { fontSize: 9, background: "rgba(6,182,212,0.12)", color: "var(--cyan)", border: "1px solid rgba(6,182,212,0.25)", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}, "🧱 мат." )
+                                  , isSynced && item.type !== "material" && React.createElement('span', { style: { fontSize: 9, background: "var(--acc3)", color: "var(--acc2)", border: "1px solid rgba(124,111,255,0.25)", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}, "🏠 " , item._roomName)
+                                )
+                                , React.createElement('div', { style: { fontSize: 12, color: item.type === "material" ? "rgba(6,182,212,0.7)" : "var(--tx2)" }}, item.qty, " " , item.unit, " × "  , fmt(item.price))
+                              )
+                              , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 }}
+                                , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 700, color: item.type === "material" ? "var(--cyan)" : "var(--tx)" }}, fmt(itemTotal))
+                                , React.createElement('div', { style: { display: "flex", gap: 4, marginTop: 4, justifyContent: "flex-end" }}
+                                  , React.createElement(React.Fragment, null
+                                    , React.createElement('button', { onClick: () => openEditItem(sec.id, item), style: { background: "rgba(124,111,255,0.12)", border: "none", borderRadius: 7, padding: "4px 8px", cursor: "pointer" }}, React.createElement(Icon, { name: "edit", size: 13, color: "var(--acc)"} ))
+                                    , React.createElement('button', { onClick: () => setConfirmDeleteItem({ sid: sec.id, iid: item.id, name: item.name }), style: { background: "rgba(239,68,68,0.1)", border: "none", borderRadius: 7, padding: "4px 8px", cursor: "pointer" }}, React.createElement(Icon, { name: "trash", size: 13, color: "#ef4444"} ))
+                                  )
+                                )
+                              )
+                            )
+                          )
+                        );
+                        })
+                      , React.createElement('div', { style: { padding: "10px 16px" }}
+                        , React.createElement('button', { onClick: () => openAddItem(sec.id), style: { background: "rgba(59,130,246,0.08)", border: "2px dashed #bfdbfe", borderRadius: 10, padding: "9px 14px", width: "100%", cursor: "pointer", color: accentLight, fontWeight: 600, fontSize: 13, fontFamily: "inherit" }}, "+ Добавить работу"
+
+                        )
+                        , !isEst && (
+                          React.createElement('button', { onClick: () => { if (isEst) setOfferConvertToMat(true); else setShowMatModal(sec.id); }, style: { marginTop: 6, background: "rgba(16,185,129,0.08)", border: "2px dashed rgba(16,185,129,0.35)", borderRadius: 10, padding: "9px 14px", width: "100%", cursor: "pointer", color: "var(--green)", fontWeight: 600, fontSize: 13, fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}, "🧱 Подобрать материалы"
+
+                          )
+                        )
+                      )
+                    )
+                  )
+                )
+                , _optionalChain([editingSectionContent, 'optionalAccess', _128 => _128.id]) === sec.id && (
+                  React.createElement(AddSectionPanel, {
+                    key: "edit-" + _optionalChain([editingSectionContent, 'optionalAccess', _129 => _129.id]),
+                    project: project,
+                    onAdd: () => {},
+                    onCancel: () => { setEditingSectionContent(null); setViewMode("sections"); },
+                    state: state,
+                    dispatch: dispatch,
+                    projectId: projectId,
+                    editSection: editingSectionContent}
+                  )
+                )
+                )
+              )
+            );
+            })
+
+          )
+        )
+
+        , viewMode === "sections" && showAddSection && React.createElement(AddSectionPanel, {
+          key: "add-section",
+          project: project,
+          onAdd: handleAddSection,
+          onCancel: handleCancelSection,
+          state: state,
+          dispatch: dispatch,
+          projectId: projectId}
+        )
+        , viewMode === "sections" && !showAddSection && React.createElement('button', { onClick: handleOpenAddSection, style: { background:"var(--s1)", border:"2px dashed var(--b2)", borderRadius:"var(--r)", padding:"14px", width:"100%", cursor:"pointer", color:"var(--tx2)", fontWeight:600, fontSize:14, fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}
+            , React.createElement(Icon, { name: "plus", size: 18, color: "var(--acc)"} ), " Добавить раздел"
+          )
+
+        /* ===========================================
+            VIEW: По помещениям
+            =========================================== */
+        , viewMode === "rooms" && (() => {
+          const rooms = project.rooms || [];
+          if (rooms.length === 0) return (
+            React.createElement('div', { style: { textAlign: "center", padding: "40px 20px" }}
+              , React.createElement('div', { style: { fontSize: 48, marginBottom: 12 }}, "🏠")
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 700, color: "var(--tx)", marginBottom: 8 }}, "Нет помещений" )
+              , React.createElement('div', { style: { fontSize: 13, color: "var(--tx3)", marginBottom: 20 }}, "Добавьте первое помещение чтобы начать"    )
+              , React.createElement('button', { onClick: () => setShowAddRoomModal(true), style: { background: "var(--acc)", border: "none", borderRadius: 12, padding: "12px 24px", color: "#fff", fontWeight: 700, fontSize: 13, cursor: "pointer", fontFamily: "inherit" }}, "+ Добавить помещение"  )
+            )
+          );
+
+          const grandTotal = rooms.reduce((sum, room) => sum + (room.works || []).reduce((s, w) => s + w.qty * w.price, 0), 0);
+
+          return (
+            React.createElement(React.Fragment, null
+              /* Grand total bar */
+              , React.createElement('div', { style: { background: "linear-gradient(135deg,var(--acc),var(--acc2))", borderRadius: 14, padding: "14px 16px", marginBottom: 14, display: "flex", justifyContent: "space-between", alignItems: "center", boxShadow: "0 4px 20px rgba(108,99,255,0.4)" }}
+                , React.createElement('div', {}
+                  , React.createElement('div', { style: { fontSize: 11, color: "rgba(255,255,255,0.7)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.08em" }}, "Итого по всем помещениям"   )
+                  , React.createElement('div', { style: { fontSize: 10, color: "rgba(255,255,255,0.55)", marginTop: 2 }}, rooms.length, " помещений · "   , rooms.reduce((s, r) => s + (r.works||[]).length, 0), " работ" )
+                )
+                , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 18, fontWeight: 900, color: "#fff" }}, fmt(grandTotal))
+              )
+
+              , rooms.map(room => {
+                const works = room.works || [];
+                const roomTotal = works.reduce((s, w) => s + w.qty * w.price, 0);
+                // Compute material cost for this room from section items
+                const matTotal = (project.sections || []).reduce((sum, sec) =>
+                  sum + (sec.items || []).filter(i => i.type === "material" && i._roomWorkId &&
+                    works.some(w => w.id === i._roomWorkId)
+                  ).reduce((s, i) => s + ((i.qty||0) * (i.price||0)), 0)
+                , 0) + (project.sections || []).reduce((sum, sec) =>
+                  sum + (sec.items || []).filter(i => i.type === "material" && i._roomName === room.name &&
+                    !i._roomWorkId
+                  ).reduce((s, i) => s + ((i.qty||0) * (i.price||0)), 0)
+                , 0);
+                const roomIcon = (room.name||"").toLowerCase().includes("кухн") ? "🍳" : (room.name||"").toLowerCase().includes("санузел") || (room.name||"").toLowerCase().includes("ванн") ? "🚿" : (room.name||"").toLowerCase().includes("коридор") || (room.name||"").toLowerCase().includes("прихож") ? "🚪" : (room.name||"").toLowerCase().includes("балкон") ? "🌿" : "🛋️";
+                const byStage = {};
+                works.forEach(w => { const sid = w.stageId || "other"; if (!byStage[sid]) byStage[sid] = []; byStage[sid].push(w); });
+                const stageGroups = WORK_STAGES.filter(st => byStage[st.id]).map(st => ({ stage: st, works: byStage[st.id] }));
+                if (byStage["other"] && !WORK_STAGES.find(s => s.id === "other")) stageGroups.push({ stage: { id: "other", label: "Прочее", icon: "📦", color: "var(--tx3)" }, works: byStage["other"] });
+                return (
+                  React.createElement(RoomEstimateCard, { key: room.id, room: room, roomIcon: roomIcon, roomTotal: roomTotal, matTotal: matTotal, stageGroups: stageGroups, dispatch: dispatch, projectId: projectId, navigate: navigate, isMatsMode: !isEst, onAddMaterials: (r) => setShowRoomMatModal(r)} )
+                );
+              })
+
+              /* Add room button */
+              , React.createElement('button', { onClick: () => setShowAddRoomModal(true),
+                style: { width: "100%", background: "var(--s1)", border: "2px dashed var(--b2)", borderRadius: "var(--r)", padding: "16px", cursor: "pointer", color: "var(--acc2)", fontWeight: 700, fontSize: 14, fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 10, marginTop: 4, boxShadow: "0 2px 12px rgba(0,0,0,0.2)" }}
+                , React.createElement('div', { style: { width: 32, height: 32, borderRadius: 10, background: "var(--acc3)", display: "flex", alignItems: "center", justifyContent: "center" }}
+                  , React.createElement(Icon, { name: "plus", size: 18, color: "var(--acc2)"} )
+                ), "Добавить помещение"
+
+              )
+            )
+          );
+        })()
+
+      )
+
+            /* Item Modal */
+      , React.createElement(Modal, { open: !!showItemModal, onClose: () => setShowItemModal(null), title: editItem ? "Редактировать позицию" : (isEst ? "Новая работа" : "Новая позиция")}
+        /* Type toggle — only show in materials mode */
+        , !isEst && (
+          React.createElement('div', { style: { display: "flex", background: "var(--s2)", borderRadius: 10, padding: 3, marginBottom: 14 }}
+            , [["work", "🔨 Работа"], ["material", "🧱 Материал"]].map(([val, lbl]) => (
+              React.createElement('button', { key: val, onClick: () => setItemForm({ ...itemForm, type: val }), style: {
+                flex: 1, padding: "8px", border: "none", borderRadius: 8, cursor: "pointer", fontFamily: "inherit",
+                fontWeight: 600, fontSize: 13, transition: "all 0.2s",
+                background: itemForm.type === val ? "#fff" : "transparent",
+                color: itemForm.type === val ? "#1e293b" : "#94a3b8",
+                boxShadow: itemForm.type === val ? "0 1px 4px rgba(0,0,0,0.1)" : "none",
+              }}, lbl)
+            ))
+          )
+        )
+        , isEst && (
+          React.createElement('div', { style: { background: "rgba(124,111,255,0.12)", borderRadius: 10, padding: "8px 12px", marginBottom: 14, fontSize: 12, color: "var(--acc2)", fontWeight: 600 }}, "🔨 Позиция добавляется как Работа (смета без материалов)"
+
+          )
+        )
+        , React.createElement(Input, { label: "Наименование", value: itemForm.name, onChange: v => {
+          const bookedEntry = priceBook[v];
+          const bookedPrice = typeof bookedEntry === 'object' ? _optionalChain([bookedEntry, 'optionalAccess', _130 => _130.price]) : bookedEntry;
+          setItemForm(f => ({
+            ...f, name: v,
+            price: bookedPrice && !f._priceManuallyEdited ? String(bookedPrice) : f.price,
+          }));
+        }, placeholder: isEst ? "Укладка плитки" : "Плитка / Укладка"} )
+        , React.createElement('div', { style: { display: "flex", gap: 10 }}
+          , React.createElement('div', { style: { flex: 1 }}
+            , React.createElement('label', { style: { display: "block", fontSize: 12, fontWeight: 600, color: "var(--tx2)", marginBottom: 5, letterSpacing: "0.05em", textTransform: "uppercase" }}, "Ед. изм." )
+            , React.createElement('select', { value: itemForm.unit, onChange: e => setItemForm({ ...itemForm, unit: e.target.value }),
+              style: { width: "100%", padding: "11px 14px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", fontFamily: "inherit", outline: "none" }}
+              , units.map(u => React.createElement('option', { key: u, value: u}, u))
+            )
+          )
+          , React.createElement('div', { style: { flex: 1 }}
+            , React.createElement(Input, { label: "Количество", type: "number", value: itemForm.qty, onChange: v => setItemForm({ ...itemForm, qty: v }), placeholder: "10"} )
+          )
+        )
+
+        /* Thickness calculator — bulk dry mix materials */
+        , (itemForm.unit === "мешок" || itemForm.unit === "ведро") && !isEst && itemForm.type === "material" && (() => {
+          // Compute total work area from the current section
+          const sec = _optionalChain([project, 'optionalAccess', _131 => _131.sections, 'optionalAccess', _132 => _132.find, 'call', _133 => _133(s => s.id === showItemModal)]);
+          const workArea = sec ? (sec.items || []).filter(i=>i.type==="work"&&(i.unit==="м²"||i.unit==="кв.м")).reduce((s,w)=>s+(+w.qty||0),0) : 0;
+          // thickness open state handled via itemForm._thickOpen
+          const th   = +(itemForm._thick||20);
+          const den  = +(itemForm._dense||1200);
+          const bagK = +(itemForm._bagKg||30);
+          const bags = workArea > 0 ? Math.ceil(workArea * (th/1000) * den / bagK) : 0;
+          return (
+            React.createElement('div', { style: { marginBottom: 10 }}
+              , React.createElement('button', { onClick: () => setItemForm(f => ({...f, _thickOpen: !f._thickOpen})),
+                style: { width:"100%", padding:"6px 12px", borderRadius:9, border:"1.5px dashed rgba(245,158,11,0.4)", background:"rgba(245,158,11,0.06)", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700, color:"var(--gold)", display:"flex", alignItems:"center", gap:6, justifyContent:"center", marginBottom: itemForm._thickOpen ? 8 : 0 }}, "📐 "
+                 , itemForm._thickOpen ? "Скрыть" : "Рассчитать по толщине слоя"
+              )
+              , itemForm._thickOpen && (
+                React.createElement('div', { style: { background:"rgba(245,158,11,0.05)", borderRadius:10, padding:"12px", border:"1px solid rgba(245,158,11,0.2)" }}
+                  , React.createElement('div', { style: { fontSize:10, color:"var(--gold)", fontWeight:700, marginBottom:8 }}, "Площадь работ в разделе: "
+                        , workArea > 0 ? `${workArea} м²` : "—"
+                  )
+                  , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:8, marginBottom:10 }}
+                    , [["Толщина (мм)","_thick","20"],["Плотность кг/м³","_dense","1200"],["кг в мешке","_bagKg","30"]].map(([lbl,key,ph])=>(
+                      React.createElement('div', { key: key}
+                        , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", fontWeight:700, textTransform:"uppercase", marginBottom:3 }}, lbl)
+                        , React.createElement('input', { type: "number", value: itemForm[key]||ph, onChange: e=>setItemForm(f=>({...f,[key]:e.target.value})),
+                          style: { width:"100%", padding:"6px 8px", borderRadius:8, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontFamily:"inherit", outline:"none", fontSize:12, textAlign:"center" }} )
+                      )
+                    ))
+                  )
+                  /* Quick presets */
+                  , React.createElement('div', { style: { display:"flex", gap:4, flexWrap:"wrap", marginBottom:10 }}
+                    , [["Rotband 20мм","20","950","30"],["ЦПС М75 15мм","15","1700","50"],["Стяжка 60мм","60","1700","40"],["Наливной 10мм","10","1600","25"]].map(([n,t,d,b])=>(
+                      React.createElement('button', { key: n, onClick: ()=>setItemForm(f=>({...f,_thick:t,_dense:d,_bagKg:b})),
+                        style: { padding:"3px 8px", borderRadius:6, border:"1px solid rgba(245,158,11,0.3)", background:"rgba(245,158,11,0.08)", cursor:"pointer", fontSize:9, fontWeight:700, color:"var(--gold)", fontFamily:"inherit" }}
+                        , n
+                      )
+                    ))
+                  )
+                  , bags > 0 ? (
+                    React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"center", background:"rgba(245,158,11,0.15)", borderRadius:9, padding:"9px 12px" }}
+                      , React.createElement('div', { style: { fontSize:12, color:"var(--gold)", fontWeight:700 }}
+                        , workArea, " м² × "   , th, "мм = "  , React.createElement('span', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:15, fontWeight:900 }}, bags), " мешков"
+                      )
+                      , React.createElement('button', { onClick: () => setItemForm(f=>({...f, qty: String(bags)})),
+                        style: { padding:"6px 14px", borderRadius:8, background:"var(--gold)", border:"none", color:"#000", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}, "✓ Применить"
+
+                      )
+                    )
+                  ) : (
+                    React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", textAlign:"center" }}, "Добавьте работы с ед. «м²» в раздел для авторасчёта"
+
+                    )
+                  )
+                )
+              )
+            )
+          );
+        })()
+        , React.createElement('div', {}
+          , React.createElement(Input, { label: "Цена за ед. (₽)"   , type: "number", value: itemForm.price, onChange: v => setItemForm({ ...itemForm, price: v, _priceManuallyEdited: true }), placeholder: "1500"} )
+          , itemForm.name && (_optionalChain([priceBook, 'access', _134 => _134[itemForm.name], 'optionalAccess', _135 => _135.price]) || priceBook[itemForm.name]) && !itemForm._priceManuallyEdited && (
+            React.createElement('div', { style: { fontSize: 11, color: "var(--gold)", fontWeight: 600, marginTop: -8, marginBottom: 6, paddingLeft: 2 }}, "🏷️ Зафиксированная цена"  )
+          )
+        )
+        , itemForm.qty && itemForm.price && (
+          React.createElement('div', { style: { background: isEst ? "#eff6ff" : "#f0fdfa", borderRadius: 10, padding: "10px 14px", marginBottom: 14, textAlign: "center" }}
+            , React.createElement('span', { style: { fontSize: 13, color: accent, fontWeight: 700 }}, "Итого: " , fmt(+itemForm.qty * +itemForm.price))
+          )
+        )
+        /* Multi-section: add to other sections simultaneously */
+        , !editItem && (() => {
+          const otherSections = displaySections.filter(s => s.id !== showItemModal);
+          if (otherSections.length === 0) return null;
+          return (
+            React.createElement('div', { style: { marginBottom: 14 }}
+              , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 7 }}, "Добавить также в разделы"
+
+              )
+              , React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 5 }}
+                , otherSections.map(s => {
+                  const on = itemExtraSections.includes(s.id);
+                  return (
+                    React.createElement('button', { key: s.id, onClick: () => setItemExtraSections(prev => on ? prev.filter(x => x !== s.id) : [...prev, s.id]),
+                      style: { padding: "4px 10px", borderRadius: 20, border: `1.5px solid ${on ? "var(--acc)" : "var(--b1)"}`, background: on ? "var(--acc3)" : "var(--s2)", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700, color: on ? "var(--acc2)" : "var(--tx3)" }}
+                      , on ? "✓ " : "", s.name
+                    )
+                  );
+                })
+              )
+              , itemExtraSections.length > 0 && (
+                React.createElement('div', { style: { fontSize: 10, color: "var(--acc2)", marginTop: 5, fontWeight: 600 }}, "Будет добавлено в "
+                     , itemExtraSections.length + 1, " разделов"
+                )
+              )
+            )
+          );
+        })()
+        , React.createElement('div', { style: { display: "flex", gap: 10 }}
+          , React.createElement(Btn, { onClick: () => setShowItemModal(null), variant: "secondary", full: true}, "Отмена")
+          , React.createElement(Btn, { onClick: handleSaveItem, full: true}, "Сохранить")
+        )
+      )
+
+      /* -- Сформировать смету (modal) -- */
+      , showEstimateModalWarn && React.createElement(EstimateAuthWarnModal, {
+          onLogin: function(){ setShowEstimateModalWarn(false); setShowAuth(true); },
+          onClose: function(){ setShowEstimateModalWarn(false); }
+        })
+      , React.createElement(EstimateModal, {
+        open: showEstimateModal,
+        onClose: () => setShowEstimateModal(false),
+        project: project,
+        isEst: isEst,
+        total: total,
+        workTotal: workTotal,
+        matTotal: matTotal,
+        displaySections: displaySections,
+        profile: profile}
+      )
+
+      /* -- Insert Work Group Modal (quick insert from project screen) -- */
+      , React.createElement(InsertGroupModal, {
+        open: !!insertGroupTarget,
+        onClose: () => setInsertGroupTarget(null),
+        group: _optionalChain([insertGroupTarget, 'optionalAccess', _136 => _136.group]),
+        projects: [project],
+        onInsert: (pid, sid, items) => {
+          dispatch({ type: "ADD_ITEMS_BULK", pid, sid, items });
+          setInsertGroupTarget(null);
+        }}
+      )
+
+      , React.createElement(PlanRecognitionModal, {
+        open: showPlanModal,
+        onClose: () => setShowPlanModal(false),
+        onRoomsDetected: (detectedRooms) => {
+          detectedRooms.forEach(room => {
+            dispatch({ type: "ADD_ROOM", pid: projectId, room });
+          });
+        }}
+      )
+
+      , React.createElement(RoomMeasureModal, {
+        open: showMeasureModal,
+        onClose: () => setShowMeasureModal(false),
+        onRoomCreated: (room) => {
+          dispatch({ type: "ADD_ROOM", pid: projectId, room });
+        }}
+      )
+
+      , React.createElement(RoomModal, {
+        open: showAddRoomModal,
+        onClose: () => setShowAddRoomModal(false),
+        priceBook: priceBook,
+        onSave: (room) => {
+          dispatch({ type: "ADD_ROOM", pid: projectId, room });
+          setShowAddRoomModal(false);
+        }}
+      )
+
+      , React.createElement(AddMaterialsModal, {
+        open: !!showMatModal,
+        onClose: () => setShowMatModal(null),
+        section: (project.sections || []).find(s => s.id === showMatModal),
+        project: project,
+        dispatch: dispatch,
+        projectId: projectId,
+        state: state}
+      )
+
+      /* Offer to convert estimate → materials project */
+      , offerConvertToMat && (
+        React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", zIndex:700, display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+          , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", width:"100%", maxWidth: "min(480px, 95vw)", padding:"20px 16px 36px" }}
+            , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"0 auto 18px" }} )
+            , React.createElement('div', { style: { fontSize:28, textAlign:"center", marginBottom:10 }}, "🧱")
+            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:15, fontWeight:900, color:"var(--tx)", textAlign:"center", marginBottom:8 }}, "Добавить материалы?"
+
+            )
+            , React.createElement('div', { style: { fontSize:13, color:"var(--tx2)", textAlign:"center", marginBottom:20, lineHeight:1.6 }}, "Этот проект — смета работ. Чтобы добавить материалы, удобнее перевести его в режим "
+                           , React.createElement('b', {}, "«С материалами»" ), " — тогда материалы будут отображаться в отдельной вкладке рядом с работами."
+            )
+            , React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:10 }}
+              , React.createElement('button', { onClick: () => {
+                dispatch({ type:"UPDATE_PROJECT", project:{ ...project, mode:"materials" } });
+                setOfferConvertToMat(false);
+              }, style: { padding:"14px", borderRadius:13, border:"none", background:"linear-gradient(135deg,var(--green),#10b981)", color:"#fff", fontWeight:900, fontSize:14, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 16px rgba(16,185,129,0.4)" }}, "🔄 Перевести в «С материалами» и добавить"
+
+              )
+              , React.createElement('button', { onClick: () => {
+                setOfferConvertToMat(false);
+                setShowMatModal(_optionalChain([displaySections, 'access', _137 => _137[0], 'optionalAccess', _138 => _138.id]) || null);
+              }, style: { padding:"13px", borderRadius:13, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx2)", fontWeight:700, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Добавить в текущую смету без перевода"
+
+              )
+              , React.createElement('button', { onClick: () => setOfferConvertToMat(false), style: { padding:"12px", borderRadius:13, border:"none", background:"transparent", color:"var(--tx3)", fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Отмена"
+
+              )
+            )
+          )
+        )
+      )
+
+      , React.createElement(RoomMaterialsModal, {
+        open: !!showRoomMatModal,
+        onClose: () => setShowRoomMatModal(null),
+        room: showRoomMatModal,
+        project: project,
+        dispatch: dispatch,
+        projectId: projectId,
+        state: state}
+      )
+
+      /* FAB — context-aware portal */
+      , React.createElement(FabButton, {
+          visible: !showAddSection && !editingSectionContent,
+          onClick: function() {
+            if (viewMode === "rooms") { setShowAddRoomModal(true); }
+            else { setViewMode("sections"); setShowAddSection(true); }
+          },
+          color: viewMode === "rooms"
+            ? "linear-gradient(135deg,#10b981,#059669)"
+            : "linear-gradient(135deg,var(--acc),var(--acc2))",
+          shadow: viewMode === "rooms"
+            ? "0 4px 24px rgba(16,185,129,0.55)"
+            : "0 4px 24px rgba(108,99,255,0.55)",
+          label: viewMode === "rooms" ? "Добавить помещение" : "Добавить раздел",
+        })
+
+      /* Delete section confirm */
+      , React.createElement(ConfirmSheet, {
+        open: !!confirmDeleteItem,
+        title: "Удалить позицию?" ,
+        subtitle: _optionalChain([confirmDeleteItem, 'optionalAccess', _139 => _139.name]) || "",
+        danger: true,
+        onCancel: () => setConfirmDeleteItem(null),
+        onConfirm: () => { dispatch({ type:"DELETE_ITEM", pid:projectId, sid:confirmDeleteItem.sid, iid:confirmDeleteItem.iid }); setConfirmDeleteItem(null); }}
+      )
+      , confirmDeleteSid && (() => {
+        const sec = (project.sections || []).find(s => s.id === confirmDeleteSid);
+        return (
+          React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.7)", zIndex:600, display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+            , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", padding:"20px 16px 32px", width:"100%", maxWidth: "min(480px, 95vw)", boxShadow:"0 -8px 40px rgba(0,0,0,0.5)" }}
+              , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"0 auto 16px" }} )
+              , React.createElement('div', { style: { fontSize:18, marginBottom:8, textAlign:"center" }}, "🗑️")
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:800, color:"var(--tx)", textAlign:"center", marginBottom:6 }}, "Удалить раздел?" )
+              , React.createElement('div', { style: { fontSize:12, color:"var(--tx3)", textAlign:"center", marginBottom:4 }}, "«", _optionalChain([sec, 'optionalAccess', _140 => _140.name]), "»")
+              , React.createElement('div', { style: { fontSize:11, color:"#ef4444", textAlign:"center", marginBottom:20 }}, "Будет удалено "
+                  , _optionalChain([sec, 'optionalAccess', _141 => _141.items, 'optionalAccess', _142 => _142.length]) || 0, " позиций. Это действие нельзя отменить."
+              )
+              , React.createElement('div', { style: { display:"flex", gap:8 }}
+                , React.createElement('button', { onClick: () => setConfirmDeleteSid(null), style: { flex:1, padding:"12px", borderRadius:12, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx3)", fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Отмена")
+                , React.createElement('button', { onClick: () => { dispatch({ type:"DELETE_SECTION", pid:projectId, sid:confirmDeleteSid }); setConfirmDeleteSid(null); },
+                  style: { flex:1, padding:"12px", borderRadius:12, border:"none", background:"#ef4444", color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Удалить"
+
+                )
+              )
+            )
+          )
+        );
+      })()
+    )
+  );
+}
+
+// ==================== WORK GROUPS ====================
+
+function WorkGroupEditModal({ open, onClose, onSave, initial, priceBook, dispatch }) {
+  const [name, setName] = useState("");
+  const [icon, setIcon] = useState("🔨");
+  const [color, setColor] = useState("#3b82f6");
+  const [items, setItems] = useState([]);
+  const [tab, setTab] = useState("pick"); // "pick" | "new"
+
+  // From price book
+  const [search, setSearch] = useState("");
+  const [selected, setSelected] = useState({}); // id -> {name, unit, price, qty}
+
+  // New custom item
+  const [newName, setNewName] = useState("");
+  const [newUnit, setNewUnit] = useState("м²");
+  const [newPrice, setNewPrice] = useState("");
+  const [newQty, setNewQty] = useState("1");
+
+  const ICONS = ["🔨","🔨","🟦","🖌️","🚿","⚡","🪟","🚪","🏠","🪣","🔧","🛁"];
+  const COLORS = ["#3b82f6","#f97316","#8b5cf6","#0d9488","#ef4444","#10b981","#f59e0b","#ec4899","#64748b"];
+  const units = ["м²","шт","м.п.","мешок","рул.","л","кг","компл."];
+
+  useEffect(() => {
+    if (open) {
+      if (initial) {
+        setName(initial.name || "");
+        setIcon(initial.icon || "🔨");
+        setColor(initial.color || "#3b82f6");
+        setItems(initial.items ? initial.items.map(i => ({ ...i })) : []);
+      } else {
+        setName(""); setIcon("🔨"); setColor("#3b82f6"); setItems([]);
+      }
+      setTab("pick"); setSearch(""); setSelected({});
+      setNewName(""); setNewUnit("м²"); setNewPrice(""); setNewQty("1");
+    }
+  }, [open, _optionalChain([initial, 'optionalAccess', _143 => _143.id])]);
+
+  if (!open) return null;
+
+  // Build sorted price book entries
+  const pbEntries = Object.entries(priceBook || {})
+    .map(([k, v]) => ({ name: k, price: typeof v === "object" ? v.price : v, unit: typeof v === "object" ? v.unit || "м²" : "м²" }))
+    .filter(e => !search || e.name.toLowerCase().includes(search.toLowerCase()))
+    .sort((a, b) => a.name.localeCompare(b.name));
+
+  const toggleSelect = (entry) => {
+    const key = entry.name;
+    if (selected[key]) {
+      const copy = { ...selected };
+      delete copy[key];
+      setSelected(copy);
+    } else {
+      setSelected(prev => ({ ...prev, [key]: { name: entry.name, unit: entry.unit, price: entry.price, qty: 1 } }));
+    }
+  };
+
+  const addFromPriceBook = () => {
+    const newOnes = Object.values(selected).map(s => ({ id: uid(), name: s.name, unit: s.unit, price: +s.price || 0, qty: +s.qty || 1 }));
+    // Merge: if same name already in items, update price
+    const merged = [...items];
+    newOnes.forEach(n => {
+      const idx = merged.findIndex(m => m.name === n.name);
+      if (idx >= 0) merged[idx] = { ...merged[idx], price: n.price, qty: n.qty };
+      else merged.push(n);
+    });
+    setItems(merged);
+    setSelected({});
+    setSearch("");
+  };
+
+  const addNewItem = () => {
+    if (!newName.trim() || !newPrice) return;
+    const price = +newPrice;
+    // Add to group
+    const existing = items.findIndex(i => i.name === newName.trim());
+    if (existing >= 0) {
+      setItems(items.map((it, i) => i === existing ? { ...it, price, qty: +newQty || 1 } : it));
+    } else {
+      setItems(prev => [...prev, { id: uid(), name: newName.trim(), unit: newUnit, price, qty: +newQty || 1 }]);
+    }
+    // Auto-save to price book
+    if (dispatch) {
+      const pb = { ...(priceBook || {}), [newName.trim()]: { price, unit: newUnit } };
+      dispatch({ type: "UPDATE_PRICE_BOOK", priceBook: pb });
+    }
+    setNewName(""); setNewPrice(""); setNewQty("1");
+  };
+
+  const removeItem = (id) => setItems(items.filter(i => i.id !== id));
+  const updateItem = (id, field, val) => setItems(items.map(i => i.id === id ? { ...i, [field]: field === "price" || field === "qty" ? +val || 0 : val } : i));
+
+  const handleSave = () => {
+    if (!name || items.length === 0) return;
+    onSave({ id: _optionalChain([initial, 'optionalAccess', _144 => _144.id]) || uid(), name, icon, color, items });
+  };
+
+  const total = items.reduce((s, i) => s + i.price * i.qty, 0);
+
+  return (
+    React.createElement(Modal, { open: open, onClose: onClose, title: initial ? "Редактировать группу" : "Новая группа работ"}
+      , React.createElement(Input, { label: "Название группы" , value: name, onChange: setName, placeholder: "Напр. Укладка плитки"  } )
+
+      /* Icon & Color */
+      , React.createElement('div', { style: { marginBottom: 14 }}
+        , React.createElement('div', { style: { fontSize: 11, fontWeight: 600, color: "var(--tx2)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}, "Иконка")
+        , React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}
+          , ICONS.map(ic => (
+            React.createElement('button', { key: ic, onClick: () => setIcon(ic), style: { width: 36, height: 36, borderRadius: 8, border: icon === ic ? `2px solid ${color}` : "1.5px solid var(--b1)", background: icon === ic ? color + "33" : "var(--s2)", fontSize: 18, cursor: "pointer" }}, ic)
+          ))
+        )
+        , React.createElement('div', { style: { fontSize: 11, fontWeight: 600, color: "var(--tx2)", marginBottom: 6, textTransform: "uppercase", letterSpacing: "0.05em" }}, "Цвет")
+        , React.createElement('div', { style: { display: "flex", gap: 6, flexWrap: "wrap" }}
+          , COLORS.map(c => (
+            React.createElement('button', { key: c, onClick: () => setColor(c), style: { width: 28, height: 28, borderRadius: "50%", background: c, border: color === c ? "3px solid var(--acc)" : "2px solid var(--b1)", cursor: "pointer", boxShadow: color === c ? `0 0 0 2px var(--bg), 0 0 0 4px ${c}` : "none" }} )
+          ))
+        )
+      )
+
+      /* Items already in group */
+      , React.createElement('div', { style: { marginBottom: 14 }}
+        , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: "var(--tx2)", marginBottom: 8, textTransform: "uppercase", letterSpacing: "0.06em", display: "flex", justifyContent: "space-between", alignItems: "center" }}
+          , React.createElement('span', {}, "В группе ("  , items.length, ")")
+          , total > 0 && React.createElement('span', { style: { color: "var(--acc2)", fontSize: 12 }}, "∑ " , fmt(total), " ₽/ед." )
+        )
+
+        , items.length === 0 && (
+          React.createElement('div', { style: { background: "var(--s2)", borderRadius: 10, padding: "14px", textAlign: "center", fontSize: 12, color: "var(--tx3)", border: "1.5px dashed var(--b1)" }}, "Выберите работы из справочника или добавьте новую:"
+
+          )
+        )
+
+        , items.map(item => (
+          React.createElement('div', { key: item.id, style: { background: "var(--s2)", borderRadius: 10, padding: "10px 12px", marginBottom: 6, border: "1px solid var(--b1)" }}
+            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}
+              , React.createElement('div', { style: { flex: 1, fontSize: 13, fontWeight: 600, color: "var(--tx)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}, item.name)
+              , React.createElement('button', { onClick: () => removeItem(item.id), style: { background: "rgba(239,68,68,0.1)", border: "none", borderRadius: 6, padding: "4px 6px", cursor: "pointer", flexShrink: 0 }}
+                , React.createElement(Icon, { name: "trash", size: 12, color: "#ef4444"} )
+              )
+            )
+            , React.createElement('div', { style: { display: "flex", gap: 6, alignItems: "center" }}
+              , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", width: 28 }}, "Кол:")
+              , React.createElement('input', { type: "number", value: item.qty, onChange: e => updateItem(item.id, "qty", e.target.value),
+                style: { width: 48, border: "1px solid var(--b1)", borderRadius: 7, padding: "4px 7px", fontSize: 12, fontFamily: "inherit", textAlign: "center", background: "var(--s1)", color: "var(--tx)", outline: "none" }} )
+              , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", flex: 1 }}, item.unit)
+              , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}, "Цена:")
+              , React.createElement('input', { type: "number", value: item.price, onChange: e => updateItem(item.id, "price", e.target.value),
+                style: { width: 75, border: "1.5px solid var(--acc3)", borderRadius: 7, padding: "4px 8px", fontSize: 12, fontFamily: "inherit", background: "var(--acc3)", color: "var(--tx)", outline: "none", fontWeight: 700 }} )
+              , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}, "₽")
+              , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: "var(--acc2)", minWidth: 52, textAlign: "right" }}, fmt(((item.qty||0) * (item.price||0))))
+            )
+          )
+        ))
+      )
+
+      /* Tab switcher: from price book vs new */
+      , React.createElement('div', { style: { display: "flex", background: "var(--s2)", borderRadius: 10, padding: 3, gap: 2, marginBottom: 12 }}
+        , [{ id: "pick", label: `📋 Из «Мои цены»${Object.keys(selected).length ? ` (${Object.keys(selected).length})` : ""}` }, { id: "new", label: "✏️ Новая работа" }].map(t => (
+          React.createElement('button', { key: t.id, onClick: () => setTab(t.id), style: {
+            flex: 1, padding: "8px 4px", borderRadius: 8, border: "none", cursor: "pointer", fontSize: 12, fontWeight: 700,
+            background: tab === t.id ? "var(--s1)" : "transparent",
+            color: tab === t.id ? "var(--tx)" : "var(--tx3)",
+            boxShadow: tab === t.id ? "0 1px 4px rgba(0,0,0,0.2)" : "none",
+            transition: "all 0.15s",
+          }}, t.label)
+        ))
+      )
+
+      , tab === "pick" && (
+        React.createElement('div', {}
+          /* Search */
+          , React.createElement('div', { style: { position: "relative", marginBottom: 8 }}
+            , React.createElement('input', {
+              value: search, onChange: e => setSearch(e.target.value),
+              placeholder: "🔍 Поиск работ..."  ,
+              style: { width: "100%", padding: "9px 12px", borderRadius: 9, border: "1.5px solid var(--b1)", fontSize: 13, fontFamily: "inherit", background: "var(--s2)", color: "var(--tx)", outline: "none" }}
+            )
+          )
+
+          , pbEntries.length === 0 ? (
+            React.createElement('div', { style: { textAlign: "center", padding: "16px", fontSize: 12, color: "var(--tx3)" }}
+              , Object.keys(priceBook || {}).length === 0 ? "В «Мои цены» пока нет работ. Добавьте через вкладку «Новая работа»." : "Ничего не найдено"
+            )
+          ) : (
+            React.createElement('div', { style: { maxHeight: 200, overflowY: "auto", marginBottom: 10, borderRadius: 10, border: "1px solid var(--b1)", overflow: "hidden" }}
+              , pbEntries.map((entry, idx) => {
+                const isSelected = !!selected[entry.name];
+                const isInGroup = items.some(i => i.name === entry.name);
+                return (
+                  React.createElement('div', { key: entry.name,
+                    onClick: () => !isInGroup && toggleSelect(entry),
+                    style: {
+                      display: "flex", alignItems: "center", gap: 10, padding: "10px 12px",
+                      background: isInGroup ? "rgba(16,185,129,0.07)" : isSelected ? "var(--acc3)" : idx % 2 === 0 ? "var(--s1)" : "var(--s2)",
+                      borderBottom: idx < pbEntries.length - 1 ? "1px solid var(--b1)" : "none",
+                      cursor: isInGroup ? "default" : "pointer",
+                      transition: "background 0.15s",
+                    }}
+                    /* Checkbox */
+                    , React.createElement('div', { style: {
+                      width: 20, height: 20, borderRadius: 6, flexShrink: 0,
+                      border: isInGroup ? "2px solid var(--green)" : isSelected ? "2px solid var(--acc)" : "2px solid var(--b2)",
+                      background: isInGroup ? "rgba(16,185,129,0.2)" : isSelected ? "var(--acc)" : "transparent",
+                      display: "flex", alignItems: "center", justifyContent: "center",
+                    }}
+                      , (isSelected || isInGroup) && React.createElement(Icon, { name: "check", size: 11, color: isInGroup ? "var(--green)" : "#fff"} )
+                    )
+                    , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+                      , React.createElement('div', { style: { fontSize: 13, fontWeight: 600, color: isInGroup ? "var(--tx2)" : "var(--tx)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                        , entry.name
+                        , isInGroup && React.createElement('span', { style: { fontSize: 10, marginLeft: 6, color: "var(--green)", fontWeight: 700 }}, "✓ уже добавлена"  )
+                      )
+                      , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}, entry.unit)
+                    )
+                    , isSelected ? (
+                      React.createElement('input', { type: "number", value: _nullishCoalesce(_optionalChain([selected, 'access', _145 => _145[entry.name], 'optionalAccess', _146 => _146.price]), () => ( entry.price)),
+                        onClick: e => e.stopPropagation(),
+                        onChange: e => setSelected(prev => ({ ...prev, [entry.name]: { ...prev[entry.name], price: +e.target.value || 0 } })),
+                        style: { width: 72, border: "1.5px solid var(--acc)", borderRadius: 7, padding: "4px 7px", fontSize: 12, fontFamily: "inherit", background: "var(--s1)", color: "var(--tx)", outline: "none", fontWeight: 700, textAlign: "right" }}
+                      )
+                    ) : (
+                      React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: "var(--tx2)", whiteSpace: "nowrap" }}, fmt(entry.price), " ₽" )
+                    )
+                  )
+                );
+              })
+            )
+          )
+
+          , Object.keys(selected).length > 0 && (
+            React.createElement('button', { onClick: addFromPriceBook, style: {
+              width: "100%", padding: "10px", borderRadius: 10, border: "none", cursor: "pointer",
+              background: "linear-gradient(135deg, #6c63ff, #a78bfa)", color: "#fff",
+              fontSize: 13, fontWeight: 700, fontFamily: "inherit", marginBottom: 4,
+              boxShadow: "0 4px 12px rgba(108,99,255,0.35)",
+            }}, "Добавить выбранные ("
+                , Object.keys(selected).length, ") в группу"
+            )
+          )
+        )
+      )
+
+      , tab === "new" && (
+        React.createElement('div', { style: { background: "var(--s2)", borderRadius: 12, padding: "14px", border: "1.5px dashed var(--b2)" }}
+          , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: "var(--acc2)", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.06em" }}, "Новая работа - сохраняется в «Мои цены»"      )
+          , React.createElement('input', {
+            value: newName, onChange: e => setNewName(e.target.value),
+            placeholder: "Название работы" ,
+            style: { width: "100%", border: "1.5px solid var(--b1)", borderRadius: 8, padding: "9px 11px", fontSize: 13, marginBottom: 8, fontFamily: "inherit", outline: "none", background: "var(--s1)", color: "var(--tx)" }}
+          )
+          , React.createElement('div', { style: { display: "flex", gap: 6, marginBottom: 10 }}
+            , React.createElement('select', { value: newUnit, onChange: e => setNewUnit(e.target.value),
+              style: { flex: 1, border: "1.5px solid var(--b1)", borderRadius: 8, padding: "8px", fontSize: 12, fontFamily: "inherit", background: "var(--s1)", color: "var(--tx)", outline: "none" }}
+              , units.map(u => React.createElement('option', { key: u}, u))
+            )
+            , React.createElement('input', { type: "number", value: newQty, onChange: e => setNewQty(e.target.value), placeholder: "Кол-во",
+              style: { width: 64, border: "1.5px solid var(--b1)", borderRadius: 8, padding: "8px", fontSize: 12, fontFamily: "inherit", background: "var(--s1)", color: "var(--tx)", outline: "none" }} )
+            , React.createElement('input', { type: "number", value: newPrice, onChange: e => setNewPrice(e.target.value), placeholder: "Цена ₽" ,
+              style: { flex: 1, border: "1.5px solid var(--acc3)", borderRadius: 8, padding: "8px", fontSize: 12, fontFamily: "inherit", background: "var(--s1)", color: "var(--tx)", outline: "none", fontWeight: 700 }} )
+          )
+          , React.createElement('button', { onClick: addNewItem, disabled: !newName.trim() || !newPrice,
+            style: { width: "100%", background: (!newName.trim() || !newPrice) ? "var(--s3)" : "linear-gradient(135deg, #6c63ff, #a78bfa)", color: (!newName.trim() || !newPrice) ? "var(--tx3)" : "#fff", border: "none", borderRadius: 9, padding: "10px", fontSize: 13, fontWeight: 700, cursor: (!newName.trim() || !newPrice) ? "not-allowed" : "pointer", fontFamily: "inherit" }}, "Добавить в группу + сохранить в «Мои цены»"
+
+          )
+        )
+      )
+
+      , React.createElement('div', { style: { display: "flex", gap: 10, marginTop: 14 }}
+        , React.createElement(Btn, { onClick: onClose, variant: "secondary", full: true}, "Отмена")
+        , React.createElement(Btn, { onClick: handleSave, full: true, disabled: !name || items.length === 0}, "Сохранить группу" )
+      )
+    )
+  );
+}
+
+// Modal to insert a work group into an estimate section
+function InsertGroupModal({ open, onClose, group, projects, onInsert }) {
+  const [pid, setPid] = useState("");
+  const [sid, setSid] = useState("");
+  const [quantities, setQuantities] = useState({});
+
+  useEffect(() => {
+    if (open && projects.length > 0) {
+      const firstP = projects[0];
+      setPid(firstP.id);
+      setSid(_optionalChain([firstP, 'access', _147 => _147.sections, 'access', _148 => _148[0], 'optionalAccess', _149 => _149.id]) || "");
+      const q = {};
+      (_optionalChain([group, 'optionalAccess', _150 => _150.items]) || []).forEach(i => { q[i.id] = String(i.qty); });
+      setQuantities(q);
+    }
+  }, [open, _optionalChain([group, 'optionalAccess', _151 => _151.id])]);
+
+  if (!open || !group) return null;
+
+  const selectedProject = projects.find(p => p.id === pid);
+  const sections = _optionalChain([selectedProject, 'optionalAccess', _152 => _152.sections]) || [];
+  const total = (group.items || []).reduce((s, i) => s + (+quantities[i.id] || i.qty) * i.price, 0);
+
+  const handleInsert = () => {
+    if (!pid || !sid) return;
+    const items = (group.items||[]).map(i => ({
+      id: uid(),
+      name: i.name,
+      unit: i.unit,
+      price: i.price,
+      qty: +quantities[i.id] || i.qty,
+      type: "work",
+      paid: 0,
+    }));
+    onInsert(pid, sid, items);
+    onClose();
+  };
+
+  return (
+    React.createElement(Modal, { open: open, onClose: onClose, title: `Вставить группу: ${group.icon} ${group.name}`}
+      /* Group preview */
+      , React.createElement('div', { style: { background: "var(--s2)", borderRadius: 12, padding: 12, marginBottom: 14, border: `2px solid ${group.color}22` }}
+        , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", marginBottom: 8, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.06em" }}, "Работы в группе — укажите количество"     )
+        , (group.items||[]).map(item => (
+          React.createElement('div', { key: item.id, style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 6, padding: "6px 0", borderBottom: "1px solid var(--b1)" }}
+            , React.createElement('div', { style: { width: 6, height: 6, borderRadius: "50%", background: group.color, flexShrink: 0 }} )
+            , React.createElement('div', { style: { flex: 1, fontSize: 12, fontWeight: 600, color: "var(--tx)" }}, item.name)
+            , React.createElement('input', {
+              type: "number",
+              value: _nullishCoalesce(quantities[item.id], () => ( item.qty)),
+              onChange: e => setQuantities({ ...quantities, [item.id]: e.target.value }),
+              style: { width: 55, border: "1px solid var(--b1)", borderRadius: 7, padding: "4px 7px", fontSize: 12, fontFamily: "inherit", textAlign: "center" }}
+            )
+            , React.createElement('span', { style: { fontSize: 11, color: "var(--tx3)", width: 28 }}, item.unit)
+            , React.createElement('span', { style: { fontSize: 12, fontWeight: 700, color: "var(--acc2)", width: 60, textAlign: "right" }}, fmt((+quantities[item.id] || item.qty) * item.price))
+          )
+        ))
+        , React.createElement('div', { style: { textAlign: "right", marginTop: 8, fontSize: 13, fontWeight: 800, color: group.color }}, "Итого: " , fmt(total))
+      )
+
+      /* Project / Section selectors */
+      , React.createElement('div', { style: { marginBottom: 12 }}
+        , React.createElement('label', { style: { display: "block", fontSize: 12, fontWeight: 600, color: "var(--tx2)", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.05em" }}, "Проект")
+        , React.createElement('select', { value: pid, onChange: e => { setPid(e.target.value); setSid(_optionalChain([projects, 'access', _153 => _153.find, 'call', _154 => _154(p => p.id === e.target.value), 'optionalAccess', _155 => _155.sections, 'access', _156 => _156[0], 'optionalAccess', _157 => _157.id]) || ""); },
+          style: { width: "100%", padding: "11px 14px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", fontFamily: "inherit", outline: "none" }}
+          , projects.map(p => React.createElement('option', { key: p.id, value: p.id}, p.name))
+        )
+      )
+      , React.createElement('div', { style: { marginBottom: 16 }}
+        , React.createElement('label', { style: { display: "block", fontSize: 12, fontWeight: 600, color: "var(--tx2)", marginBottom: 5, textTransform: "uppercase", letterSpacing: "0.05em" }}, "Раздел сметы" )
+        , React.createElement('select', { value: sid, onChange: e => setSid(e.target.value),
+          style: { width: "100%", padding: "11px 14px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", fontFamily: "inherit", outline: "none" }}
+          , sections.map(s => React.createElement('option', { key: s.id, value: s.id}, s.name))
+          , sections.length === 0 && React.createElement('option', { value: ""}, "— нет разделов —"   )
+        )
+      )
+
+      , React.createElement('div', { style: { display: "flex", gap: 10 }}
+        , React.createElement(Btn, { onClick: onClose, variant: "secondary", full: true}, "Отмена")
+        , React.createElement(Btn, { onClick: handleInsert, full: true}, "Добавить " , group.items.length, " работ в смету ›"    )
+      )
+    )
+  );
+}
+
+// --- Calc Screen ---
+function CalcScreen({ state, dispatch, prevTab, setTab, lang }) {
+  const L = T[lang] || T.ru;
+  const [calcType, setCalcType] = useState("tile");
+  const [result, setResult] = useState(null);
+
+  // Tile calc
+  const [tileRoom, setTileRoom] = useState({ length: "", width: "", tileW: "30", tileL: "30", grout: "3", layout: "straight" });
+  // Paint calc
+  const [paint, setPaint] = useState({ area: "", consumption: "0.2", layers: "2" });
+  // Block calc
+  const [block, setBlock] = useState({ wallArea: "", blockL: "39", blockH: "19", blockW: "19", joint: "1" });
+  // Полусухая стяжка
+  const [screed, setScreed] = useState({ length: "", width: "", thickness: "6", bagKg: "40", kgPerM3: "1700" });
+  // Штукатурка
+  const [plaster, setPlaster] = useState({ area: "", thickness: "2", bagKg: "30", kgPerM3: "1200" });
+  // ГКЛ перегородка
+  const [gkl, setGkl] = useState({ length: "", height: "2.7", layers: "1", addStud: true });
+
+  // Add-to-estimate modal
+  const [addModal, setAddModal] = useState(false);
+  const [targetPid, setTargetPid] = useState(_optionalChain([state, 'access', _158 => _158.projects, 'access', _159 => _159[0], 'optionalAccess', _160 => _160.id]) || "");
+  const [targetSid, setTargetSid] = useState(_optionalChain([state, 'access', _161 => _161.projects, 'access', _162 => _162[0], 'optionalAccess', _163 => _163.sections, 'access', _164 => _164[0], 'optionalAccess', _165 => _165.id]) || "");
+
+  // Room picker modal
+  const [roomPickerOpen, setRoomPickerOpen] = useState(false);
+  const [pickerPid, setPickerPid] = useState(_optionalChain([state, 'access', _166 => _166.projects, 'access', _167 => _167[0], 'optionalAccess', _168 => _168.id]) || "");
+  const [pickerSelected, setPickerSelected] = useState({}); // roomId → bool
+  // What dimension to import
+  const [pickerMode, setPickerMode] = useState("floor"); // floor | walls | ceiling
+
+  // -- Room picker logic --------------------------------------
+  const pickerProject = state.projects.find(p => p.id === pickerPid);
+  const pickerRooms   = _optionalChain([pickerProject, 'optionalAccess', _169 => _169.rooms]) || [];
+
+  const PICKER_MODES = [
+    { id: "floor",   label: "Площадь пола",   hint: "м² — для плитки, ламината" },
+    { id: "walls",   label: "Стены (чист.)",  hint: "м² — для краски, обоев" },
+    { id: "ceiling", label: "Потолок",         hint: "м² — для краски потолка" },
+    { id: "wallsTotal", label: "Стены полные", hint: "м² — для штукатурки, блоков" },
+  ];
+
+  const getRoomArea = (room, mode) => {
+    if (mode === "floor")      return room.floor      || (room.length * room.width) || 0;
+    if (mode === "ceiling")    return room.ceiling    || (room.length * room.width) || 0;
+    if (mode === "walls")      return room.wallsNet   || 0;
+    if (mode === "wallsTotal") return room.wallsTotal || 0;
+    return 0;
+  };
+
+  const applyRoomPicker = () => {
+    const selected = pickerRooms.filter(r => pickerSelected[r.id]);
+    if (!selected.length) return;
+
+    const totalArea = selected.reduce((s, r) => s + getRoomArea(r, pickerMode), 0);
+
+    if (calcType === "tile") {
+      if (selected.length === 1) {
+        const r = selected[0];
+        setTileRoom(prev => ({ ...prev, length: String((r.length||0).toFixed(2)), width: String((r.width||0).toFixed(2)) }));
+      } else {
+        setTileRoom(prev => ({ ...prev, length: String(totalArea.toFixed(2)), width: "1" }));
+      }
+    } else if (calcType === "paint") {
+      setPaint(prev => ({ ...prev, area: String(totalArea.toFixed(2)) }));
+    } else if (calcType === "block") {
+      setBlock(prev => ({ ...prev, wallArea: String(totalArea.toFixed(2)) }));
+    } else if (calcType === "screed") {
+      if (selected.length === 1) {
+        const r = selected[0];
+        setScreed(prev => ({ ...prev, length: String((r.length||0).toFixed(2)), width: String((r.width||0).toFixed(2)) }));
+      } else {
+        setScreed(prev => ({ ...prev, length: String(totalArea.toFixed(1)), width: "1" }));
+      }
+    } else if (calcType === "plaster") {
+      setPlaster(prev => ({ ...prev, area: String(totalArea.toFixed(1)) }));
+    } else if (calcType === "gkl") {
+      if (selected.length === 1) {
+        const r = selected[0];
+        setGkl(prev => ({ ...prev, length: String((r.length||0).toFixed(2)), height: String((r.height||2.7).toFixed(1)) }));
+      } else {
+        setGkl(prev => ({ ...prev, length: String(totalArea.toFixed(1)), height: "2.7" }));
+      }
+    }
+
+    setRoomPickerOpen(false);
+    setPickerSelected({});
+    setResult(null);
+  };
+
+  const openPicker = () => {
+    if (calcType === "tile")    setPickerMode("floor");
+    else if (calcType === "paint")   setPickerMode("walls");
+    else if (calcType === "block")   setPickerMode("wallsTotal");
+    else if (calcType === "screed")  setPickerMode("floor");
+    else if (calcType === "plaster") setPickerMode("wallsTotal");
+    else if (calcType === "gkl")     setPickerMode("walls");
+    else setPickerMode("floor");
+    setPickerSelected({});
+    setRoomPickerOpen(true);
+  };
+
+  // -- Calculators --------------------------------------------
+  const calcTile = () => {
+    const L = +tileRoom.length, W = +tileRoom.width;
+    const TW = +tileRoom.tileW / 100, TL = +tileRoom.tileL / 100, G = +tileRoom.grout / 1000;
+    if (!L || !W || !TW || !TL) return;
+    const area = L * W;
+    let tileArea, layoutNote;
+    if (tileRoom.layout === "diamond") {
+      // Diamond (ромб 45°): each tile rotated 45°, effective area = TW*TL, but need ~15% more waste
+      tileArea = TW * TL;
+      layoutNote = "ромб 45°, +15% обрезь";
+    } else {
+      tileArea = (TW + G) * (TL + G);
+      layoutNote = tileRoom.layout === "brick" ? "кирпичная кладка" : "прямая укладка";
+    }
+    const baseCount = Math.ceil(area / tileArea);
+    // Waste coefficient by layout
+    const wasteK = tileRoom.layout === "diamond" ? 1.25 : tileRoom.layout === "brick" ? 1.12 : 1.1;
+    const withReserve = Math.ceil(baseCount * wasteK);
+    const glue = Math.round(area * 5);
+    const fmt2 = n => `${Math.round(TW*100)}×${Math.round(TL*100)}`;
+    setResult({ type: "tile", area: area.toFixed(2), count: baseCount, withReserve, glue, layoutNote, tileLabel: fmt2() });
+  };
+
+  const calcPaint = () => {
+    const area = +paint.area, cons = +paint.consumption, layers = +paint.layers;
+    if (!area || !cons) return;
+    const liters = Math.ceil(area * cons * layers * 1.1);
+    setResult({ type: "paint", area, liters });
+  };
+
+  const calcBlocks = () => {
+    const area = +block.wallArea;
+    const bL = (+block.blockL + +block.joint) / 100; // см → м
+    const bH = (+block.blockH + +block.joint) / 100;
+    if (!area || !bL || !bH) return;
+    const count = Math.ceil(area / (bL * bH));
+    const withReserve = Math.ceil(count * 1.05);
+    setResult({ type: "block", area, count, withReserve });
+  };
+
+  const calcScreed = () => {
+    const L = +screed.length, W = +screed.width, T = +screed.thickness / 100;
+    const bagKg = +screed.bagKg, kgM3 = +screed.kgPerM3;
+    if (!L || !W || !T || !bagKg || !kgM3) return;
+    const area = L * W;
+    const vol = area * T; // м³
+    const totalKg = vol * kgM3;
+    const bags = Math.ceil(totalKg / bagKg);
+    const bagsWithReserve = Math.ceil(bags * 1.05);
+    const cement = Math.ceil(totalKg * 0.2 / 50); // ~20% цемент, мешки 50кг
+    const sand = Math.round(vol * 1.2 * 1000); // кг песка
+    setResult({ type:"screed", area:area.toFixed(2), vol:vol.toFixed(3), bags, bagsWithReserve, cement, totalKg:Math.round(totalKg) });
+  };
+
+  const calcPlaster = () => {
+    const area = +plaster.area, T = +plaster.thickness / 10; // мм -> дм
+    const bagKg = +plaster.bagKg, kgM3 = +plaster.kgPerM3;
+    if (!area || !T || !bagKg || !kgM3) return;
+    const vol = area * T / 100; // м³ (T был в мм, area м²)
+    const volM3 = area * (+plaster.thickness / 1000);
+    const totalKg = volM3 * kgM3;
+    const bags = Math.ceil(totalKg / bagKg);
+    const bagsReserve = Math.ceil(bags * 1.1);
+    const primer = Math.ceil(area / 10); // грунтовка: 1 шт/10м²
+    setResult({ type:"plaster", area:area.toFixed(1), bags, bagsReserve, totalKg:Math.round(totalKg), primer });
+  };
+
+  const calcGkl = () => {
+    const L = +gkl.length, H = +gkl.height, layers = +gkl.layers;
+    if (!L || !H) return;
+    const area = L * H; // площадь одной стороны
+    const totalArea = area * 2; // обе стороны
+    const sheetArea = 1.2 * 2.5; // стандартный лист ГКЛ 1.2×2.5м
+    const sheets = Math.ceil(totalArea / sheetArea * layers);
+    const sheetsReserve = Math.ceil(sheets * 1.1);
+    const studs = Math.ceil(L / 0.6) + 2; // стойки CW каждые 60см + 2 крайних
+    const tracks = Math.ceil(L / 3) * 4; // направляющие UW, 2 ряда по 2 шт
+    const screws = sheets * 25; // ~25 саморезов на лист
+    const tape = Math.ceil(totalArea / 5); // лента серпянка
+    const putty = Math.ceil(totalArea * 0.3); // кг шпаклёвки
+    const trackLen = Math.ceil(L * 4); // пог.м направляющих
+    const studLen = Math.ceil(L / 0.6 + 2) * Math.ceil(H / 3 + 1); // количество стоек с учётом высоты
+    setResult({ type:"gkl", area:area.toFixed(1), totalArea:totalArea.toFixed(1), sheets, sheetsReserve, studs:studLen, tracks, screws, tape, putty });
+  };
+
+  const handleCalc = () => {
+    if (calcType === "tile") calcTile();
+    else if (calcType === "paint") calcPaint();
+    else if (calcType === "block") calcBlocks();
+    else if (calcType === "screed") calcScreed();
+    else if (calcType === "plaster") calcPlaster();
+    else if (calcType === "gkl") calcGkl();
+  };
+
+  const handleAddToEstimate = () => {
+    if (!result || !targetPid || !targetSid) return;
+    let item;
+    if (result.type === "tile") {
+      item = { id: uid(), name: "Плитка керамическая (расчёт)", unit: "шт", qty: result.withReserve, price: 80, type: "material", paid: 0 };
+    } else if (result.type === "paint") {
+      item = { id: uid(), name: "Краска (расчёт)", unit: "л", qty: result.liters, price: 350, type: "material", paid: 0 };
+    } else {
+      item = { id: uid(), name: "Блоки (расчёт)", unit: "шт", qty: result.withReserve, price: 85, type: "material", paid: 0 };
+    }
+    dispatch({ type: "ADD_ITEM", pid: targetPid, sid: targetSid, item });
+    setAddModal(false);
+  };
+
+  const sections = _optionalChain([state, 'access', _170 => _170.projects, 'access', _171 => _171.find, 'call', _172 => _172(p => p.id === targetPid), 'optionalAccess', _173 => _173.sections]) || [];
+
+  const calcTypes = [
+    { id: "tile",    label: "🪟 Плитка" },
+    { id: "paint",   label: "🎨 Краска" },
+    { id: "block",   label: "🧱 Блоки" },
+    { id: "screed",  label: "🏔️ Стяжка" },
+    { id: "plaster", label: "🪣 Штукатурка" },
+    { id: "gkl",     label: "📋 ГКЛ" },
+  ];
+
+  // -- "Из проекта" badge shown when rooms applied -------------
+  const fromProjectBadge = (label) => (
+    React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 6, padding: "6px 10px", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.25)", borderRadius: 8, marginBottom: 10 }}
+      , React.createElement('span', { style: { fontSize: 12 }}, "🏠")
+      , React.createElement('span', { style: { fontSize: 11, color: "var(--green)", fontWeight: 700 }}, label)
+      , React.createElement('button', { onClick: () => {
+        if (calcType === "tile")  setTileRoom(p => ({ ...p, length: "", width: "" }));
+        if (calcType === "paint") setPaint(p => ({ ...p, area: "" }));
+        if (calcType === "block") setBlock(p => ({ ...p, wallArea: "" }));
+        setResult(null);
+      }, style: { marginLeft: "auto", background: "none", border: "none", cursor: "pointer", color: "var(--tx3)", fontSize: 14 }}, "✕")
+    )
+  );
+
+  const hasRoomData = (
+    (calcType === "tile"  && tileRoom.length && tileRoom.width) ||
+    (calcType === "paint" && paint.area) ||
+    (calcType === "block" && block.wallArea)
+  );
+
+  return (
+    React.createElement('div', { style: { minHeight: "100%", background: "var(--bg)", paddingBottom: 100 }}
+      , React.createElement('div', { style: { background: "var(--hdr-bg,linear-gradient(135deg,#1e2230,#252a3a))", borderBottom: "1px solid var(--b1)", padding: "52px 16px 14px" }}
+        , prevTab && prevTab !== "calc" && (
+          React.createElement('button', { onClick: () => setTab(prevTab), style: { background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 11px", cursor:"pointer", display:"flex", alignItems:"center", gap:5, marginBottom:10 }}
+            , React.createElement(Icon, { name: "back", size: 13, color: "var(--hdr-tx,#fff)"} )
+            , React.createElement('span', { style: { color:"var(--hdr-tx,#fff)", fontSize:11, fontWeight:700 }}, "Назад")
+          )
+        )
+        , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 20, fontWeight: 800, color: "var(--hdr-tx,var(--tx))" }}, L.calculator)
+        , React.createElement('div', { style: { fontSize: 13, color: "var(--hdr-tx2,var(--tx2))" }}, L.calcMaterials)
+      )
+
+      , React.createElement('div', { style: { padding: 16 }}
+        /* Type selector — scrollable row */
+        , React.createElement('div', { style: { display: "flex", gap: 7, marginBottom: 16, overflowX: "auto", paddingBottom: 2 }}
+          , calcTypes.map(ct => (
+            React.createElement('button', { key: ct.id, onClick: () => { setCalcType(ct.id); setResult(null); }, style: {
+              flexShrink: 0, padding: "9px 12px", border: "none", borderRadius: 11, cursor: "pointer", fontFamily: "inherit",
+              fontWeight: 700, fontSize: 11, transition: "all 0.2s", whiteSpace: "nowrap",
+              background: calcType === ct.id ? "linear-gradient(135deg,#7c3aed,#a855f7)" : "var(--s1)",
+              color: calcType === ct.id ? "#fff" : "var(--tx3)",
+              boxShadow: calcType === ct.id ? "0 4px 12px rgba(124,58,237,0.3)" : "none",
+            }}, ct.label)
+          ))
+        )
+
+        /* "Из проекта" button */
+        , state.projects.length > 0 && (
+          React.createElement('button', { onClick: openPicker, style: {
+            width: "100%", marginBottom: 12, padding: "11px 14px", borderRadius: 12,
+            border: "1.5px dashed rgba(16,185,129,0.4)", background: "rgba(16,185,129,0.06)",
+            cursor: "pointer", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 10,
+            transition: "all 0.15s",
+          }}
+            , React.createElement('div', { style: { width: 32, height: 32, borderRadius: 9, background: "rgba(16,185,129,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}, "🏠")
+            , React.createElement('div', { style: { flex: 1, textAlign: "left" }}
+              , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: "var(--green)" }}, "Взять размеры из проекта"   )
+              , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", marginTop: 1 }}, "Выбрать помещения и подставить автоматически"    )
+            )
+            , React.createElement('span', { style: { color: "var(--green)", fontSize: 16 }}, "›")
+          )
+        )
+
+        , React.createElement('div', { style: { background: "var(--s1)", borderRadius: "var(--r)", padding: 20, boxShadow: "0 4px 20px rgba(0,0,0,0.35)", marginBottom: 16 }}
+          , calcType === "tile" && (
+            React.createElement(React.Fragment, null
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 700, color: "var(--tx)", marginBottom: 14 }}, "🪟 Калькулятор плитки"  )
+
+              /* Room size */
+              , React.createElement('div', { style: { display: "flex", gap: 10 }}
+                , React.createElement('div', { style: { flex: 1 }}, React.createElement(Input, { label: "Длина помещения (м)"  , type: "number", value: tileRoom.length, onChange: v => setTileRoom({ ...tileRoom, length: v }), placeholder: "4.5"} ))
+                , React.createElement('div', { style: { flex: 1 }}, React.createElement(Input, { label: "Ширина помещения (м)"  , type: "number", value: tileRoom.width, onChange: v => setTileRoom({ ...tileRoom, width: v }), placeholder: "3.2"} ))
+              )
+
+              /* Tile size */
+              , React.createElement('div', { style: { marginBottom: 6 }}
+                , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}, "Размер плитки (см)"  )
+                /* Quick presets */
+                , React.createElement('div', { style: { display: "flex", gap: 5, flexWrap: "wrap", marginBottom: 8 }}
+                  , [["30","30"],["60","60"],["30","60"],["20","40"],["60","120"],["20","20"],["15","60"],["7.5","30"]].map(([w,l]) => (
+                    React.createElement('button', { key: w+l, onClick: () => setTileRoom(t => ({ ...t, tileW: w, tileL: l })),
+                      style: { padding: "4px 9px", borderRadius: "var(--rs)", border: `1.5px solid ${tileRoom.tileW===w&&tileRoom.tileL===l ? "var(--acc)" : "var(--b1)"}`, background: tileRoom.tileW===w&&tileRoom.tileL===l ? "var(--acc3)" : "var(--s2)", cursor: "pointer", fontFamily: "inherit", fontSize: 11, fontWeight: 700, color: tileRoom.tileW===w&&tileRoom.tileL===l ? "var(--acc)" : "var(--tx3)" }}
+                      , w, "×", l
+                    )
+                  ))
+                )
+                , React.createElement('div', { style: { display: "flex", gap: 10 }}
+                  , React.createElement('div', { style: { flex: 1 }}, React.createElement(Input, { label: "Ширина (см)" , type: "number", value: tileRoom.tileW, onChange: v => setTileRoom({ ...tileRoom, tileW: v }), placeholder: "30"} ))
+                  , React.createElement('div', { style: { flex: 1 }}, React.createElement(Input, { label: "Длина (см)" , type: "number", value: tileRoom.tileL, onChange: v => setTileRoom({ ...tileRoom, tileL: v }), placeholder: "60"} ))
+                  , React.createElement('div', { style: { flex: 1 }}, React.createElement(Input, { label: "Шов (мм)" , type: "number", value: tileRoom.grout, onChange: v => setTileRoom({ ...tileRoom, grout: v }), placeholder: "3"} ))
+                )
+              )
+
+              /* Layout pattern */
+              , React.createElement('div', { style: { marginBottom: 4 }}
+                , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 8 }}, "Укладка")
+                , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 7 }}
+                  , [
+                    { id: "straight", label: "Прямая", svg: (
+                      React.createElement('svg', { viewBox: "0 0 36 36"   , width: 36, height: 36}
+                        , [[0,0],[18,0],[0,18],[18,18]].map(([x,y],i) => React.createElement('rect', { key: i, x: x+1, y: y+1, width: 16, height: 16, fill: "var(--acc3)", stroke: "var(--acc)", strokeWidth: "1.5"} ))
+                      )
+                    )},
+                    { id: "brick", label: "Кирпич", svg: (
+                      React.createElement('svg', { viewBox: "0 0 36 36"   , width: 36, height: 36}
+                        , [[0,0,"full"],[0,18,"full"],[0,9,"half"],[18,9,"half"]].map(([x,y,t],i) => (
+                          t==="full"
+                            ? React.createElement('rect', { key: i, x: x+1, y: y+1, width: 34, height: 8, fill: "var(--acc3)", stroke: "var(--acc)", strokeWidth: "1.5"} )
+                            : React.createElement('rect', { key: i, x: x+1, y: y+1, width: 16, height: 8, fill: "var(--acc3)", stroke: "var(--acc)", strokeWidth: "1.5"} )
+                        ))
+                      )
+                    )},
+                    { id: "diamond", label: "Ромб 45°", svg: (
+                      React.createElement('svg', { viewBox: "0 0 36 36"   , width: 36, height: 36}
+                        , [[18,4],[4,18],[18,18],[32,18],[18,32]].map(([cx,cy],i) => (
+                          React.createElement('polygon', { key: i, points: `${cx},${cy-9} ${cx+9},${cy} ${cx},${cy+9} ${cx-9},${cy}`, fill: "var(--acc3)", stroke: "var(--acc)", strokeWidth: "1.5"} )
+                        ))
+                      )
+                    )},
+                  ].map(opt => {
+                    const on = tileRoom.layout === opt.id;
+                    return (
+                      React.createElement('button', { key: opt.id, onClick: () => setTileRoom(t => ({ ...t, layout: opt.id })), style: { background: on ? "var(--acc3)" : "var(--s2)", border: `1.5px solid ${on ? "var(--acc)" : "var(--b1)"}`, borderRadius: "var(--r)", padding: "10px 6px 8px", cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", gap: 5 }}
+                        , opt.svg
+                        , React.createElement('span', { style: { fontSize: 10, fontWeight: 700, color: on ? "var(--acc)" : "var(--tx3)", textAlign: "center" }}, opt.label)
+                        , opt.id === "diamond" && React.createElement('span', { style: { fontSize: 8, color: "var(--red)", fontWeight: 700 }}, "+15% обрезь" )
+                        , opt.id === "brick" && React.createElement('span', { style: { fontSize: 8, color: "var(--tx3)", fontWeight: 700 }}, "+12% обрезь" )
+                      )
+                    );
+                  })
+                )
+              )
+            )
+          )
+
+          , calcType === "paint" && (
+            React.createElement(React.Fragment, null
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 700, color: "var(--tx)", marginBottom: 14 }}, "🎨 Калькулятор краски"  )
+              , React.createElement(Input, { label: "Площадь покраски (м²)"  , type: "number", value: paint.area, onChange: v => setPaint({ ...paint, area: v }), placeholder: "60"} )
+              , React.createElement('div', { style: { display: "flex", gap: 10 }}
+                , React.createElement('div', { style: { flex: 1 }}
+                  , React.createElement(Input, { label: "Расход (л/м²)" , type: "number", value: paint.consumption, onChange: v => setPaint({ ...paint, consumption: v }), placeholder: "0.2"} )
+                )
+                , React.createElement('div', { style: { flex: 1 }}
+                  , React.createElement(Input, { label: "Кол-во слоёв" , type: "number", value: paint.layers, onChange: v => setPaint({ ...paint, layers: v }), placeholder: "2"} )
+                )
+              )
+            )
+          )
+
+          , calcType === "block" && (
+            React.createElement(React.Fragment, null
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 700, color: "var(--tx)", marginBottom: 14 }}, "🧱 Калькулятор блоков"  )
+              , React.createElement(Input, { label: "Площадь стен (м²)"  , type: "number", value: block.wallArea, onChange: v => setBlock({ ...block, wallArea: v }), placeholder: "50"} )
+              , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 10 }}
+                , React.createElement(Input, { label: "Длина (см)" , type: "number", value: block.blockL, onChange: v => setBlock({ ...block, blockL: v }), placeholder: "39"} )
+                , React.createElement(Input, { label: "Высота (см)" , type: "number", value: block.blockH, onChange: v => setBlock({ ...block, blockH: v }), placeholder: "19"} )
+                , React.createElement(Input, { label: "Шов (см)" , type: "number", value: block.joint, onChange: v => setBlock({ ...block, joint: v }), placeholder: "1"} )
+              )
+            )
+          )
+
+          /* Полусухая стяжка */
+          , calcType === "screed" && (
+            React.createElement(React.Fragment, null
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:700, color:"var(--tx)", marginBottom:8 }}, "🏔️ Полусухая стяжка"  )
+              , React.createElement('button', { onClick: openPicker, style: { width:"100%", padding:"8px", borderRadius:9, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--green)", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6, marginBottom:10 }}, "🏠 Взять размеры из проекта"
+
+              )
+              , React.createElement('div', { style: { display:"flex", gap:10 }}
+                , React.createElement('div', { style: { flex:1 }}, React.createElement(Input, { label: "Длина (м)" , type: "number", value: screed.length, onChange: v=>setScreed({...screed,length:v}), placeholder: "5.0"} ))
+                , React.createElement('div', { style: { flex:1 }}, React.createElement(Input, { label: "Ширина (м)" , type: "number", value: screed.width, onChange: v=>setScreed({...screed,width:v}), placeholder: "4.0"} ))
+              )
+              , React.createElement('div', { style: { display:"flex", gap:10 }}
+                , React.createElement('div', { style: { flex:1 }}, React.createElement(Input, { label: "Толщина (см)" , type: "number", value: screed.thickness, onChange: v=>setScreed({...screed,thickness:v}), placeholder: "6"} ))
+                , React.createElement('div', { style: { flex:1 }}, React.createElement(Input, { label: "Кг в мешке"  , type: "number", value: screed.bagKg, onChange: v=>setScreed({...screed,bagKg:v}), placeholder: "40"} ))
+              )
+              , React.createElement('div', { style: { background:"rgba(124,58,237,0.06)", borderRadius:9, padding:"8px 12px", marginBottom:8, fontSize:11, color:"var(--tx3)" }}, "Стандарт: полусухая смесь ~"
+                   , screed.kgPerM3, " кг/м³, мешок "   , screed.bagKg, " кг"
+              )
+            )
+          )
+
+          /* Штукатурка */
+          , calcType === "plaster" && (
+            React.createElement(React.Fragment, null
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:700, color:"var(--tx)", marginBottom:8 }}, "🪣 Штукатурка" )
+              , React.createElement('button', { onClick: openPicker, style: { width:"100%", padding:"8px", borderRadius:9, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--green)", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6, marginBottom:10 }}, "🏠 Взять площадь из проекта"
+
+              )
+              , React.createElement(Input, { label: "Площадь стен (м²)"  , type: "number", value: plaster.area, onChange: v=>setPlaster({...plaster,area:v}), placeholder: "45"} )
+              , React.createElement('div', { style: { display:"flex", gap:10 }}
+                , React.createElement('div', { style: { flex:1 }}, React.createElement(Input, { label: "Толщина слоя (мм)"  , type: "number", value: plaster.thickness, onChange: v=>setPlaster({...plaster,thickness:v}), placeholder: "20"} ))
+                , React.createElement('div', { style: { flex:1 }}, React.createElement(Input, { label: "Кг в мешке"  , type: "number", value: plaster.bagKg, onChange: v=>setPlaster({...plaster,bagKg:v}), placeholder: "30"} ))
+              )
+              , React.createElement('div', { style: { display:"flex", gap:6, flexWrap:"wrap", marginBottom:8 }}
+                , [["Knauf Rotband","8","1050"],["Ceresit CT29","10","1100"],["Волма Слой","10","1200"],["Цем. M75","15","1700"]].map(([name,th,kg])=>(
+                  React.createElement('button', { key: name, onClick: ()=>setPlaster(p=>({...p,thickness:th,kgPerM3:kg,bagKg:"30"})),
+                    style: { padding:"4px 9px", borderRadius:7, border:"1.5px solid var(--b1)", background:"var(--s2)", cursor:"pointer", fontSize:10, fontWeight:700, color:"var(--tx3)", fontFamily:"inherit" }}
+                    , name, " (" , th, "мм)"
+                  )
+                ))
+              )
+              , React.createElement('div', { style: { background:"rgba(124,58,237,0.06)", borderRadius:9, padding:"8px 12px", marginBottom:8, fontSize:11, color:"var(--tx3)" }}, "Расход: ~"
+                 , plaster.kgPerM3, " кг/м³ · слой "    , plaster.thickness, "мм · мешок "   , plaster.bagKg, "кг"
+              )
+            )
+          )
+
+          /* ГКЛ перегородка */
+          , calcType === "gkl" && (
+            React.createElement(React.Fragment, null
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:700, color:"var(--tx)", marginBottom:8 }}, "📋 Перегородка ГКЛ"  )
+              , React.createElement('button', { onClick: openPicker, style: { width:"100%", padding:"8px", borderRadius:9, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--green)", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit", display:"flex", alignItems:"center", justifyContent:"center", gap:6, marginBottom:10 }}, "🏠 Взять размеры из проекта"
+
+              )
+              , React.createElement('div', { style: { display:"flex", gap:10 }}
+                , React.createElement('div', { style: { flex:1 }}, React.createElement(Input, { label: "Длина (м)" , type: "number", value: gkl.length, onChange: v=>setGkl({...gkl,length:v}), placeholder: "4.5"} ))
+                , React.createElement('div', { style: { flex:1 }}, React.createElement(Input, { label: "Высота (м)" , type: "number", value: gkl.height, onChange: v=>setGkl({...gkl,height:v}), placeholder: "2.7"} ))
+              )
+              , React.createElement('div', { style: { marginBottom:10 }}
+                , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.05em", marginBottom:6 }}, "Слоёв ГКЛ с каждой стороны"    )
+                , React.createElement('div', { style: { display:"flex", gap:6 }}
+                  , [1,2].map(n=>(
+                    React.createElement('button', { key: n, onClick: ()=>setGkl(g=>({...g,layers:n})),
+                      style: { flex:1, padding:"9px", borderRadius:9, border:`1.5px solid ${gkl.layers===n?"var(--acc)":"var(--b1)"}`, background:gkl.layers===n?"var(--acc3)":"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700, color:gkl.layers===n?"var(--acc2)":"var(--tx3)" }}
+                      , n, " слой" , n>1?"":""
+                    )
+                  ))
+                )
+              )
+              , React.createElement('div', { style: { background:"rgba(124,58,237,0.06)", borderRadius:9, padding:"8px 12px", marginBottom:8, fontSize:11, color:"var(--tx3)" }}, "Лист ГКЛ 1.2×2.5м · стойки CW каждые 60 см · шаг расчёта с запасом 10%"
+
+              )
+            )
+          )
+
+          , React.createElement(Btn, { onClick: handleCalc, full: true}, "Рассчитать")
+        )
+
+        /* Result */
+        , result && (
+          React.createElement('div', { style: { background: "linear-gradient(135deg,#7c3aed,#a855f7)", borderRadius: "var(--r)", padding: 20, marginBottom: 16, boxShadow: "0 4px 16px rgba(124,58,237,0.3)" }}
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 700, color: "var(--tx)", marginBottom: 12 }}, "Результат расчёта" )
+            , result.type === "tile" && (
+              React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}
+                , [
+                  { l: "Площадь",       v: `${result.area} м²` },
+                  { l: "Плитки точно",  v: `${result.count} шт` },
+                  { l: result.layoutNote||"С запасом", v: `${result.withReserve} шт` },
+                  { l: "Клей (кг)",     v: `~${result.glue} кг` },
+                ].map((r, i) => (
+                  React.createElement('div', { key: i, style: { background: "rgba(255,255,255,0.06)", borderRadius: 10, padding: 10 }}
+                    , React.createElement('div', { style: { fontSize: 10, color: "var(--tx2)", textTransform: "uppercase", letterSpacing: "0.08em" }}, r.l)
+                    , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 700, color: "var(--tx)", marginTop: 3 }}, r.v)
+                  )
+                ))
+              )
+            )
+            , result.type === "paint" && (
+              React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}
+                , [
+                  { l: "Площадь",    v: `${result.area} м²` },
+                  { l: "Краска (+10%)", v: `${result.liters} л` },
+                ].map((r, i) => (
+                  React.createElement('div', { key: i, style: { background: "rgba(255,255,255,0.06)", borderRadius: 10, padding: 10 }}
+                    , React.createElement('div', { style: { fontSize: 10, color: "var(--tx2)", textTransform: "uppercase", letterSpacing: "0.08em" }}, r.l)
+                    , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 700, color: "var(--tx)", marginTop: 3 }}, r.v)
+                  )
+                ))
+              )
+            )
+            , result.type === "block" && (
+              React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}
+                , [
+                  { l: "Площадь",    v: `${result.area} м²` },
+                  { l: "С запасом 5%", v: `${result.withReserve} шт` },
+                ].map((r, i) => (
+                  React.createElement('div', { key: i, style: { background: "rgba(255,255,255,0.06)", borderRadius: 10, padding: 10 }}
+                    , React.createElement('div', { style: { fontSize: 10, color: "var(--tx2)", textTransform: "uppercase", letterSpacing: "0.08em" }}, r.l)
+                    , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 700, color: "var(--tx)", marginTop: 3 }}, r.v)
+                  )
+                ))
+              )
+            )
+
+            , result.type === "screed" && (
+              React.createElement('div', {}
+                , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"#fff", marginBottom:10 }}, "🏔️ Полусухая стяжка"  )
+                , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}
+                  , [
+                    { l:"Площадь",       v:`${result.area} м²`,           hi:false },
+                    { l:"Объём смеси",   v:`${result.vol} м³`,            hi:false },
+                    { l:"Мешков точно",  v:`${result.bags} шт`,           hi:false },
+                    { l:"С запасом 5%",  v:`${result.bagsReserve||result.bags} шт`, hi:true },
+                    { l:"Итого кг",      v:`~${result.totalKg} кг`,       hi:false },
+                    { l:"Цемент (50кг)", v:`~${result.cement} мешков`,    hi:false },
+                  ].map((r,i)=>(
+                    React.createElement('div', { key: i, style: { background:r.hi?"rgba(255,255,255,0.15)":"rgba(255,255,255,0.06)", borderRadius:9, padding:"9px 10px", border:r.hi?"1px solid rgba(255,255,255,0.25)":"none" }}
+                      , React.createElement('div', { style: { fontSize:9, color:"rgba(255,255,255,0.7)", textTransform:"uppercase", letterSpacing:"0.07em" }}, r.l)
+                      , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:800, color:"#fff", marginTop:3 }}, r.v)
+                    )
+                  ))
+                )
+                , React.createElement('div', { style: { background:"rgba(255,255,255,0.1)", borderRadius:9, padding:"8px 12px", fontSize:11, color:"rgba(255,255,255,0.8)" }}, "💡 Заказывайте с запасом 5–10%. При доставке возможны потери."
+
+                )
+              )
+            )
+
+            , result.type === "plaster" && (
+              React.createElement('div', {}
+                , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"#fff", marginBottom:10 }}, "🪣 Штукатурка" )
+                , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}
+                  , [
+                    { l:"Площадь",        v:`${result.area} м²`,           hi:false },
+                    { l:"Итого кг",        v:`~${result.totalKg} кг`,       hi:false },
+                    { l:"Мешков точно",    v:`${result.bags} шт`,           hi:false },
+                    { l:"С запасом 10%",   v:`${result.bagsReserve} шт`,    hi:true },
+                    { l:"Грунтовка",       v:`${result.primer} шт`,         hi:false },
+                  ].map((r,i)=>(
+                    React.createElement('div', { key: i, style: { background:r.hi?"rgba(255,255,255,0.15)":"rgba(255,255,255,0.06)", borderRadius:9, padding:"9px 10px", border:r.hi?"1px solid rgba(255,255,255,0.25)":"none" }}
+                      , React.createElement('div', { style: { fontSize:9, color:"rgba(255,255,255,0.7)", textTransform:"uppercase", letterSpacing:"0.07em" }}, r.l)
+                      , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:800, color:"#fff", marginTop:3 }}, r.v)
+                    )
+                  ))
+                )
+              )
+            )
+
+            , result.type === "gkl" && (
+              React.createElement('div', {}
+                , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"#fff", marginBottom:10 }}, "📋 Перегородка ГКЛ"  )
+                , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:10 }}
+                  , [
+                    { l:"Площадь стороны", v:`${result.area} м²`,          hi:false },
+                    { l:"Обе стороны",     v:`${result.totalArea} м²`,      hi:false },
+                    { l:"Листов ГКЛ",      v:`${result.sheets} шт`,         hi:false },
+                    { l:"С запасом 10%",   v:`${result.sheetsReserve} шт`,  hi:true },
+                    { l:"Стойки CW",       v:`${result.studs} шт`,          hi:false },
+                    { l:"Саморезы",        v:`~${result.screws} шт`,        hi:false },
+                    { l:"Серпянка",        v:`${result.tape} рул.`,         hi:false },
+                    { l:"Шпаклёвка (кг)",  v:`~${result.putty} кг`,         hi:false },
+                  ].map((r,i)=>(
+                    React.createElement('div', { key: i, style: { background:r.hi?"rgba(255,255,255,0.15)":"rgba(255,255,255,0.06)", borderRadius:9, padding:"9px 10px", border:r.hi?"1px solid rgba(255,255,255,0.25)":"none" }}
+                      , React.createElement('div', { style: { fontSize:9, color:"rgba(255,255,255,0.7)", textTransform:"uppercase", letterSpacing:"0.07em" }}, r.l)
+                      , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:800, color:"#fff", marginTop:3 }}, r.v)
+                    )
+                  ))
+                )
+                , React.createElement('div', { style: { background:"rgba(255,255,255,0.1)", borderRadius:9, padding:"8px 12px", fontSize:11, color:"rgba(255,255,255,0.8)" }}, "💡 Направляющие UW: 2×длина×2 = "
+                       , Math.ceil(+gkl.length*4), " м.п. · Листы 1.2×2.5м"
+                )
+              )
+            )
+            , React.createElement('button', { onClick: () => setAddModal(true), style: {
+              marginTop: 14, width: "100%", background: "var(--s1)", border: "none", borderRadius: 10, padding: "11px",
+              fontFamily: "inherit", fontWeight: 700, fontSize: 13, color: "var(--acc2)", cursor: "pointer",
+            }}, "Добавить в смету →"
+
+            )
+          )
+        )
+      )
+
+      /* Add to estimate modal */
+      , React.createElement(Modal, { open: addModal, onClose: () => setAddModal(false), title: "Добавить в смету"  }
+        , React.createElement('div', { style: { marginBottom: 14 }}
+          , React.createElement('label', { style: { display: "block", fontSize: 12, fontWeight: 600, color: "var(--tx2)", marginBottom: 5, letterSpacing: "0.05em", textTransform: "uppercase" }}, "Проект")
+          , React.createElement('select', { value: targetPid, onChange: e => { setTargetPid(e.target.value); setTargetSid(_optionalChain([state, 'access', _174 => _174.projects, 'access', _175 => _175.find, 'call', _176 => _176(p => p.id === e.target.value), 'optionalAccess', _177 => _177.sections, 'access', _178 => _178[0], 'optionalAccess', _179 => _179.id]) || ""); },
+            style: { width: "100%", padding: "11px 14px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", fontFamily: "inherit", outline: "none" }}
+            , state.projects.map(p => React.createElement('option', { key: p.id, value: p.id}, p.name))
+          )
+        )
+        , React.createElement('div', { style: { marginBottom: 14 }}
+          , React.createElement('label', { style: { display: "block", fontSize: 12, fontWeight: 600, color: "var(--tx2)", marginBottom: 5, letterSpacing: "0.05em", textTransform: "uppercase" }}, "Раздел")
+          , React.createElement('select', { value: targetSid, onChange: e => setTargetSid(e.target.value),
+            style: { width: "100%", padding: "11px 14px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", background: "var(--s2)", fontFamily: "inherit", outline: "none" }}
+            , sections.map(s => React.createElement('option', { key: s.id, value: s.id}, s.name))
+          )
+        )
+        , React.createElement(Btn, { onClick: handleAddToEstimate, full: true}, "Добавить")
+      )
+
+      /* Room picker modal */
+      , roomPickerOpen && (
+        React.createElement('div', { style: { position: "absolute", inset: 0, background: "rgba(0,0,0,0.8)", zIndex: 400, display: "flex", flexDirection: "column" }}
+          , React.createElement('div', { style: { background: "var(--s1)", borderRadius: "20px 20px 0 0", marginTop: "auto", maxHeight: "88vh", display: "flex", flexDirection: "column" }}
+            /* Handle */
+            , React.createElement('div', { style: { width: 36, height: 4, background: "var(--b2)", borderRadius: 2, margin: "10px auto 0" }} )
+            /* Header */
+            , React.createElement('div', { style: { padding: "12px 16px 10px", borderBottom: "1px solid var(--b1)", display: "flex", alignItems: "center", gap: 10, flexShrink: 0 }}
+              , React.createElement('div', { style: { width: 36, height: 36, borderRadius: 10, background: "rgba(16,185,129,0.15)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}, "🏠")
+              , React.createElement('div', { style: { flex: 1 }}
+                , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 12, fontWeight: 800, color: "var(--tx)" }}, "Выбрать помещения" )
+                , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}, "Размеры подставятся в калькулятор"   )
+              )
+              , React.createElement('button', { onClick: () => setRoomPickerOpen(false), style: { background: "var(--s2)", border: "none", borderRadius: 8, padding: "6px 10px", cursor: "pointer", color: "var(--tx3)" }}, "✕")
+            )
+
+            , React.createElement('div', { style: { flex: 1, overflowY: "auto", padding: 14 }}
+              /* Project selector */
+              , state.projects.length > 1 && (
+                React.createElement('div', { style: { marginBottom: 12 }}
+                  , React.createElement('div', { style: { fontSize: 10, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}, "Проект")
+                  , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 5 }}
+                    , state.projects.map(p => (
+                      React.createElement('button', { key: p.id, onClick: () => { setPickerPid(p.id); setPickerSelected({}); },
+                        style: { display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", borderRadius: 10, border: `1.5px solid ${pickerPid === p.id ? "var(--green)" : "var(--b1)"}`, background: pickerPid === p.id ? "rgba(16,185,129,0.1)" : "var(--s2)", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
+                        , React.createElement('div', { style: { width: 16, height: 16, borderRadius: "50%", border: `2px solid ${pickerPid === p.id ? "var(--green)" : "var(--b2)"}`, background: pickerPid === p.id ? "var(--green)" : "transparent", flexShrink: 0 }} )
+                        , React.createElement('span', { style: { fontSize: 13, fontWeight: 600, color: "var(--tx)" }}, p.name)
+                        , React.createElement('span', { style: { fontSize: 11, color: "var(--tx3)", marginLeft: "auto" }}, (p.rooms||[]).length, " пом." )
+                      )
+                    ))
+                  )
+                )
+              )
+
+              /* Dimension mode */
+              , React.createElement('div', { style: { marginBottom: 12 }}
+                , React.createElement('div', { style: { fontSize: 10, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}, "Какой размер использовать"  )
+                , React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 5 }}
+                  , PICKER_MODES.map(m => (
+                    React.createElement('button', { key: m.id, onClick: () => setPickerMode(m.id),
+                      style: { display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, border: `1.5px solid ${pickerMode === m.id ? "var(--acc)" : "var(--b1)"}`, background: pickerMode === m.id ? "var(--acc3)" : "var(--s2)", cursor: "pointer", fontFamily: "inherit", textAlign: "left" }}
+                      , React.createElement('div', { style: { width: 16, height: 16, borderRadius: "50%", border: `2px solid ${pickerMode === m.id ? "var(--acc)" : "var(--b2)"}`, background: pickerMode === m.id ? "var(--acc)" : "transparent", flexShrink: 0 }} )
+                      , React.createElement('div', {}
+                        , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: "var(--tx)" }}, m.label)
+                        , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)" }}, m.hint)
+                      )
+                    )
+                  ))
+                )
+              )
+
+              /* Room list */
+              , React.createElement('div', { style: { marginBottom: 12 }}
+                , React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}
+                  , React.createElement('div', { style: { fontSize: 10, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.07em" }}, "Помещения")
+                  , pickerRooms.length > 0 && (
+                    React.createElement('button', { onClick: () => {
+                      const allSel = pickerRooms.every(r => pickerSelected[r.id]);
+                      setPickerSelected(allSel ? {} : Object.fromEntries(pickerRooms.map(r => [r.id, true])));
+                    }, style: { fontSize: 11, color: "var(--acc2)", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: 600 }}
+                      , pickerRooms.every(r => pickerSelected[r.id]) ? "Снять все" : "Выбрать все"
+                    )
+                  )
+                )
+
+                , pickerRooms.length === 0 ? (
+                  React.createElement('div', { style: { textAlign: "center", padding: "24px 0", color: "var(--tx3)", fontSize: 13 }}, "В этом проекте нет помещений"    )
+                ) : (
+                  React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 6 }}
+                    , pickerRooms.map(room => {
+                      const area = getRoomArea(room, pickerMode);
+                      const on = !!pickerSelected[room.id];
+                      return (
+                        React.createElement('button', { key: room.id, onClick: () => setPickerSelected(s => ({ ...s, [room.id]: !s[room.id] })),
+                          style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 11, border: `1.5px solid ${on ? "var(--green)" : "var(--b1)"}`, background: on ? "rgba(16,185,129,0.1)" : "var(--s2)", cursor: "pointer", fontFamily: "inherit", textAlign: "left", transition: "all 0.12s" }}
+                          , React.createElement('div', { style: { width: 20, height: 20, borderRadius: 6, background: on ? "var(--green)" : "var(--s3)", border: on ? "none" : "1.5px solid var(--b2)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
+                            , on && React.createElement(Icon, { name: "check", size: 11, color: "#fff"} )
+                          )
+                          , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
+                            , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: "var(--tx)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}, room.name)
+                            , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", marginTop: 1 }}
+                              , room.length && room.width ? `${room.length}×${room.width} м` : ""
+                              , room.height ? `, h=${room.height} м` : ""
+                            )
+                          )
+                          , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 }}
+                            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 800, color: on ? "var(--green)" : "var(--tx2)" }}, area.toFixed(2))
+                            , React.createElement('div', { style: { fontSize: 9, color: "var(--tx3)" }}, "м²")
+                          )
+                        )
+                      );
+                    })
+                  )
+                )
+              )
+
+              /* Total */
+              , Object.values(pickerSelected).some(Boolean) && (
+                React.createElement('div', { style: { background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.3)", borderRadius: 11, padding: "10px 14px", marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center" }}
+                  , React.createElement('div', {}
+                    , React.createElement('div', { style: { fontSize: 11, color: "var(--green)", fontWeight: 700 }}, "Итого выбрано" )
+                    , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", marginTop: 1 }}, Object.values(pickerSelected).filter(Boolean).length, " пом. · "   , _optionalChain([PICKER_MODES, 'access', _180 => _180.find, 'call', _181 => _181(m=>m.id===pickerMode), 'optionalAccess', _182 => _182.label]))
+                  )
+                  , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 18, fontWeight: 900, color: "var(--green)" }}
+                    , pickerRooms.filter(r => pickerSelected[r.id]).reduce((s,r) => s + getRoomArea(r, pickerMode), 0).toFixed(2), " м²"
+                  )
+                )
+              )
+            )
+
+            /* Apply button */
+            , React.createElement('div', { style: { padding: "12px 14px 24px", borderTop: "1px solid var(--b1)", flexShrink: 0 }}
+              , React.createElement('button', { onClick: applyRoomPicker,
+                disabled: !Object.values(pickerSelected).some(Boolean),
+                style: { width: "100%", padding: "14px", borderRadius: 13, border: "none", fontFamily: "inherit", fontWeight: 800, fontSize: 14, cursor: Object.values(pickerSelected).some(Boolean) ? "pointer" : "default", color: "#fff", background: Object.values(pickerSelected).some(Boolean) ? "linear-gradient(135deg,var(--green),#059669)" : "var(--s3)", boxShadow: Object.values(pickerSelected).some(Boolean) ? "0 4px 20px rgba(16,185,129,0.4)" : "none" }}, "✓ Подставить в калькулятор"
+
+              )
+            )
+          )
+        )
+      )
+    )
+  );
+}
+
+
+// --- Catalog Screen ---
+function CatalogScreen({ state, dispatch, navigate, prevTab, setTab, lang }) {
+  const L = T[lang] || T.ru;
+  const [search, setSearch]           = useState("");
+  const [activeStage, setActiveStage] = useState("all");
+  const [scrolled, setScrolled]       = useState(false);
+  const scrollRef = useRef(null);
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => setScrolled(el.scrollTop > 50);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+  const [addTarget, setAddTarget]     = useState(null);
+  const [targetPid, setTargetPid]     = useState("");
+  const [targetSid, setTargetSid]     = useState("");
+  const [qty, setQty]                 = useState("1");
+  const [price, setPrice]             = useState("");
+  // User custom materials
+  const [showAddMat, setShowAddMat]   = useState(false);
+  const [newMat, setNewMat]           = useState({ name:"", unit:"шт", price:"", category:"Прочее", stageId:null });
+  const [selectMode, setSelectMode]       = useState(false);
+  const [selectedIds, setSelectedIds]     = useState(new Set());
+  const [bulkDeleteConfirm, setBulkDeleteConfirm] = useState(false);
+  const [bulkAddModal, setBulkAddModal]       = useState(false); // add selected to project
+  const [bulkTargetPid, setBulkTargetPid]     = useState("");
+  const [bulkTargetSid, setBulkTargetSid]     = useState("");
+  const [editPriceId, setEditPriceId] = useState(null);
+  const [editPriceVal, setEditPriceVal] = useState("");
+  const [catConfirmDelete, setCatConfirmDelete] = useState(null);
+  // User group creation
+  const [showCreateGroup, setShowCreateGroup] = useState(false);
+  const [editUserGroup, setEditUserGroup]     = useState(null);
+  const [ugConfirmDel, setUgConfirmDel]       = useState(null);
+  const [ugForm, setUgForm] = useState({ name:"", icon:"🗂️", desc:"", areaField:"floor" });
+  const [ugItems, setUgItems] = useState([]);
+  const [showCatPicker, setShowCatPicker]     = useState(false);
+  const [catPickSearch, setCatPickSearch]     = useState("");
+  const [catSwipe, setCatSwipe] = useState(null); // {id, dx}
+  const [activeTab, setActiveTab]     = useState("catalog"); // "catalog" | "groups"
+  const [matGroupModal, setMatGroupModal] = useState(null); // group being added
+  const [mgTargetPid, setMgTargetPid] = useState(_optionalChain([state, 'access', _183 => _183.projects, 'access', _184 => _184[0], 'optionalAccess', _185 => _185.id]) || "");
+  const [mgTargetSid, setMgTargetSid] = useState("");
+  const [mgArea, setMgArea]           = useState("");
+  const [mgItemOverrides, setMgItemOverrides] = useState({});
+
+  const STAGE_FILTERS = [
+    { id:"all",      label:"Все",        icon:"📦" },
+    { id:"prep",     label:"Подготовка", icon:"🔨" },
+    { id:"floor",    label:"Полы",       icon:"🪟" },
+    { id:"walls",    label:"Стены",      icon:"🖌️" },
+    { id:"ceiling",  label:"Потолок",    icon:"🔲" },
+    { id:"plumbing", label:"Сантехника", icon:"🚿" },
+    { id:"electric", label:"Электрика",  icon:"⚡" },
+    { id:"doors",    label:"Двери/Окна", icon:"🚪" },
+    { id:"finish",   label:"Финишная",   icon:"✨" },
+    { id:"other",    label:"Прочее",     icon:"🔩" },
+  ];
+
+  // Merge built-in CATALOG with user custom materials; apply deletions and price overrides
+  const customMats = state.customMaterials || [];
+  const deletedIds = new Set(state.deletedCatalogIds || []);
+  const priceOverrides = state.catalogPriceOverrides || {};
+  const catalogVisible = lang === "ru";
+  const allMaterials = [
+    ...(catalogVisible ? CATALOG
+      .filter(m => !deletedIds.has(m.id))
+      .map(m => priceOverrides[m.id] !== undefined ? { ...m, price: priceOverrides[m.id] } : m) : []),
+    ...customMats,
+  ];
+
+  const filtered = allMaterials.filter(c => {
+    const matchSearch = !search || c.name.toLowerCase().includes(search.toLowerCase());
+    const matchStage  = activeStage === "all"
+      ? true
+      : activeStage === "other"
+      ? !c.stageId
+      : c.stageId === activeStage;
+    return matchSearch && matchStage;
+  });
+
+  // Group by category within filtered
+  const byCategory = filtered.reduce((acc, item) => {
+    const cat = item.category || "Прочее";
+    if (!acc[cat]) acc[cat] = [];
+    acc[cat].push(item);
+    return acc;
+  }, {});
+
+  const openAdd = (item) => {
+    setAddTarget(item);
+    setTargetPid(_optionalChain([state, 'access', _186 => _186.projects, 'access', _187 => _187[0], 'optionalAccess', _188 => _188.id]) || "");
+    setTargetSid(_optionalChain([state, 'access', _189 => _189.projects, 'access', _190 => _190[0], 'optionalAccess', _191 => _191.sections, 'access', _192 => _192[0], 'optionalAccess', _193 => _193.id]) || "");
+    setQty("1");
+    setPrice(String(item.price));
+  };
+
+  const handleAdd = () => {
+    if (!targetPid || !targetSid) return;
+    dispatch({
+      type: "ADD_ITEM", pid: targetPid, sid: targetSid,
+      item: { id: uid(), name: addTarget.name, unit: addTarget.unit, qty: +qty, price: +price, type: "material", paid: 0 },
+    });
+    setAddTarget(null);
+  };
+
+  const handleSaveCustom = () => {
+    if (!newMat.name.trim() || !newMat.price) return;
+    const mat = { id: uid(), ...newMat, price: parseFloat(newMat.price), type: "material", isCustom: true };
+    dispatch({ type: "ADD_CUSTOM_MATERIAL", material: mat });
+    setNewMat({ name:"", unit:"шт", price:"", category:"Прочее", stageId:null });
+    setShowAddMat(false);
+  };
+
+  const sections = targetPid ? _optionalChain([state, 'access', _194 => _194.projects, 'access', _195 => _195.find, 'call', _196 => _196(p => p.id === targetPid), 'optionalAccess', _197 => _197.sections]) || [] : [];
+
+  const IS = { width:"100%", padding:"9px 11px", borderRadius:9, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:13, fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+
+  return (
+    React.createElement('div', { ref: scrollRef, style: { minHeight:"100%", background:"var(--bg)", paddingBottom:100, overflowY:"auto", height:"100vh" }}
+      /* Collapsible Header */
+      /* Slim header + tabs */
+      , React.createElement('div', { style: { background:"var(--hdr-bg,linear-gradient(135deg,#5b52e8,#7c6fff))", padding:"50px 16px 0", position:"sticky", top:0, zIndex:21 }}
+        , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:10, marginBottom:6 }}
+          , prevTab && prevTab !== "catalog" && (
+            React.createElement('button', { onClick: () => setTab(prevTab), style: { background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.3)", borderRadius:9, padding:"5px 11px", cursor:"pointer", display:"flex", alignItems:"center", gap:5 }}
+              , React.createElement(Icon, { name: "back", size: 13, color: "#fff"} )
+              , React.createElement('span', { style: { color:"#fff", fontSize:11, fontWeight:700 }}, "Назад")
+            )
+          )
+          , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:15, fontWeight:900, color:"var(--hdr-tx,#fff)", letterSpacing:"-0.01em" }}, L.catalogTitle)
+        )
+        , React.createElement('div', { style: { display:"flex", gap:0, marginBottom:0 }}
+          , [["catalog","📦 "+t(lang||"ru","materials_tab")],["groups","🗂️ "+t(lang||"ru","sets_tab")]].map(([id,lbl])=>(
+            React.createElement('button', { key: id, onClick: ()=>setActiveTab(id), style: { flex:1, padding:"11px 8px", border:"none", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:800, background:"transparent", color:activeTab===id?"#fff":"rgba(255,255,255,0.6)", borderBottom:activeTab===id?"3px solid #fff":"3px solid rgba(255,255,255,0.2)", transition:"all 0.15s", letterSpacing:"0.01em" }}, lbl)
+          ))
+        )
+      )
+
+      /* Sticky search + stage filters — fixed size, no shrinking */
+      , activeTab === "catalog" && (
+      React.createElement('div', { style: { position:"sticky", top:0, zIndex:20, background:"var(--s1)", borderBottom:"1px solid var(--b1)", padding:"8px 16px 6px" }}
+        , React.createElement('div', { style: { background:"var(--s2)", borderRadius:10, padding:"7px 12px", display:"flex", alignItems:"center", gap:8, marginBottom:6 }}
+          , React.createElement(Icon, { name: "search", size: 14, color: "var(--tx3)"} )
+          , React.createElement('input', { value: search, onChange: e => setSearch(e.target.value), placeholder: "Поиск материала..." ,
+            style: { background:"none", border:"none", outline:"none", color:"var(--tx)", fontSize:13, width:"100%", fontFamily:"inherit" }} )
+          , search && React.createElement('button', { onClick: () => setSearch(""), style: { background:"none", border:"none", cursor:"pointer", color:"var(--tx3)", fontSize:14, padding:0 }}, "✕")
+        )
+        , React.createElement('div', { style: { display:"flex", gap:5, overflowX:"auto", paddingBottom:2 }}
+          , STAGE_FILTERS.map(sf => {
+            const cnt = sf.id === "all" ? allMaterials.length : sf.id === "other" ? allMaterials.filter(c=>!c.stageId).length : allMaterials.filter(c=>c.stageId===sf.id).length;
+            const on  = activeStage === sf.id;
+            return (
+              React.createElement('button', { key: sf.id, onClick: () => setActiveStage(sf.id), style: {
+                flexShrink:0, display:"flex", alignItems:"center", gap:4,
+                padding:"4px 9px", borderRadius:20,
+                border:`1.5px solid ${on?"var(--green)":"var(--b1)"}`,
+                background: on ? "rgba(16,185,129,0.12)" : "var(--s2)", cursor:"pointer",
+                fontSize:12, fontWeight:700, color: on ? "var(--green)" : "var(--tx3)", whiteSpace:"nowrap",
+              }}
+                , React.createElement('span', { style: { fontSize:13 }}, sf.icon)
+                , React.createElement('span', {}, sf.label)
+                , React.createElement('span', { style: { fontSize:9, opacity:0.7 }}, cnt)
+              )
+            );
+          })
+        )
+      )
+      )
+
+      /* Materials list */
+      , React.createElement('div', { style: { padding:"10px 16px", display: activeTab === "catalog" ? "" : "none" }}
+        , Object.keys(byCategory).length === 0 && (
+          React.createElement('div', { style: { textAlign:"center", padding:"40px 0", color:"var(--tx3)" }}
+            , React.createElement('div', { style: { fontSize:44, marginBottom:12 }}, "📦")
+            , React.createElement('div', { style: { fontWeight:700, fontSize:14 }}, !catalogVisible
+              ? React.createElement(React.Fragment, null
+                , React.createElement('div', { style: { fontWeight:800, fontSize:14, color:"var(--tx)", marginBottom:8 } }, t(lang,"catEmptyTitle"))
+                , React.createElement('div', { style: { fontSize:12, color:"var(--tx3)", lineHeight:1.6 } }, t(lang,"catEmptyMsg"))
+              )
+              : React.createElement('div', { style: { fontWeight:700, fontSize:14 } }, t(lang,"noResults"))
+            )
+          )
+        )
+        , Object.keys(byCategory).length > 0 && Object.entries(byCategory).map(function(catEntry) { const cat = catEntry[0], items = catEntry[1]; return (
+          React.createElement('div', { key: cat, style: { marginBottom:8 }}
+            , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:6, padding:"10px 4px 6px" }}
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:10, fontWeight:800, color:"var(--tx2)", textTransform:"uppercase", letterSpacing:"0.08em" }}, cat)
+              , React.createElement('div', { style: { flex:1, height:1, background:"var(--b1)" }} )
+              , React.createElement('span', { style: { fontSize:10, color:"var(--tx3)" }}, items.length)
+            )
+            , items.map(function(item) {
+              const isSel = selectedIds.has(item.id);
+              const csw = _optionalChain([catSwipe, 'optionalAccess', _198 => _198.id]) === item.id ? catSwipe.dx : 0;
+              const cShowDel  = csw < -55;
+
+              return (
+                React.createElement('div', { key: item.id, style: { position:"relative", marginBottom:7, borderRadius:12, overflow:"hidden" }}
+                  /* Swipe hint backgrounds */
+                  , React.createElement('div', { style: { position:"absolute", inset:0, display:"flex", justifyContent:"space-between", pointerEvents:"none" }}
+                    , React.createElement('div', { style: { background:"#ef4444", width:64, display:"flex", alignItems:"center", justifyContent:"center", borderRadius:"12px 0 0 12px", opacity:cShowDel?1:0, transition:"opacity 0.15s" }}
+                      , React.createElement(Icon, { name: "trash", size: 18, color: "#fff"} )
+                    )
+
+                  )
+                  , React.createElement('div', {
+                  onTouchStart: e => {
+                    const timer = setTimeout(() => { setSelectMode(true); setSelectedIds(new Set([item.id])); }, 600);
+                    e.currentTarget._lpt = timer;
+                    e.currentTarget._tsx = e.touches[0].clientX;
+                  },
+                  onTouchMove: e => {
+                    const dx = e.touches[0].clientX - (e.currentTarget._tsx||0);
+                    if (Math.abs(dx) > 8) clearTimeout(e.currentTarget._lpt);
+                    if (!selectMode) setCatSwipe({ id: item.id, dx: Math.max(-80,Math.min(80,dx)) });
+                  },
+                  onTouchEnd: e => {
+                    clearTimeout(e.currentTarget._lpt);
+                    const dx = _optionalChain([catSwipe, 'optionalAccess', _199 => _199.id])===item.id ? catSwipe.dx : 0;
+                    if (dx < -55) setCatConfirmDelete(item);
+
+                    setCatSwipe(null);
+                  },
+                  onContextMenu: e => { e.preventDefault(); setSelectMode(true); setSelectedIds(new Set([item.id])); },
+                  onClick: selectMode ? () => { setSelectedIds(prev => { const n = new Set(prev); if (n.has(item.id)) n.delete(item.id); else n.add(item.id); return n; }); } : undefined,
+                  style: { background: isSel ? "rgba(239,68,68,0.08)" : "var(--s1)", borderRadius:12, padding:"12px 14px", display:"flex", alignItems:"center", gap:10,
+                    border: isSel ? "1.5px solid rgba(239,68,68,0.4)" : "1px solid transparent",
+                    cursor: selectMode ? "pointer" : "default", transition: csw===0?"transform 0.22s":"none",
+                    transform: `translateX(${csw}px)`, position:"relative", zIndex:1 }}
+                  , selectMode && (
+                    React.createElement('div', { style: { width:20, height:20, borderRadius:6, border:`2px solid ${isSel?"#ef4444":"var(--b2)"}`, background:isSel?"#ef4444":"transparent", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}
+                      , isSel && React.createElement(Icon, { name: "check", size: 11, color: "#fff"} )
+                    )
+                  )
+                  , React.createElement('div', { style: { width:36, height:36, borderRadius:9, background:"rgba(16,185,129,0.1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, flexShrink:0 }}
+                    , _optionalChain([STAGE_FILTERS, 'access', _200 => _200.find, 'call', _201 => _201(sf=>sf.id===item.stageId), 'optionalAccess', _202 => _202.icon]) || "📦"
+                  )
+                  , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                    , React.createElement('div', { style: { fontSize:12, fontWeight:700, color:isSel?"#ef4444":"var(--tx)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}, item.name)
+                    , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", marginTop:1 }}, item.unit, " · "  , item.category)
+                  )
+                  , !selectMode && (
+                    React.createElement('div', { style: { textAlign:"right", flexShrink:0 }}
+                      , editPriceId === item.id ? (
+                        React.createElement('div', { style: { display:"flex", gap:4, alignItems:"center" }}
+                          , React.createElement('input', { type: "number", value: editPriceVal, onChange: e=>setEditPriceVal(e.target.value), autoFocus: true,
+                            style: { width:72, padding:"4px 6px", borderRadius:7, border:"1.5px solid var(--acc)", background:"var(--s2)", color:"var(--tx)", fontSize:12, fontFamily:"inherit", outline:"none", textAlign:"center" }} )
+                          , React.createElement('button', { onClick: () => {
+                            const p = parseFloat(editPriceVal);
+                            if (p > 0) {
+                              if (item.isCustom) {
+                                dispatch({ type:"ADD_CUSTOM_MATERIAL", material:{ ...item, price: p } });
+                                dispatch({ type:"DELETE_CUSTOM_MATERIAL", id: item.id });
+                              } else {
+                                dispatch({ type:"EDIT_CATALOG_MATERIAL_PRICE", id: item.id, price: p });
+                              }
+                            }
+                            setEditPriceId(null);
+                          }, style: { background:"var(--green)", border:"none", borderRadius:6, padding:"4px 7px", cursor:"pointer", color:"#fff", fontSize:11, fontWeight:800 }}, "✓")
+                          , React.createElement('button', { onClick: () => setEditPriceId(null), style: { background:"var(--s3)", border:"none", borderRadius:6, padding:"4px 7px", cursor:"pointer", color:"var(--tx3)", fontSize:11 }}, "✕")
+                        )
+                      ) : (
+                        React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:800, color:"var(--acc2)", cursor:"pointer" },
+                          onClick: () => { setEditPriceId(item.id); setEditPriceVal(String(item.price)); }}
+                          , fmt(item.price)
+                          , React.createElement('span', { style: { fontSize:9, color:"var(--tx3)", fontWeight:500, display:"block" }}, "✏️ цена" )
+                        )
+                      )
+                      , React.createElement('button', { onClick: () => openAdd(item), style: { background:"rgba(124,111,255,0.12)", border:"none", borderRadius:7, padding:"4px 9px", fontSize:10, color:"var(--acc2)", fontWeight:700, cursor:"pointer", marginTop:3, fontFamily:"inherit" }}, "+ В смету"  )
+                    )
+                  )
+                  , !selectMode && (
+                    React.createElement('button', { onClick: () => setCatConfirmDelete(item),
+                      style: { background:"rgba(239,68,68,0.1)", border:"none", borderRadius:7, padding:"5px 7px", cursor:"pointer" }}
+                      , React.createElement(Icon, { name: "trash", size: 12, color: "#ef4444"} )
+                    )
+                  )
+                  )
+                )
+              );
+            })
+          )
+        ); })
+      )
+
+      /* Hint: long-press or right-click to select */
+      , activeTab === "catalog" && !selectMode && (
+        React.createElement('div', { style: { textAlign:"center", padding:"4px 0 8px", fontSize:10, color:"var(--tx3)" }}, "Долгое нажатие или ПКМ — выбрать несколько"
+
+        )
+      )
+
+      /* -- Groups Tab Content -- */
+      , activeTab === "groups" && (
+        React.createElement('div', { style: { padding:"12px 16px", paddingBottom:100 }}
+          , React.createElement('div', { style: { background:"rgba(124,111,255,0.08)", border:"1px solid rgba(124,111,255,0.2)", borderRadius:12, padding:"10px 14px", marginBottom:14, fontSize:12, color:"var(--tx2)", lineHeight:1.5 }}, "🗂️ Наборы материалов — добавьте сразу всё нужное для работы. Количество рассчитывается автоматически по площади."
+
+          )
+          /* User-created groups first */
+          , (state.userMatGroups||[]).map(group => (
+            React.createElement('div', { key: group.id, style: { background:"var(--s1)", borderRadius:16, marginBottom:12, border:"2px solid var(--acc3)", overflow:"hidden", boxShadow:"0 2px 8px rgba(124,111,255,0.12)" }}
+              , React.createElement('div', { style: { padding:"14px 16px", display:"flex", alignItems:"center", gap:12 }}
+                , React.createElement('div', { style: { width:48, height:48, borderRadius:13, background:"var(--acc3)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:24, flexShrink:0 }}, group.icon)
+                , React.createElement('div', { style: { flex:1 }}
+                  , React.createElement('div', { style: { fontSize:14, fontWeight:800, color:"var(--tx)", marginBottom:3 }}, group.name
+                    , React.createElement('span', { style: { marginLeft:6, fontSize:9, background:"var(--acc3)", color:"var(--acc2)", borderRadius:4, padding:"1px 5px", fontWeight:800 }}, "МОЙ")
+                  )
+                  , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", lineHeight:1.4 }}, group.desc || `${group.items.length} материалов`)
+                )
+                , React.createElement('div', { style: { display:"flex", gap:6 }}
+                  , React.createElement('button', { onClick: () => { setUgForm({name:group.name,icon:group.icon,desc:group.desc||"",areaField:group.areaField}); setUgItems((group.items||[]).map(i=>({...i,price:String(i.price||""),qtyPer:String(i.qtyPer)}))); setEditUserGroup(group); setShowCreateGroup(true); },
+                    style: { padding:"7px 10px", borderRadius:9, border:"none", background:"var(--acc3)", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700, color:"var(--acc2)" }}, "✏️")
+                  , React.createElement('button', { onClick: () => setUgConfirmDel(group.id),
+                    style: { padding:"7px 10px", borderRadius:9, border:"none", background:"rgba(239,68,68,0.1)", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700, color:"#ef4444" }}, "🗑️")
+                  , React.createElement('button', { onClick: () => {
+                    const proj = state.projects.find(p=>p.id===mgTargetPid) || state.projects[0];
+                    if(proj) setMgTargetPid(proj.id);
+                    const totalArea = proj ? (proj.rooms||[]).reduce((s,r)=>s+(r[group.areaField]||0),0) : 0;
+                    setMgArea(totalArea > 0 ? String(totalArea.toFixed(1)) : "");
+                    setMgTargetSid(_optionalChain([proj, 'optionalAccess', _203 => _203.sections, 'optionalAccess', _204 => _204[0], 'optionalAccess', _205 => _205.id]) || "");
+                    setMgItemOverrides({});
+                    setMatGroupModal(group);
+                  }, style: { padding:"9px 14px", borderRadius:10, border:"none", background:"linear-gradient(135deg,var(--acc),var(--acc2))", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:800, color:"#fff" }}, "+ В смету"
+
+                  )
+                )
+              )
+              , React.createElement('div', { style: { borderTop:"1px solid var(--b1)", padding:"8px 16px 10px" }}
+                , (group.items||[]).map((item,i) => (
+                  React.createElement('div', { key: i, style: { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"4px 0", borderBottom:i<group.items.length-1?"1px solid var(--b1)":"none" }}
+                    , React.createElement('div', { style: { fontSize:12, fontWeight:600, color:"var(--tx)" }}, item.name)
+                    , React.createElement('div', { style: { fontSize:11, color:"var(--acc2)", fontWeight:700 }}, item.qtyPer, " " , item.unit, "/м²")
+                  )
+                ))
+              )
+            )
+          ))
+          /* Built-in groups */
+          , MATERIAL_GROUPS_CATALOG.map(group => (
+            React.createElement('div', { key: group.id, style: { background:"var(--s1)", borderRadius:16, marginBottom:12, border:"1px solid var(--b1)", overflow:"hidden", boxShadow:"0 2px 8px rgba(0,0,0,0.06)" }}
+              , React.createElement('div', { style: { padding:"14px 16px", display:"flex", alignItems:"center", gap:12 }}
+                , React.createElement('div', { style: { width:48, height:48, borderRadius:13, background:"rgba(124,111,255,0.12)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:24, flexShrink:0 }}, group.icon)
+                , React.createElement('div', { style: { flex:1 }}
+                  , React.createElement('div', { style: { fontSize:14, fontWeight:800, color:"var(--tx)", marginBottom:3 }}, group.name)
+                  , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", lineHeight:1.4 }}, group.desc)
+                )
+                , React.createElement('button', { onClick: () => {
+                  const proj = state.projects.find(p=>p.id===mgTargetPid) || state.projects[0];
+                  if(proj) setMgTargetPid(proj.id);
+                  const totalArea = proj ? (proj.rooms||[]).reduce((s,r)=>s+(r[group.areaField]||0),0) : 0;
+                  setMgArea(totalArea > 0 ? String(totalArea.toFixed(1)) : "");
+                  setMgTargetSid(_optionalChain([proj, 'optionalAccess', _206 => _206.sections, 'optionalAccess', _207 => _207[0], 'optionalAccess', _208 => _208.id]) || "");
+                  setMgItemOverrides({});
+                  setMatGroupModal(group);
+                }, style: { padding:"9px 14px", borderRadius:10, border:"none", background:"linear-gradient(135deg,var(--acc),var(--acc2))", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:800, color:"#fff", boxShadow:"0 2px 8px rgba(124,111,255,0.35)" }}, "+ В смету"
+
+                )
+              )
+              , React.createElement('div', { style: { borderTop:"1px solid var(--b1)", padding:"8px 16px 12px" }}
+                , (group.items||[]).map((item,i) => (
+                  React.createElement('div', { key: i, style: { display:"flex", justifyContent:"space-between", alignItems:"center", padding:"5px 0", borderBottom:i<group.items.length-1?"1px solid var(--b1)":"none" }}
+                    , React.createElement('div', { style: { flex:1 }}
+                      , React.createElement('div', { style: { fontSize:12, fontWeight:600, color:"var(--tx)", marginBottom:1 }}, item.name)
+                      , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)" }}, item.note)
+                    )
+                    , React.createElement('div', { style: { fontSize:11, color:"var(--acc2)", fontWeight:700, flexShrink:0 }}, item.qtyPer, " " , item.unit, "/м²")
+                  )
+                ))
+              )
+            )
+          ))
+        )
+      )
+
+      /* Groups tab FAB — portal */
+      , React.createElement(FabButton, {
+          visible: activeTab === "groups" && !showCreateGroup,
+          onClick: function() { setUgForm({name:"",icon:"🗂️",desc:"",areaField:"floor"}); setUgItems([]); setEditUserGroup(null); setShowCreateGroup(true); },
+          color: "linear-gradient(135deg,var(--acc),var(--acc2))",
+          shadow: "0 4px 24px rgba(124,111,255,0.55)",
+          label: "Добавить группу материалов",
+        })
+
+      /* User group delete confirm */
+      , React.createElement(ConfirmSheet, {
+        open: !!ugConfirmDel,
+        title: "Удалить набор?" ,
+        subtitle: _optionalChain([(state.userMatGroups||[]), 'access', _209 => _209.find, 'call', _210 => _210(g=>g.id===ugConfirmDel), 'optionalAccess', _211 => _211.name])||"",
+        danger: true,
+        onCancel: () => setUgConfirmDel(null),
+        onConfirm: () => { dispatch({ type:"DELETE_USER_MAT_GROUP", id:ugConfirmDel }); setUgConfirmDel(null); }}
+      )
+
+      /* Create/Edit user group full-screen modal */
+      , showCreateGroup && (
+        React.createElement('div', { style: { position:"absolute", inset:0, zIndex:500, background:"var(--bg)", display:"flex", flexDirection:"column" }}
+          , React.createElement('div', { style: { background:"var(--hdr-bg,linear-gradient(135deg,#5b52e8,#7c6fff))", padding:"52px 16px 16px", flexShrink:0 }}
+            , React.createElement('button', { onClick: () => setShowCreateGroup(false), style: { background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.3)", borderRadius:10, padding:"6px 12px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, marginBottom:12 }}
+              , React.createElement(Icon, { name: "back", size: 14, color: "#fff"} )
+              , React.createElement('span', { style: { color:"#fff", fontSize:12, fontWeight:700 }}, "Назад")
+            )
+            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:16, fontWeight:900, color:"#fff" }}
+              , editUserGroup ? "Редактировать набор" : "Новый набор материалов"
+            )
+          )
+          , React.createElement('div', { style: { flex:1, overflowY:"auto", padding:"16px" }}
+            /* Icon + Name */
+            , React.createElement('div', { style: { display:"flex", gap:10, marginBottom:12 }}
+              , React.createElement('button', { onClick: () => {
+                const icons = ["🗂️","🟫","🖌️","🔲","🚿","⚡","🚪","✨","🏠","🔧","🧱","🪟","🎨","📦"];
+                const idx = icons.indexOf(ugForm.icon);
+                setUgForm(f=>({...f, icon: icons[(idx+1)%icons.length]}));
+              }, style: { width:52, height:52, borderRadius:13, background:"var(--s2)", border:"1.5px solid var(--b1)", fontSize:26, cursor:"pointer", flexShrink:0, display:"flex", alignItems:"center", justifyContent:"center" }}
+                , ugForm.icon
+              )
+              , React.createElement('div', { style: { flex:1 }}
+                , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700, marginBottom:4, textTransform:"uppercase" }}, "Название набора" )
+                , React.createElement('input', { value: ugForm.name, onChange: e=>setUgForm(f=>({...f,name:e.target.value})), placeholder: "Например: Ванная комната"  ,
+                  style: { width:"100%", padding:"11px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:14, fontFamily:"inherit", outline:"none", boxSizing:"border-box" }} )
+              )
+            )
+            , React.createElement('div', { style: { marginBottom:12 }}
+              , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700, marginBottom:4, textTransform:"uppercase" }}, "Описание (необязательно)" )
+              , React.createElement('input', { value: ugForm.desc, onChange: e=>setUgForm(f=>({...f,desc:e.target.value})), placeholder: "Что входит в набор..."   ,
+                style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:13, fontFamily:"inherit", outline:"none", boxSizing:"border-box" }} )
+            )
+            , React.createElement('div', { style: { marginBottom:16 }}
+              , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700, marginBottom:6, textTransform:"uppercase" }}, "Площадь для расчёта"  )
+              , React.createElement('div', { style: { display:"flex", gap:6, flexWrap:"wrap" }}
+                , [["floor","🟫 Пол"],["wallsNet","🖌️ Стены"],["ceiling","🔲 Потолок"]].map(([f,l])=>(
+                  React.createElement('button', { key: f, onClick: ()=>setUgForm(g=>({...g,areaField:f})),
+                    style: { padding:"7px 12px", borderRadius:9, border:`1.5px solid ${ugForm.areaField===f?"var(--acc)":"var(--b1)"}`, background:ugForm.areaField===f?"var(--acc3)":"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700, color:ugForm.areaField===f?"var(--acc2)":"var(--tx3)" }}
+                    , l
+                  )
+                ))
+              )
+            )
+
+            /* Items */
+            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"var(--tx)", marginBottom:10 }}, "Состав набора" )
+            , ugItems.map((item,i) => (
+              React.createElement('div', { key: i, style: { background:"var(--s1)", borderRadius:12, padding:"10px 12px", marginBottom:8, border:"1px solid var(--b1)", display:"flex", gap:8, alignItems:"flex-start" }}
+                , React.createElement('div', { style: { flex:1 }}
+                  , React.createElement('input', { value: item.name, onChange: e=>setUgItems(its=>its.map((it,j)=>j===i?{...it,name:e.target.value}:it)), placeholder: "Название материала" ,
+                    style: { width:"100%", padding:"7px 10px", borderRadius:8, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:12, fontFamily:"inherit", outline:"none", boxSizing:"border-box", marginBottom:6 }} )
+                  , React.createElement('div', { style: { display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:6 }}
+                    , React.createElement('div', {}
+                      , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", marginBottom:2 }}, "Ед. изм." )
+                      , React.createElement('input', { value: item.unit, onChange: e=>setUgItems(its=>its.map((it,j)=>j===i?{...it,unit:e.target.value}:it)), placeholder: "м²",
+                        style: { width:"100%", padding:"5px 8px", borderRadius:7, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:12, fontFamily:"inherit", outline:"none", textAlign:"center", boxSizing:"border-box" }} )
+                    )
+                    , React.createElement('div', {}
+                      , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", marginBottom:2 }}, "Кол-во/м²")
+                      , React.createElement('input', { type: "number", value: item.qtyPer, onChange: e=>setUgItems(its=>its.map((it,j)=>j===i?{...it,qtyPer:e.target.value}:it)), placeholder: "0.2",
+                        style: { width:"100%", padding:"5px 8px", borderRadius:7, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:12, fontFamily:"inherit", outline:"none", textAlign:"center", boxSizing:"border-box" }} )
+                    )
+                    , React.createElement('div', {}
+                      , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)", marginBottom:2 }}, "Цена ₽" )
+                      , React.createElement('input', { type: "number", value: item.price||"", onChange: e=>setUgItems(its=>its.map((it,j)=>j===i?{...it,price:e.target.value}:it)), placeholder: "500",
+                        style: { width:"100%", padding:"5px 8px", borderRadius:7, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:12, fontFamily:"inherit", outline:"none", textAlign:"center", boxSizing:"border-box" }} )
+                    )
+                  )
+                )
+                , React.createElement('button', { onClick: ()=>setUgItems(its=>its.filter((_,j)=>j!==i)), style: { background:"rgba(239,68,68,0.1)", border:"none", borderRadius:8, padding:"6px 8px", cursor:"pointer", flexShrink:0 }}
+                  , React.createElement(Icon, { name: "trash", size: 13, color: "#ef4444"} )
+                )
+              )
+            ))
+            , React.createElement('div', { style: { display:"flex", gap:8, marginBottom:8 }}
+              , React.createElement('button', { onClick: ()=>{ setCatPickSearch(""); setShowCatPicker(true); },
+                style: { flex:1, padding:"10px", borderRadius:12, border:"1.5px solid var(--acc)", background:"var(--acc3)", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:800, color:"var(--acc2)", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}, "📦 Из справочника"
+
+              )
+              , React.createElement('button', { onClick: ()=>setUgItems(its=>[...its,{name:"",unit:"м²",qtyPer:"",price:"",note:""}]),
+                style: { flex:1, padding:"10px", borderRadius:12, border:"2px dashed var(--b2)", background:"var(--s1)", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700, color:"var(--acc)", display:"flex", alignItems:"center", justifyContent:"center", gap:6 }}, "✏️ Вручную"
+
+              )
+            )
+          )
+          , React.createElement('div', { style: { padding:"12px 16px 28px", borderTop:"1px solid var(--b1)", background:"var(--s1)", flexShrink:0, display:"flex", gap:10 }}
+            , React.createElement('button', { onClick: () => setShowCreateGroup(false), style: { padding:"13px 16px", borderRadius:13, border:"1px solid var(--b1)", background:"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700, color:"var(--tx3)" }}, "Отмена")
+            , React.createElement('button', { onClick: () => {
+              if (!ugForm.name.trim() || ugItems.length === 0) return;
+              const group = {
+                id: _optionalChain([editUserGroup, 'optionalAccess', _212 => _212.id]) || uid(),
+                name: ugForm.name.trim(),
+                icon: ugForm.icon,
+                desc: ugForm.desc,
+                areaField: ugForm.areaField,
+                isUser: true,
+                items: ugItems.filter(i=>i.name.trim()).map(i=>({ name:i.name.trim(), unit:i.unit||"м²", qtyPer:parseFloat(i.qtyPer)||0, price:parseFloat(i.price)||0, note:"" })),
+              };
+              dispatch({ type: editUserGroup ? "UPDATE_USER_MAT_GROUP" : "ADD_USER_MAT_GROUP", group });
+              setShowCreateGroup(false);
+            }, disabled: !ugForm.name.trim() || ugItems.filter(i=>i.name.trim()).length === 0,
+              style: { flex:1, padding:"13px", borderRadius:13, border:"none", background: ugForm.name.trim() && ugItems.filter(i=>i.name.trim()).length > 0 ? "linear-gradient(135deg,var(--acc),var(--acc2))" : "var(--s3)", cursor:"pointer", fontFamily:"inherit", fontSize:14, fontWeight:900, color:"#fff" }}, "✓ Сохранить набор"
+
+            )
+          )
+
+          /* -- Catalog picker modal -- */
+          , showCatPicker && (
+            React.createElement('div', { style: { position:"absolute", inset:0, background:"var(--bg)", zIndex:10, display:"flex", flexDirection:"column" }}
+              , React.createElement('div', { style: { background:"linear-gradient(135deg,#5b52e8,#7c6fff)", padding:"52px 16px 14px", flexShrink:0 }}
+                , React.createElement('button', { onClick: ()=>setShowCatPicker(false), style: { background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.3)", borderRadius:10, padding:"6px 12px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, marginBottom:12 }}
+                  , React.createElement(Icon, { name: "back", size: 14, color: "#fff"} )
+                  , React.createElement('span', { style: { color:"#fff", fontSize:12, fontWeight:700 }}, "Назад")
+                )
+                , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:15, fontWeight:900, color:"#fff", marginBottom:10 }}, "Выбрать из справочника"  )
+                , React.createElement('div', { style: { background:"rgba(255,255,255,0.15)", borderRadius:10, padding:"8px 12px", display:"flex", alignItems:"center", gap:8 }}
+                  , React.createElement(Icon, { name: "search", size: 14, color: "rgba(255,255,255,0.8)"} )
+                  , React.createElement('input', { value: catPickSearch, onChange: e=>setCatPickSearch(e.target.value), placeholder: "Поиск материала..." ,
+                    style: { background:"none", border:"none", outline:"none", color:"#fff", fontSize:13, width:"100%", fontFamily:"inherit" },
+                    autoFocus: true} )
+                )
+              )
+              , React.createElement('div', { style: { flex:1, overflowY:"auto", padding:"10px 16px 80px" }}
+                , [...CATALOG, ...(state.customMaterials||[])].filter(m =>
+                  !catPickSearch || m.name.toLowerCase().includes(catPickSearch.toLowerCase())
+                ).map(m => {
+                  const already = ugItems.some(it => it.name === m.name);
+                  return (
+                    React.createElement('div', { key: m.id, onClick: ()=>{
+                      if (already) return;
+                      setUgItems(its=>[...its,{ name:m.name, unit:m.unit, qtyPer:"0.1", price:String(m.price), note:"" }]);
+                      setCatPickSearch("");
+                    }, style: { display:"flex", alignItems:"center", gap:12, padding:"11px 14px", borderRadius:13, marginBottom:6,
+                      background: already ? "var(--s2)" : "var(--s1)",
+                      border: already ? "1px solid var(--b1)" : "1.5px solid var(--b1)",
+                      cursor: already ? "default" : "pointer", opacity: already ? 0.5 : 1,
+                    }}
+                      , React.createElement('div', { style: { width:36, height:36, borderRadius:9, background:"rgba(16,185,129,0.1)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:16, flexShrink:0 }}, "📦")
+                      , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                        , React.createElement('div', { style: { fontSize:13, fontWeight:700, color:"var(--tx)", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}, m.name)
+                        , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", marginTop:1 }}, m.unit, " · "  , fmt(m.price), " ₽" )
+                      )
+                      , already
+                        ? React.createElement('span', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700 }}, "✓ добавлен" )
+                        : React.createElement('span', { style: { fontSize:20, color:"var(--acc2)" }}, "+")
+                      
+                    )
+                  );
+                })
+                , [...CATALOG,...(state.customMaterials||[])].filter(m => !catPickSearch || m.name.toLowerCase().includes(catPickSearch.toLowerCase())).length === 0 && (
+                  React.createElement('div', { style: { textAlign:"center", padding:"40px 0", color:"var(--tx3)" }}
+                    , React.createElement('div', { style: { fontSize:32, marginBottom:10 }}, "🔍")
+                    , React.createElement('div', { style: { fontSize:13 }}, "Ничего не найдено"  )
+                  )
+                )
+              )
+              , React.createElement('div', { style: { padding:"12px 16px 24px", borderTop:"1px solid var(--b1)", background:"var(--s1)" }}
+                , React.createElement('button', { onClick: ()=>setShowCatPicker(false),
+                  style: { width:"100%", padding:"13px", borderRadius:13, border:"none", background:"linear-gradient(135deg,var(--acc),var(--acc2))", color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit" }}, "✓ Готово ("
+                    , ugItems.length, " позиций)"
+                )
+              )
+            )
+          )
+        )
+      )
+
+      /* Floating select toolbar */
+      , selectMode && (
+        React.createElement('div', { style: {
+          position:"absolute", bottom:80, left:"50%", transform:"translateX(-50%)",
+          width:"calc(100% - 32px)", maxWidth:448, zIndex:60,
+          background:"var(--s1)", borderRadius:16, padding:"10px 14px",
+          border:"1px solid var(--b1)", boxShadow:"0 4px 24px rgba(0,0,0,0.35)",
+          display:"flex", alignItems:"center", gap:8,
+        }}
+          , React.createElement('div', { style: { fontSize:13, fontWeight:800, color:"var(--tx)", flex:1 }}
+            , selectedIds.size > 0 ? `Выбрано: ${selectedIds.size}` : "Нажмите на элемент"
+          )
+          , React.createElement('button', { onClick: () => {
+            const allIds = new Set();
+            allMaterials
+              .filter(m => !search || m.name.toLowerCase().includes(search.toLowerCase()))
+              .filter(m => activeStage === "all" || m.stageId === activeStage)
+              .forEach(m => allIds.add(m.id));
+            setSelectedIds(allIds);
+          }, style: { padding:"6px 10px", borderRadius:8, border:"1px solid var(--b1)", background:"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700, color:"var(--tx3)" }}, "Все"
+
+          )
+          , React.createElement('button', {
+            disabled: selectedIds.size === 0,
+            onClick: () => selectedIds.size > 0 && setBulkDeleteConfirm(true),
+            style: { padding:"6px 12px", borderRadius:8, border:"none",
+              background: selectedIds.size > 0 ? "#ef4444" : "var(--s3)",
+              color: selectedIds.size > 0 ? "#fff" : "var(--tx3)",
+              cursor: selectedIds.size > 0 ? "pointer" : "default",
+              fontFamily:"inherit", fontSize:12, fontWeight:800 }}, "🗑️ "
+             , selectedIds.size > 0 ? `Удалить (${selectedIds.size})` : "Удалить"
+          )
+          , React.createElement('button', { onClick: () => { setSelectMode(false); setSelectedIds(new Set()); },
+            style: { padding:"6px 10px", borderRadius:8, border:"1px solid var(--b1)", background:"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700, color:"var(--tx3)" }}, "✕"
+
+          )
+        )
+      )
+
+      /* FAB — add custom material — portal */
+      , React.createElement(FabButton, {
+          visible: !showAddMat && !selectMode && activeTab === "catalog",
+          onClick: () => setShowAddMat(true),
+          color: "linear-gradient(135deg,var(--green),#059669)",
+          shadow: "0 4px 24px rgba(16,185,129,0.55)",
+          label: "Добавить материал",
+        })
+
+      /* Add custom material panel */
+      , showAddMat && (
+        React.createElement(React.Fragment, null
+          , React.createElement('div', { onClick: () => setShowAddMat(false), style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.6)", zIndex:299 }} )
+          , React.createElement('div', { style: { position:"absolute", bottom:0, left:"50%", transform:"translateX(-50%)", width:"100%", maxWidth: "min(480px, 95vw)", background:"var(--s1)", borderRadius:"20px 20px 0 0", padding:"20px 16px 32px", zIndex:300, border:"1px solid var(--b1)" }}
+            , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"0 auto 14px" }} )
+            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"var(--tx)", marginBottom:14 }}, "Добавить материал" )
+            , React.createElement('div', { style: { marginBottom:10 }}
+              , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:5 }}, "Название")
+              , React.createElement('input', { value: newMat.name, onChange: e=>setNewMat(m=>({...m,name:e.target.value})), placeholder: "Название материала" , style: IS} )
+            )
+            , React.createElement('div', { style: { display:"flex", gap:8, marginBottom:10 }}
+              , React.createElement('div', { style: { flex:1 }}
+                , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:5 }}, "Цена (₽)" )
+                , React.createElement('input', { type: "number", value: newMat.price, onChange: e=>setNewMat(m=>({...m,price:e.target.value})), placeholder: "0", style: IS} )
+              )
+              , React.createElement('div', { style: { flex:1 }}
+                , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:5 }}, "Ед. изм." )
+                , React.createElement('select', { value: newMat.unit, onChange: e=>setNewMat(m=>({...m,unit:e.target.value})), style: IS}
+                  , ["шт","м²","м.п.","мешок","рул.","л","кг","упак.","лист","ведро"].map(u=>React.createElement('option', { key: u}, u))
+                )
+              )
+            )
+            , React.createElement('div', { style: { marginBottom:14 }}
+              , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:6 }}, "Раздел")
+              , React.createElement('div', { style: { display:"flex", flexWrap:"wrap", gap:5 }}
+                , STAGE_FILTERS.filter(sf=>sf.id!=="all").map(sf => (
+                  React.createElement('button', { key: sf.id, onClick: () => setNewMat(m=>({...m, stageId: m.stageId===sf.id ? null : sf.id})),
+                    style: { padding:"4px 9px", borderRadius:7, border:`1.5px solid ${newMat.stageId===sf.id?"var(--green)":"var(--b1)"}`, background:newMat.stageId===sf.id?"rgba(16,185,129,0.12)":"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:10, fontWeight:700, color:newMat.stageId===sf.id?"var(--green)":"var(--tx3)" }}
+                    , sf.icon, " " , sf.label
+                  )
+                ))
+              )
+            )
+            , React.createElement('div', { style: { display:"flex", gap:8 }}
+              , React.createElement('button', { onClick: () => setShowAddMat(false), style: { flex:1, padding:"12px", borderRadius:12, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx3)", fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Отмена")
+              , React.createElement('button', { onClick: handleSaveCustom, disabled: !newMat.name.trim() || !newMat.price, style: { flex:2, padding:"12px", borderRadius:12, border:"none", background:newMat.name.trim()&&newMat.price?"var(--green)":"var(--s3)", color:newMat.name.trim()&&newMat.price?"#fff":"var(--tx3)", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "✓ Добавить материал"
+
+              )
+            )
+          )
+        )
+      )
+
+      /* Add to estimate modal */
+      /* Bulk add to project modal */
+      , bulkAddModal && (
+        React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.8)", zIndex:600, display:"flex", alignItems:"flex-end" }}
+          , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", width:"100%", maxWidth: "min(480px, 95vw)", padding:"16px", marginLeft:"auto", marginRight:"auto" }}
+            , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"0 auto 14px" }} )
+            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:900, color:"var(--tx)", marginBottom:14 }}, "+ В смету ("
+                 , selectedIds.size, " материала)"
+            )
+            , React.createElement('div', { style: { marginBottom:10 }}
+              , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700, textTransform:"uppercase", marginBottom:5 }}, "Проект")
+              , React.createElement('select', { value: bulkTargetPid, onChange: e=>{setBulkTargetPid(e.target.value);setBulkTargetSid(_optionalChain([state, 'access', _213 => _213.projects, 'access', _214 => _214.find, 'call', _215 => _215(p=>p.id===e.target.value), 'optionalAccess', _216 => _216.sections, 'optionalAccess', _217 => _217[0], 'optionalAccess', _218 => _218.id])||"");},
+                style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontFamily:"inherit", fontSize:13, outline:"none" }}
+                , state.projects.map(p=>React.createElement('option', { key: p.id, value: p.id}, p.name))
+              )
+            )
+            , React.createElement('div', { style: { marginBottom:16 }}
+              , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700, textTransform:"uppercase", marginBottom:5 }}, "Раздел")
+              , React.createElement('select', { value: bulkTargetSid, onChange: e=>setBulkTargetSid(e.target.value),
+                style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontFamily:"inherit", fontSize:13, outline:"none" }}
+                , (_optionalChain([state, 'access', _219 => _219.projects, 'access', _220 => _220.find, 'call', _221 => _221(p=>p.id===bulkTargetPid), 'optionalAccess', _222 => _222.sections])||[]).map(s=>React.createElement('option', { key: s.id, value: s.id}, s.name))
+              )
+            )
+            , React.createElement('div', { style: { display:"flex", gap:10 }}
+              , React.createElement('button', { onClick: ()=>setBulkAddModal(false), style: { flex:1, padding:"13px", borderRadius:12, border:"1px solid var(--b1)", background:"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700, color:"var(--tx3)" }}, "Отмена")
+              , React.createElement('button', { onClick: ()=>{
+                if(!bulkTargetPid||!bulkTargetSid) return;
+                const mats=[...CATALOG,...(state.customMaterials||[])];
+                [...selectedIds].forEach(id=>{
+                  const m=mats.find(x=>x.id===id);
+                  if(m) dispatch({ type:"ADD_ITEM", pid:bulkTargetPid, sid:bulkTargetSid, item:{ id:uid(), name:m.name, unit:m.unit, qty:1, price:m.price, type:"material", paid:0 } });
+                });
+                setBulkAddModal(false); setSelectMode(false); setSelectedIds(new Set());
+              }, style: { flex:2, padding:"13px", borderRadius:12, border:"none", background:"linear-gradient(135deg,var(--acc),var(--acc2))", cursor:"pointer", fontFamily:"inherit", fontSize:14, fontWeight:900, color:"#fff" }}, "✓ Добавить в раздел"
+
+              )
+            )
+          )
+        )
+      )
+
+      , React.createElement(ConfirmSheet, {
+        open: bulkDeleteConfirm,
+        title: `Удалить ${selectedIds.size} материалов?`,
+        subtitle: "Выбранные материалы будут удалены из справочника"     ,
+        danger: true,
+        onCancel: () => setBulkDeleteConfirm(false),
+        onConfirm: () => {
+          const customIds = (state.customMaterials||[]).map(m=>m.id);
+          const customToDelete = [...selectedIds].filter(id => customIds.includes(id));
+          const catalogToDelete = [...selectedIds].filter(id => !customIds.includes(id));
+          if (customToDelete.length > 0) dispatch({ type:"DELETE_CUSTOM_MATERIALS_BULK", ids: customToDelete });
+          if (catalogToDelete.length > 0) dispatch({ type:"DELETE_CATALOG_MATERIALS", ids: catalogToDelete });
+          setSelectMode(false); setSelectedIds(new Set()); setBulkDeleteConfirm(false);
+        }}
+      )
+      , React.createElement(ConfirmSheet, {
+        open: !!catConfirmDelete,
+        title: "Удалить материал?" ,
+        subtitle: _optionalChain([catConfirmDelete, 'optionalAccess', _223 => _223.name]) || "",
+        danger: true,
+        onCancel: () => setCatConfirmDelete(null),
+        onConfirm: () => { if(catConfirmDelete) { dispatch({ type: catConfirmDelete.isCustom ? "DELETE_CUSTOM_MATERIAL" : "DELETE_CATALOG_MATERIAL", id: catConfirmDelete.id }); } setCatConfirmDelete(null); }}
+      )
+      /* Material Group add modal */
+      , matGroupModal && (
+        React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.8)", zIndex:500, display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+          , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", width:"100%", maxWidth: "min(480px, 95vw)", maxHeight:"85vh", display:"flex", flexDirection:"column" }}
+            , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"10px auto 0" }} )
+            , React.createElement('div', { style: { padding:"14px 16px", borderBottom:"1px solid var(--b1)" }}
+              , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:15, fontWeight:900, color:"var(--tx)" }}, matGroupModal.icon, " " , matGroupModal.name)
+              , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", marginTop:2 }}, matGroupModal.desc)
+            )
+            , React.createElement('div', { style: { flex:1, overflowY:"auto", padding:"14px 16px" }}
+              /* Project & section picker */
+              , React.createElement('div', { style: { marginBottom:12 }}
+                , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:5 }}, "Проект")
+                , React.createElement('select', { value: mgTargetPid, onChange: e=>{setMgTargetPid(e.target.value);setMgTargetSid(_optionalChain([state, 'access', _224 => _224.projects, 'access', _225 => _225.find, 'call', _226 => _226(p=>p.id===e.target.value), 'optionalAccess', _227 => _227.sections, 'optionalAccess', _228 => _228[0], 'optionalAccess', _229 => _229.id])||"");},
+                  style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontFamily:"inherit", fontSize:13, outline:"none" }}
+                  , state.projects.map(p=>React.createElement('option', { key: p.id, value: p.id}, p.name))
+                )
+              )
+              , React.createElement('div', { style: { marginBottom:12 }}
+                , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:5 }}, "Раздел")
+                , React.createElement('select', { value: mgTargetSid, onChange: e=>setMgTargetSid(e.target.value),
+                  style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontFamily:"inherit", fontSize:13, outline:"none" }}
+                  , (_optionalChain([state, 'access', _230 => _230.projects, 'access', _231 => _231.find, 'call', _232 => _232(p=>p.id===mgTargetPid), 'optionalAccess', _233 => _233.sections])||[]).map(s=>React.createElement('option', { key: s.id, value: s.id}, s.name))
+                )
+              )
+              /* Area input */
+              , React.createElement('div', { style: { marginBottom:14 }}
+                , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:5 }}, "Площадь (м²) — "
+                     , matGroupModal.areaField === "floor" ? "пол" : matGroupModal.areaField === "wallsNet" ? "стены (чист.)" : matGroupModal.areaField === "ceiling" ? "потолок" : matGroupModal.areaField
+                )
+                , React.createElement('div', { style: { display:"flex", gap:8 }}
+                  , React.createElement('input', { type: "number", value: mgArea, onChange: e=>setMgArea(e.target.value),
+                    placeholder: "Введите площадь м²"  ,
+                    style: { flex:1, padding:"11px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontFamily:"inherit", fontSize:15, outline:"none", textAlign:"center" }} )
+                  , React.createElement('button', { onClick: ()=>{
+                    const proj = state.projects.find(p=>p.id===mgTargetPid);
+                    if(!proj) return;
+                    const area = (proj.rooms||[]).reduce((s,r)=>s+(r[matGroupModal.areaField]||0),0);
+                    if(area>0) setMgArea(area.toFixed(1));
+                  }, style: { padding:"10px 12px", borderRadius:10, border:"1px solid var(--b1)", background:"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700, color:"var(--green)", whiteSpace:"nowrap" }}, "🏠 Из проекта"
+
+                  )
+                )
+              )
+              /* Items preview with qty */
+              , React.createElement('div', { style: { fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:8 }}, "Состав набора" )
+              , (matGroupModal.items||[]).map((item,i) => {
+                const area = +mgArea || 0;
+                const baseQty = Math.ceil(area * item.qtyPer * 10) / 10;
+                const override = mgItemOverrides[i];
+                const qty = override !== undefined ? override : (area > 0 ? baseQty : item.qtyPer);
+                return (
+                  React.createElement('div', { key: i, style: { display:"flex", alignItems:"center", gap:8, padding:"8px 0", borderBottom:i<matGroupModal.items.length-1?"1px solid var(--b1)":"none" }}
+                    , React.createElement('div', { style: { flex:1 }}
+                      , React.createElement('div', { style: { fontSize:12, fontWeight:600, color:"var(--tx)" }}, item.name)
+                      , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)" }}, item.note)
+                    )
+                    , React.createElement('input', { type: "number", value: qty,
+                      onChange: e=>setMgItemOverrides(o=>({...o,[i]:parseFloat(e.target.value)||0})),
+                      style: { width:60, padding:"5px 8px", borderRadius:8, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontFamily:"inherit", fontSize:13, textAlign:"center", outline:"none" }} )
+                    , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", width:45 }}, item.unit)
+                  )
+                );
+              })
+            )
+            , React.createElement('div', { style: { padding:"12px 16px 28px", borderTop:"1px solid var(--b1)", display:"flex", gap:10 }}
+              , React.createElement('button', { onClick: ()=>setMatGroupModal(null),
+                style: { padding:"13px 16px", borderRadius:12, border:"1px solid var(--b1)", background:"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700, color:"var(--tx3)" }}, "Отмена"
+
+              )
+              , React.createElement('button', { onClick: ()=>{
+                if(!mgTargetPid||!mgTargetSid) return;
+                const area = +mgArea||0;
+                const allMats = [...CATALOG,...(state.customMaterials||[])];
+                (matGroupModal.items||[]).forEach((item,i)=>{
+                  const override = mgItemOverrides[i];
+                  const qty = override !== undefined ? override : (area>0 ? Math.ceil(area*item.qtyPer*10)/10 : item.qtyPer);
+                  if(qty<=0) return;
+                  const mat = allMats.find(m=>m.id===item.matId);
+                  const price = _optionalChain([mat, 'optionalAccess', _234 => _234.price]) || 0;
+                  dispatch({ type:"ADD_ITEM", pid:mgTargetPid, sid:mgTargetSid, item:{ id:uid(), name:item.name, unit:item.unit, qty, price, type:"material", paid:0 } });
+                });
+                setMatGroupModal(null);
+              }, style: { flex:1, padding:"13px", borderRadius:12, border:"none", background:"linear-gradient(135deg,var(--acc),var(--acc2))", cursor:"pointer", fontFamily:"inherit", fontSize:14, fontWeight:900, color:"#fff" }}, "✓ Добавить в смету"
+
+              )
+            )
+          )
+        )
+      )
+
+      , React.createElement(Modal, { open: !!addTarget, onClose: () => setAddTarget(null), title: "Добавить в смету"  }
+        , addTarget && (
+          React.createElement(React.Fragment, null
+            , React.createElement('div', { style: { background:"var(--s2)", borderRadius:11, padding:"10px 12px", marginBottom:14 }}
+              , React.createElement('div', { style: { fontSize:13, fontWeight:700, color:"var(--tx)", marginBottom:2 }}, addTarget.name)
+              , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" }}, addTarget.unit, " · "  , fmt(addTarget.price), " / "  , addTarget.unit)
+            )
+            , React.createElement('div', { style: { marginBottom:12 }}
+              , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:5 }}, "Проект")
+              , React.createElement('select', { value: targetPid, onChange: e => { setTargetPid(e.target.value); setTargetSid(_optionalChain([state, 'access', _235 => _235.projects, 'access', _236 => _236.find, 'call', _237 => _237(p=>p.id===e.target.value), 'optionalAccess', _238 => _238.sections, 'access', _239 => _239[0], 'optionalAccess', _240 => _240.id])||""); },
+                style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", fontSize:13, color:"var(--tx)", background:"var(--s2)", fontFamily:"inherit", outline:"none" }}
+                , state.projects.map(p => React.createElement('option', { key: p.id, value: p.id}, p.name))
+              )
+            )
+            , React.createElement('div', { style: { marginBottom:14 }}
+              , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:5 }}, "Раздел")
+              , React.createElement('select', { value: targetSid, onChange: e => setTargetSid(e.target.value),
+                style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", fontSize:13, color:"var(--tx)", background:"var(--s2)", fontFamily:"inherit", outline:"none" }}
+                , sections.map(s => React.createElement('option', { key: s.id, value: s.id}, s.name))
+              )
+            )
+            , React.createElement('div', { style: { display:"flex", gap:10, marginBottom:14 }}
+              , React.createElement('div', { style: { flex:1 }}
+                , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:5 }}, "Кол-во")
+                , React.createElement('input', { type: "number", value: qty, onChange: e=>setQty(e.target.value), style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:14, fontFamily:"inherit", outline:"none", textAlign:"center" }} )
+              )
+              , React.createElement('div', { style: { flex:1 }}
+                , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", marginBottom:5 }}, "Цена (₽)" )
+                , React.createElement('input', { type: "number", value: price, onChange: e=>setPrice(e.target.value), style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:14, fontFamily:"inherit", outline:"none", textAlign:"center" }} )
+              )
+            )
+            , qty && price && (
+              React.createElement('div', { style: { background:"rgba(124,111,255,0.1)", borderRadius:10, padding:"8px 12px", marginBottom:12, display:"flex", justifyContent:"space-between" }}
+                , React.createElement('span', { style: { fontSize:12, color:"var(--tx3)" }}, "Итого")
+                , React.createElement('span', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:800, color:"var(--acc2)" }}, fmt(+qty * +price), " ₽" )
+              )
+            )
+            , React.createElement(Btn, { onClick: handleAdd, full: true}, "+ Добавить в смету"   )
+          )
+        )
+      )
+    )
+  );
+}
+
+function PriceBookScreen({ state, dispatch, lang }) {
+  const L = T[lang] || T.ru;
+  const [mainTab, setMainTab] = useState("prices");
+  const [scrolled, setScrolled] = useState(false);
+  const scrollRef = useRef(null);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const onScroll = () => setScrolled(el.scrollTop > 60);
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+
+  return (
+    React.createElement('div', { ref: scrollRef, style: { minHeight: "100%", background: "var(--bg)", paddingBottom: 100, overflowY: "auto", height: "100vh" }}
+      /* Collapsible header */
+      /* Slim header */
+      , React.createElement('div', { style: { background:"var(--hdr-bg,linear-gradient(135deg,#5b52e8,#7c6fff))", padding:"50px 16px 0", position:"sticky", top:0, zIndex:10 }}
+        , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:15, fontWeight:900, color:"var(--hdr-tx,#fff)", marginBottom:8, letterSpacing:"-0.01em" }}, "Мои цены" )
+        , React.createElement('div', { style: { display: "flex", gap: 0 }}
+          , [["prices","🔨 "+t(lang||"ru","priceBook")],["groups","⚡ "+t(lang||"ru","workGroups")]].map(([id,lbl]) => (
+            React.createElement('button', { key: id, onClick: () => setMainTab(id), style: {
+              flex: 1, padding: "12px 8px", border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: 800, fontSize: 13,
+              background: "transparent",
+              color: mainTab === id ? "#fff" : "rgba(255,255,255,0.6)",
+              borderBottom: mainTab === id ? "3px solid #fff" : "3px solid rgba(255,255,255,0.2)",
+              transition: "all 0.2s",
+            }}, lbl)
+          ))
+        )
+      )
+
+      , mainTab === "prices" && React.createElement(PricesTab, { state: state, dispatch: dispatch, scrolled: scrolled} )
+      , mainTab === "groups" && React.createElement(GroupsTab, { state: state, dispatch: dispatch} )
+    )
+  );
+}
+
+// -- Расценки tab ------------------------------------------------
+function PricesTab({ state, dispatch, scrolled }) {
+  const [search, setSearch]       = useState("");
+  const [editKey, setEditKey]     = useState(null);
+  const [editName, setEditName]   = useState("");
+  const [editPrice, setEditPrice] = useState("");
+  const [editUnit, setEditUnit]   = useState("м²");
+  const [editSections, setEditSections] = useState([]);
+  const [showAdd, setShowAdd]     = useState(false);
+  const [newName, setNewName]     = useState("");
+  const [newPrice, setNewPrice]   = useState("");
+  const [newUnit, setNewUnit]     = useState("м²");
+  const [newSections, setNewSections] = useState([]);
+  // NEW: optional direct assignment to a project section when creating a price
+  const [newToPid, setNewToPid]   = useState("");
+  const [newToSid, setNewToSid]   = useState("");
+  const [savedKey, setSavedKey]   = useState(null);
+  const [deleteKey, setDeleteKey] = useState(null);
+  const [dragFrom, setDragFrom]   = useState(null);
+  const [dragOver, setDragOver]   = useState(null);
+  const [swipeItem, setSwipeItem] = useState(null); // {name, dx}
+  const [priceSelectMode, setPriceSelectMode] = useState(false);
+  const [priceSelected, setPriceSelected]     = useState(new Set());
+  const [priceBulkDel, setPriceBulkDel]       = useState(false);
+  const [priceAddModal, setPriceAddModal]     = useState(false);
+  const [priceAddPid, setPriceAddPid]         = useState("");
+  const [priceAddSid, setPriceAddSid]         = useState("");
+  const sectionRefs = useRef({});
+
+  const units = ["м²", "шт", "м.п.", "мешок", "рул.", "л", "кг", "компл.", "м³"];
+  const book = state.priceBook;
+
+  // Section definitions for grouping
+  const PRICE_SECTIONS = [
+    { id: "prep",     label: "Подготовка",       icon: "🔨" },
+    { id: "floor",    label: "Полы",              icon: "🟫" },
+    { id: "walls",    label: "Стены",             icon: "🖌️" },
+    { id: "ceiling",  label: "Потолок",           icon: "🔲" },
+    { id: "plumbing", label: "Сантехника",        icon: "🚿" },
+    { id: "electric", label: "Электрика",         icon: "⚡" },
+    { id: "doors",    label: "Двери и окна",      icon: "🚪" },
+    { id: "finish",   label: "Финишная отделка",  icon: "✨" },
+    { id: "other",    label: "Прочее",            icon: "📦" },
+  ];
+
+  const flash = (key) => { setSavedKey(key); setTimeout(() => setSavedKey(null), 1800); };
+
+  // Get section tags for an entry
+  const getSections = (val) => (typeof val === "object" && val.sections) ? val.sections : [];
+  const getPrice    = (val) => typeof val === "object" ? val.price : val;
+  const getUnit     = (val) => typeof val === "object" ? (val.unit || "м²") : "м²";
+
+  // Group entries by section, respecting user-defined priceOrder
+  const priceOrder = state.priceOrder || [];
+  const allEntriesUnsorted = Object.entries(book).map(([name, val]) => ({
+    name, price: getPrice(val), unit: getUnit(val), sections: getSections(val),
+  }));
+  // Sort by priceOrder (user order), then alphabetically for new items
+  const allEntries = [...allEntriesUnsorted].sort((a, b) => {
+    const ai = priceOrder.indexOf(a.name);
+    const bi = priceOrder.indexOf(b.name);
+    if (ai === -1 && bi === -1) return a.name.localeCompare(b.name, "ru");
+    if (ai === -1) return 1;
+    if (bi === -1) return -1;
+    return ai - bi;
+  });
+
+  const searchLower = search.toLowerCase();
+
+  // For each PRICE_SECTION, get matching entries (preserving user order)
+  const grouped = PRICE_SECTIONS.map(sec => {
+    const items = allEntries.filter(e =>
+      (e.sections.includes(sec.id) || (sec.id === "other" && e.sections.length === 0)) &&
+      (!searchLower || e.name.toLowerCase().includes(searchLower))
+    );
+    return { ...sec, items };
+  }).filter(sec => !searchLower || (sec.items || []).length > 0);
+
+  // If search active and nothing found in sections, show flat list
+  const unassigned = searchLower
+    ? allEntries.filter(e => e.name.toLowerCase().includes(searchLower) && !grouped.some(g => g.items.some(i => i.name === e.name)))
+    : [];
+
+  const handleSave = () => {
+    const p = parseFloat(editPrice);
+    if (!editName.trim() || !p || p <= 0) return;
+    if (editKey !== editName.trim()) dispatch({ type: "DELETE_PRICE_BOOK", name: editKey });
+    dispatch({ type: "UPDATE_PRICE_BOOK", name: editName.trim(), price: p, unit: editUnit, sections: editSections });
+    flash(editName.trim()); setEditKey(null);
+  };
+
+  const handleAdd = () => {
+    if (!newName.trim() || !newPrice) return;
+    const price = parseFloat(newPrice);
+    dispatch({ type: "UPDATE_PRICE_BOOK", name: newName.trim(), price, unit: newUnit, sections: newSections });
+    // If user chose to also add it directly to a project section, do it now
+    if (newToPid && newToSid) {
+      dispatch({ type: "ADD_ITEM", pid: newToPid, sid: newToSid,
+        item: { id: uid(), name: newName.trim(), unit: newUnit, qty: 1, price, type: "work", paid: 0 } });
+    }
+    flash(newName.trim());
+    setNewName(""); setNewPrice(""); setNewUnit("м²"); setNewSections([]);
+    setNewToPid(""); setNewToSid(""); setShowAdd(false);
+  };
+
+  const handleDelete = (name) => { dispatch({ type: "DELETE_PRICE_BOOK", name }); setDeleteKey(null); };
+
+  const scrollToSection = (id) => {
+    const el = sectionRefs.current[id];
+    if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const toggleSec = (arr, setArr, id) => setArr(a => a.includes(id) ? a.filter(x => x !== id) : [...a, id]);
+
+  const usageCount = (name) => {
+    let n = 0;
+    state.projects.forEach(p => {
+      (p.sections||[]).forEach(s => (s.items||[]).forEach(i => { if (i.name === name && i.type === "work") n++; }));
+      (p.rooms||[]).forEach(r => (r.works||[]).forEach(w => { if (w.name === name) n++; }));
+    });
+    (state.workGroups||[]).forEach(g => (g.items||[]).forEach(i => { if (i.name === name) n++; }));
+    return n;
+  };
+
+  const IS = { width:"100%", padding:"10px 12px", borderRadius:10, border:"2px solid var(--b1)", fontSize:14, color:"var(--tx)", background:"var(--s2)", outline:"none", fontFamily:"inherit", boxSizing:"border-box" };
+  const LS = { display:"block", fontSize:11, fontWeight:700, color:"var(--tx3)", marginBottom:4, textTransform:"uppercase", letterSpacing:"0.05em" };
+
+  const SectionPicker = ({ selected, onChange, compact }) => (
+    React.createElement('div', { style: { display: "flex", flexWrap: "wrap", gap: 6 }}
+      , PRICE_SECTIONS.map(s => {
+        const on = selected.includes(s.id);
+        return (
+          React.createElement('button', { key: s.id, onClick: () => toggleSec(selected, onChange, s.id),
+            style: { padding: compact ? "4px 8px" : "6px 10px", borderRadius: 8, border: `1.5px solid ${on ? "var(--acc)" : "var(--b1)"}`, background: on ? "var(--acc3)" : "var(--s2)", cursor: "pointer", fontSize: compact ? 10 : 11, fontWeight: 700, color: on ? "var(--acc2)" : "var(--tx3)", fontFamily: "inherit", display: "flex", alignItems: "center", gap: 4 }}
+            , React.createElement('span', {}, s.icon), " " , s.label
+          )
+        );
+      })
+    )
+  );
+
+  return (
+    React.createElement('div', { style: { paddingBottom: 100, position: "relative" }}
+      /* Multi-select floating toolbar */
+      , priceSelectMode && (
+        React.createElement('div', { style: {
+          position:"absolute", bottom:80, left:"50%", transform:"translateX(-50%)",
+          width:"calc(100% - 32px)", maxWidth:448, zIndex:60,
+          background:"var(--s1)", borderRadius:16, padding:"10px 14px",
+          border:"1px solid var(--b1)", boxShadow:"0 4px 24px rgba(0,0,0,0.35)",
+          display:"flex", alignItems:"center", gap:8,
+        }}
+          , React.createElement('div', { style: { fontSize:13, fontWeight:800, color:"var(--tx)", flex:1 }}
+            , priceSelected.size > 0 ? `Выбрано: ${priceSelected.size}` : "Нажмите на расценку"
+          )
+          , React.createElement('button', { onClick: () => { const all = new Set(allEntries.map(e=>e.name)); setPriceSelected(all); },
+            style: { padding:"6px 10px", borderRadius:8, border:"1px solid var(--b1)", background:"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:11, fontWeight:700, color:"var(--tx3)" }}, "Все"
+
+          )
+          , React.createElement('button', { disabled: priceSelected.size === 0,
+            onClick: () => { if(priceSelected.size>0) setPriceAddModal(true); },
+            style: { padding:"6px 10px", borderRadius:8, border:"none",
+              background: priceSelected.size > 0 ? "var(--green)" : "var(--s3)",
+              color:"#fff", cursor: priceSelected.size > 0 ? "pointer" : "default",
+              fontFamily:"inherit", fontSize:11, fontWeight:800 }}, "+ В смету"
+
+          )
+          , React.createElement('button', { disabled: priceSelected.size === 0,
+            onClick: () => priceSelected.size > 0 && setPriceBulkDel(true),
+            style: { padding:"6px 12px", borderRadius:8, border:"none",
+              background: priceSelected.size > 0 ? "#ef4444" : "var(--s3)",
+              color: priceSelected.size > 0 ? "#fff" : "var(--tx3)",
+              cursor: priceSelected.size > 0 ? "pointer" : "default",
+              fontFamily:"inherit", fontSize:12, fontWeight:800 }}, "🗑️ "
+             , priceSelected.size > 0 ? `(${priceSelected.size})` : ""
+          )
+          , React.createElement('button', { onClick: () => { setPriceSelectMode(false); setPriceSelected(new Set()); },
+            style: { padding:"6px 10px", borderRadius:8, border:"1px solid var(--b1)", background:"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:12, fontWeight:700, color:"var(--tx3)" }}, "✕")
+        )
+      )
+      /* Bulk add prices to project */
+      , priceAddModal && (
+        React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.8)", zIndex:600, display:"flex", alignItems:"flex-end" }}
+          , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", width:"100%", maxWidth: "min(480px, 95vw)", padding:"16px", margin:"0 auto" }}
+            , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"0 auto 14px" }} )
+            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:900, color:"var(--tx)", marginBottom:14 }}, "+ В смету ("   , priceSelected.size, " расценок)" )
+            , React.createElement('div', { style: { marginBottom:10 }}
+              , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700, textTransform:"uppercase", marginBottom:5 }}, "Проект")
+              , React.createElement('select', { value: priceAddPid, onChange: e=>{setPriceAddPid(e.target.value);setPriceAddSid(_optionalChain([state, 'access', _241 => _241.projects, 'access', _242 => _242.find, 'call', _243 => _243(p=>p.id===e.target.value), 'optionalAccess', _244 => _244.sections, 'optionalAccess', _245 => _245[0], 'optionalAccess', _246 => _246.id])||"");},
+                style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontFamily:"inherit", fontSize:13, outline:"none" }}
+                , React.createElement('option', { value: ""}, "Выберите проект" )
+                , state.projects.map(p=>React.createElement('option', { key: p.id, value: p.id}, p.name))
+              )
+            )
+            , React.createElement('div', { style: { marginBottom:16 }}
+              , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700, textTransform:"uppercase", marginBottom:5 }}, "Раздел")
+              , React.createElement('select', { value: priceAddSid, onChange: e=>setPriceAddSid(e.target.value),
+                style: { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontFamily:"inherit", fontSize:13, outline:"none" }}
+                , (_optionalChain([state, 'access', _247 => _247.projects, 'access', _248 => _248.find, 'call', _249 => _249(p=>p.id===priceAddPid), 'optionalAccess', _250 => _250.sections])||[]).map(s=>React.createElement('option', { key: s.id, value: s.id}, s.name))
+              )
+            )
+            , React.createElement('div', { style: { display:"flex", gap:10 }}
+              , React.createElement('button', { onClick: ()=>setPriceAddModal(false), style: { flex:1, padding:"13px", borderRadius:12, border:"1px solid var(--b1)", background:"var(--s2)", cursor:"pointer", fontFamily:"inherit", fontSize:13, fontWeight:700, color:"var(--tx3)" }}, "Отмена")
+              , React.createElement('button', { onClick: ()=>{
+                if(!priceAddPid||!priceAddSid) return;
+                [...priceSelected].forEach(name=>{
+                  const val=book[name]; const price=typeof val==="object"?val.price:val; const unit=typeof val==="object"?(val.unit||"м²"):"м²";
+                  dispatch({ type:"ADD_ITEM", pid:priceAddPid, sid:priceAddSid, item:{ id:uid(), name, unit, qty:1, price, type:"work", paid:0 } });
+                });
+                setPriceAddModal(false); setPriceSelectMode(false); setPriceSelected(new Set());
+              }, style: { flex:2, padding:"13px", borderRadius:12, border:"none", background:"linear-gradient(135deg,var(--acc),var(--acc2))", cursor:"pointer", fontFamily:"inherit", fontSize:14, fontWeight:900, color:"#fff" }}, "✓ Добавить в раздел"
+
+              )
+            )
+          )
+        )
+      )
+      , React.createElement(ConfirmSheet, {
+        open: priceBulkDel,
+        title: `Удалить ${priceSelected.size} расценок?`,
+        subtitle: "Выбранные расценки будут удалены из прайс-листа"     ,
+        danger: true,
+        onCancel: () => setPriceBulkDel(false),
+        onConfirm: () => {
+          priceSelected.forEach(name => dispatch({ type:"DELETE_PRICE_BOOK", name }));
+          setPriceSelectMode(false); setPriceSelected(new Set()); setPriceBulkDel(false);
+        }}
+      )
+      /* Search + section anchors — fixed size, no shrinking */
+      , React.createElement('div', { style: { background: "var(--s1)", borderBottom: "1px solid var(--b1)", padding: "10px 16px 8px", position: "sticky", top: 0, zIndex: 10 }}
+        , React.createElement('div', { style: { background: "var(--s2)", borderRadius: 10, padding: "8px 12px", display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}
+          , React.createElement(Icon, { name: "search", size: 15, color: "var(--gold)"} )
+          , React.createElement('input', { value: search, onChange: e => setSearch(e.target.value), placeholder: "Поиск расценки..." ,
+            style: { background:"none", border:"none", outline:"none", color:"var(--tx)", fontSize:14, width:"100%", fontFamily:"inherit" }} )
+          , search && React.createElement('button', { onClick: () => setSearch(""), style: { background:"none", border:"none", cursor:"pointer", color:"var(--tx3)", fontSize:14, padding:0 }}, "✕")
+        )
+        , React.createElement('div', { style: { display: "flex", gap: 5, overflowX: "auto", paddingBottom: 2 }}
+          , PRICE_SECTIONS.map(sec => {
+            const count = allEntries.filter(e => e.sections.includes(sec.id) || (sec.id === "other" && e.sections.length === 0)).length;
+            return (
+              React.createElement('button', { key: sec.id, onClick: () => scrollToSection(sec.id),
+                style: { flexShrink: 0, display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", borderRadius: 20, border: "1px solid var(--b1)", background: "var(--s2)", cursor: "pointer", whiteSpace: "nowrap" }}
+                , React.createElement('span', { style: { fontSize: 13 }}, sec.icon)
+                , React.createElement('span', { style: { fontSize: 11, fontWeight: 700, color: "var(--tx3)" }}, sec.label)
+                , React.createElement('span', { style: { fontSize: 9, color: "var(--tx3)", opacity: 0.7 }}, count)
+              )
+            );
+          })
+        )
+      )
+
+      /* Grouped sections */
+      , React.createElement('div', { style: { padding: "12px 16px 0" }}
+        , grouped.map(sec => { return (
+          React.createElement('div', { key: sec.id, ref: el => sectionRefs.current[sec.id] = el, style: { marginBottom: 8 }}
+            /* Section header */
+            , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 8, marginBottom: 8, marginTop: 4 }}
+              , React.createElement('span', { style: { fontSize: 18 }}, sec.icon)
+              , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 12, fontWeight: 800, color: "var(--tx)" }}, sec.label)
+              , React.createElement('div', { style: { flex: 1, height: 1, background: "var(--b1)" }} )
+              , React.createElement('span', { style: { fontSize: 10, color: "var(--tx3)", fontWeight: 700 }}, (sec.items || []).length)
+            )
+
+            , (sec.items || []).length === 0 && (
+              React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)", padding: "10px 0 4px", textAlign: "center" }}, "Нет расценок в этом разделе"    )
+            )
+
+            , (sec.items || []).map(function(entry, itemIdx) { const name = entry.name, price = entry.price, unit = entry.unit;
+              const isEditing = editKey === name;
+              const isSaved   = savedKey === name;
+              const isDel     = deleteKey === name;
+              const uses      = usageCount(name);
+              const globalIdx = allEntries.findIndex(e => e.name === name);
+              const sw = _optionalChain([swipeItem, 'optionalAccess', _251 => _251.name]) === name ? swipeItem.dx : 0;
+              const showDelBg  = sw < -55;
+
+              return (
+                React.createElement('div', { key: name, style: { position:"relative", marginBottom:8, borderRadius:12, overflow:"hidden" }}
+                  /* Swipe hint backgrounds */
+                  , React.createElement('div', { style: { position:"absolute", inset:0, display:"flex", justifyContent:"space-between", pointerEvents:"none" }}
+                    , React.createElement('div', { style: { background:"#ef4444", width:68, display:"flex", alignItems:"center", justifyContent:"center", borderRadius:"12px 0 0 12px", opacity:showDelBg?1:0, transition:"opacity 0.15s" }}
+                      , React.createElement(Icon, { name: "trash", size: 20, color: "#fff"} )
+                    )
+
+                  )
+                  /* Card */
+                  , React.createElement('div', { style: {
+                    background: priceSelected.has(name) ? "rgba(239,68,68,0.07)" : isSaved ? "rgba(16,185,129,0.08)" : (dragOver===globalIdx) ? "rgba(124,111,255,0.08)" : "var(--s1)",
+                    borderRadius: 12,
+                    border: priceSelected.has(name) ? "1.5px solid rgba(239,68,68,0.4)" : isSaved ? "1.5px solid rgba(16,185,129,0.3)" : isEditing ? "1.5px solid var(--acc)" : isDel ? "1.5px solid #ef4444" : (dragOver===globalIdx) ? "1.5px solid var(--acc)" : "1px solid var(--b1)",
+                    overflow: "hidden",
+                    transform: `translateX(${sw}px)`,
+                    transition: sw===0 ? "transform 0.22s" : "none",
+                    opacity: _optionalChain([dragFrom, 'optionalAccess', _252 => _252.name]) === name ? 0.4 : 1,
+                    position: "relative", zIndex: 1,
+                  },
+                    onDragOver: e => { e.preventDefault(); setDragOver(globalIdx); },
+                    onDrop: e => {
+                      e.preventDefault();
+                      if (dragFrom && dragFrom.globalIdx !== undefined && dragFrom.globalIdx !== globalIdx) {
+                        dispatch({ type: "REORDER_PRICE", from: dragFrom.globalIdx, to: globalIdx });
+                      }
+                      setDragFrom(null); setDragOver(null);
+                    },
+                    onTouchStart: e => {
+                      e.currentTarget._tsx = e.touches[0].clientX;
+                      const timer = setTimeout(() => { setPriceSelectMode(true); setPriceSelected(new Set([name])); }, 650);
+                      e.currentTarget._lpt = timer;
+                    },
+                    onTouchMove: e => {
+                      const dx = e.touches[0].clientX - (e.currentTarget._tsx||0);
+                      if (Math.abs(dx) > 8) clearTimeout(e.currentTarget._lpt);
+                      if (!priceSelectMode) setSwipeItem({ name, dx: Math.max(-80, Math.min(80, dx)) });
+                    },
+                    onTouchEnd: e => {
+                      clearTimeout(e.currentTarget._lpt);
+                      if (priceSelectMode) {
+                        setPriceSelected(prev => { const n = new Set(prev); if(n.has(name)) n.delete(name); else n.add(name); return n; });
+                        setSwipeItem(null); return;
+                      }
+                      const dx = _optionalChain([swipeItem, 'optionalAccess', _253 => _253.name])===name ? swipeItem.dx : 0;
+                      if (dx < -55) setDeleteKey(name);
+
+                      setSwipeItem(null);
+                    },
+                    onClick: priceSelectMode ? () => { setPriceSelected(prev => { const n = new Set(prev); if(n.has(name)) n.delete(name); else n.add(name); return n; }); } : undefined,
+                    onContextMenu: e => { e.preventDefault(); setPriceSelectMode(true); setPriceSelected(new Set([name])); }}
+
+                  , !isEditing && !isDel && (
+                    React.createElement('div', { style: { display:"flex", alignItems:"center", gap:10, padding:"11px 12px" }}
+                      /* Drag handle */
+                      , React.createElement('div', {
+                        draggable: true,
+                        onDragStart: e => { e.dataTransfer.effectAllowed = "move"; setDragFrom({ name, globalIdx }); },
+                        onDragEnd: () => { setDragFrom(null); setDragOver(null); },
+                        onTouchStart: e => setDragFrom({ name, globalIdx }),
+                        style: { cursor:"grab", padding:"4px 2px", color:"var(--tx3)", fontSize:14, flexShrink:0, touchAction:"none" },
+                        title: "Перетащить для сортировки"  }, "⠿"
+
+                      )
+                      , React.createElement('div', { style: { width:36, height:36, borderRadius:9, background:"rgba(245,158,11,0.12)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 }}
+                        , React.createElement('span', { style: { fontSize:16 }}, sec.icon)
+                      )
+                      , React.createElement('div', { style: { flex:1, minWidth:0 }}
+                        , React.createElement('div', { style: { fontSize:13, fontWeight:700, color:"var(--tx)", marginBottom:2, overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}, name)
+                        , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)" }}
+                          , unit, "  • "
+                          , uses > 0 ? React.createElement('span', { style: { color:"var(--green)", fontWeight:600 }}, "✓ " , uses, " позиц." ) : React.createElement('span', {}, "не используется" )
+                        )
+                      )
+                      , React.createElement('div', { style: { textAlign:"right", flexShrink:0, marginRight:6 }}
+                        , isSaved && React.createElement('div', { style: { background:"rgba(16,185,129,0.15)", borderRadius:5, padding:"1px 6px", fontSize:9, color:"var(--green)", fontWeight:700, marginBottom:3 }}, "✓ Сохранено" )
+                        , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:800, color:"var(--gold)" }}, fmt(price))
+                        , React.createElement('div', { style: { fontSize:9, color:"var(--tx3)" }}, "₽/", unit)
+                      )
+                      , React.createElement('div', { style: { display:"flex", flexDirection:"column", gap:4, flexShrink:0 }}
+                        , React.createElement('button', { onClick: () => { setEditKey(name); setEditName(name); setEditPrice(String(price)); setEditUnit(unit); setEditSections(getSections(book[name])); },
+                          style: { background:"rgba(245,158,11,0.12)", border:"none", borderRadius:7, padding:"5px 7px", cursor:"pointer" }}
+                          , React.createElement(Icon, { name: "edit", size: 13, color: "var(--gold)"} )
+                        )
+                        , React.createElement('button', { onClick: () => setDeleteKey(name),
+                          style: { background:"rgba(239,68,68,0.1)", border:"none", borderRadius:7, padding:"5px 7px", cursor:"pointer" }}
+                          , React.createElement(Icon, { name: "trash", size: 13, color: "#ef4444"} )
+                        )
+                      )
+                    )
+                  )
+                  , isEditing && (
+                    React.createElement('div', { style: { padding:14 }}
+                      , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:11, fontWeight:800, color:"var(--acc)", marginBottom:12 }}, "✏️ Редактировать расценку"  )
+                      , React.createElement('div', { style: { marginBottom:10 }}
+                        , React.createElement('label', { style: LS}, "Название")
+                        , React.createElement('input', { type: "text", value: editName, onChange: e => setEditName(e.target.value), style: IS} )
+                      )
+                      , React.createElement('div', { style: { display:"flex", gap:10, marginBottom:10 }}
+                        , React.createElement('div', { style: { flex:1 }}
+                          , React.createElement('label', { style: LS}, "Цена (₽)" )
+                          , React.createElement('input', { autoFocus: true, type: "number", value: editPrice, onChange: e => setEditPrice(e.target.value),
+                            onKeyDown: e => { if(e.key==="Enter") handleSave(); if(e.key==="Escape") setEditKey(null); }, style: IS} )
+                        )
+                        , React.createElement('div', { style: { flex:1 }}
+                          , React.createElement('label', { style: LS}, "Ед. изм." )
+                          , React.createElement('select', { value: editUnit, onChange: e => setEditUnit(e.target.value), style: IS}
+                            , units.map(u => React.createElement('option', { key: u}, u))
+                          )
+                        )
+                      )
+                      , React.createElement('div', { style: { marginBottom:12 }}
+                        , React.createElement('label', { style: LS}, "Разделы")
+                        , React.createElement(SectionPicker, { selected: editSections, onChange: setEditSections, compact: true} )
+                      )
+                      , React.createElement('div', { style: { display:"flex", gap:8 }}
+                        , React.createElement('button', { onClick: () => setEditKey(null),
+                          style: { flex:1, padding:"9px", background:"var(--s2)", border:"none", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontWeight:600, fontSize:13, color:"var(--tx3)" }}, "Отмена")
+                        , React.createElement('button', { onClick: handleSave,
+                          style: { flex:2, padding:"9px", background:"var(--acc)", border:"none", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13, color:"#fff" }}, "Сохранить ✓" )
+                      )
+                    )
+                  )
+                  , isDel && (
+                    React.createElement('div', { style: { padding:14, background:"rgba(239,68,68,0.06)" }}
+                      , React.createElement('div', { style: { fontSize:13, fontWeight:600, color:"#ef4444", marginBottom:4 }}, "Удалить расценку?" )
+                      , React.createElement('div', { style: { fontSize:12, color:"var(--tx3)", marginBottom:12 }}, "«", name, "» — "  , fmt(price), " ₽/" , unit)
+                      , React.createElement('div', { style: { display:"flex", gap:8 }}
+                        , React.createElement('button', { onClick: () => setDeleteKey(null),
+                          style: { flex:1, padding:"9px", background:"var(--s2)", border:"none", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontWeight:600, fontSize:13, color:"var(--tx3)" }}, "Отмена")
+                        , React.createElement('button', { onClick: () => handleDelete(name),
+                          style: { flex:1, padding:"9px", background:"#ef4444", border:"none", borderRadius:9, cursor:"pointer", fontFamily:"inherit", fontWeight:700, fontSize:13, color:"#fff" }}, "Удалить")
+                      )
+                    )
+                  )
+                  )
+                )
+              );
+            })
+          )
+        ); })
+
+        /* Flat unassigned results when searching */
+        , unassigned.length > 0 && (
+          React.createElement('div', {}
+            , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 6 }}, "Без раздела" )
+            , unassigned.map(({ name, price, unit }) => (
+              React.createElement('div', { key: name, style: { display:"flex", alignItems:"center", gap:10, padding:"11px 12px", background:"var(--s1)", borderRadius:12, marginBottom:8, border:"1px solid var(--b1)" }}
+                , React.createElement('div', { style: { flex:1 }}
+                  , React.createElement('div', { style: { fontSize:13, fontWeight:700, color:"var(--tx)" }}, name)
+                  , React.createElement('div', { style: { fontSize:10, color:"var(--tx3)" }}, unit, " · "  , fmt(price))
+                )
+              )
+            ))
+          )
+        )
+
+        , allEntries.length === 0 && (
+          React.createElement('div', { style: { textAlign:"center", padding:"48px 0", color:"var(--tx3)" }}
+            , React.createElement('div', { style: { fontSize:44, marginBottom:10 }}, "🔨")
+            , React.createElement('div', { style: { fontWeight:700, color:"var(--tx2)", marginBottom:6 }}, "Нет расценок" )
+            , React.createElement('div', { style: { fontSize:13 }}, "Нажмите + чтобы добавить первую расценку"     )
+          )
+        )
+      )
+
+      /* Add form (slide up when open) */
+      , showAdd && (
+        React.createElement('div', { style: { position:"absolute", bottom:0, left:"50%", transform:"translateX(-50%)",
+          width:"100%", maxWidth:"min(480px, 95vw)", background:"var(--s1)",
+          borderRadius:"20px 20px 0 0", padding:"20px 16px 32px",
+          boxShadow:"0 -8px 40px rgba(0,0,0,0.5)", zIndex:300, border:"1px solid var(--b1)",
+          maxHeight:"88vh", overflowY:"auto" }}
+
+          /* Handle */
+          , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"0 auto 14px" }})
+
+          /* Title row */
+          , React.createElement('div', { style: { display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}
+            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:800, color:"var(--tx)" }}, "➕ Новая расценка")
+            , React.createElement('button', { onClick: () => { setShowAdd(false); setNewName(""); setNewPrice(""); setNewUnit("м²"); setNewSections([]); setNewToPid(""); setNewToSid(""); },
+              style: { background:"var(--s2)", border:"none", borderRadius:8, padding:"5px 8px", cursor:"pointer", fontSize:16, color:"var(--tx3)" }}, "✕")
+          )
+
+          /* Name */
+          , React.createElement('div', { style: { marginBottom:10 }}
+            , React.createElement('label', { style: LS}, "Название работы")
+            , React.createElement('input', { autoFocus:true, type:"text", value:newName, onChange:e=>setNewName(e.target.value),
+              placeholder:"Укладка ламината", style:IS, onKeyDown:e=>{ if(e.key==="Enter") handleAdd(); }})
+          )
+
+          /* Price + Unit row */
+          , React.createElement('div', { style: { display:"flex", gap:10, marginBottom:10 }}
+            , React.createElement('div', { style: { flex:2 }}
+              , React.createElement('label', { style: LS}, "Цена (₽/ед.)")
+              , React.createElement('input', { type:"number", value:newPrice, onChange:e=>setNewPrice(e.target.value), placeholder:"1200", style:IS})
+            )
+            , React.createElement('div', { style: { flex:1 }}
+              , React.createElement('label', { style: LS}, "Ед. изм.")
+              , React.createElement('select', { value:newUnit, onChange:e=>setNewUnit(e.target.value), style:IS}
+                , units.map(u => React.createElement('option', { key:u }, u))
+              )
+            )
+          )
+
+          /* Stage section tags */
+          , React.createElement('div', { style: { marginBottom:14 }}
+            , React.createElement('label', { style: LS}, "Категория (этап работ)")
+            , React.createElement(SectionPicker, { selected:newSections, onChange:setNewSections})
+          )
+
+          /* Divider */
+          , React.createElement('div', { style: { height:1, background:"var(--b1)", margin:"4px 0 14px" }})
+
+          /* Optional: add to project section */
+          , React.createElement('div', { style: { background:"var(--acc3)", borderRadius:12, padding:"10px 12px", marginBottom:12, border:"1.5px solid rgba(124,111,255,0.2)" }}
+            , React.createElement('div', { style: { fontSize:11, fontWeight:800, color:"var(--acc2)", marginBottom:8, textTransform:"uppercase", letterSpacing:"0.05em" }},
+              "⚡ Сразу добавить в смету (необязательно)")
+            , React.createElement('div', { style: { marginBottom:8 }}
+              , React.createElement('label', { style: { ...LS, color:"var(--tx3)" }}, "Проект")
+              , React.createElement('select', {
+                  value: newToPid,
+                  onChange: e => {
+                    setNewToPid(e.target.value);
+                    const proj = state.projects.find(p => p.id === e.target.value);
+                    setNewToSid(_optionalChain([proj, 'optionalAccess', _ => _.sections, 'optionalAccess', _ => _[0], 'optionalAccess', _ => _.id]) || "");
+                  },
+                  style: { ...IS, fontSize:13, padding:"9px 10px" }}
+                , React.createElement('option', { value:"" }, "— не добавлять —")
+                , state.projects.map(p => React.createElement('option', { key:p.id, value:p.id }, p.name))
+              )
+            )
+            , newToPid && React.createElement('div', {}
+              , React.createElement('label', { style: { ...LS, color:"var(--tx3)" }}, "Раздел сметы")
+              , React.createElement('select', { value:newToSid, onChange:e=>setNewToSid(e.target.value),
+                  style: { ...IS, fontSize:13, padding:"9px 10px" }}
+                , React.createElement('option', { value:"" }, "— выберите раздел —")
+                , (_optionalChain([state, 'access', _ => _.projects, 'access', _ => _.find, 'call', _ => _(p=>p.id===newToPid), 'optionalAccess', _ => _.sections]) || [])
+                    .map(s => React.createElement('option', { key:s.id, value:s.id }, s.name))
+              )
+            )
+          )
+
+          /* Action buttons */
+          , React.createElement('div', { style: { display:"flex", gap:8 }}
+            , React.createElement('button', {
+                onClick: () => { setShowAdd(false); setNewName(""); setNewPrice(""); setNewUnit("м²"); setNewSections([]); setNewToPid(""); setNewToSid(""); },
+                style: { flex:1, padding:"12px", background:"var(--s2)", border:"none", borderRadius:12, cursor:"pointer", fontFamily:"inherit", fontWeight:600, fontSize:13, color:"var(--tx3)" }},
+              "Отмена")
+            , React.createElement('button', {
+                onClick: handleAdd,
+                disabled: !newName.trim() || !newPrice,
+                style: { flex:2, padding:"12px", border:"none", borderRadius:12, cursor: newName.trim()&&newPrice?"pointer":"default", fontFamily:"inherit", fontWeight:800, fontSize:13,
+                  background: newName.trim()&&newPrice ? "linear-gradient(135deg,var(--acc),var(--acc2))" : "var(--s3)",
+                  color: newName.trim()&&newPrice ? "#fff" : "var(--tx3)" }},
+              newToPid && newToSid ? "Добавить + в смету ✓" : "Добавить расценку ✓")
+          )
+        )
+      )
+      , showAdd && React.createElement('div', { onClick: () => { setShowAdd(false); setNewToPid(""); setNewToSid(""); }, style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.5)", zIndex:299 }})
+
+      /* FAB — portal, always bottom-right */
+      , React.createElement(FabButton, {
+          visible: !showAdd,
+          onClick: () => setShowAdd(true),
+          color: "linear-gradient(135deg,var(--acc),var(--acc2))",
+          shadow: "0 4px 24px rgba(108,99,255,0.55)",
+          label: "Добавить расценку",
+        })
+    )
+  );
+}
+
+
+// -- Группы работ tab --------------------------------------------
+function GroupsTab({ state, dispatch }) {
+  const workGroups = state.workGroups || [];
+  const [editGroup, setEditGroup]       = useState(null);
+  const [showGroupModal, setShowGroupModal] = useState(false);
+  const [insertGroup, setInsertGroup]   = useState(null);
+  const [confirmDeleteGroup, setConfirmDeleteGroup] = useState(null);
+
+  const handleSaveGroup = (group) => {
+    if (editGroup) {
+      dispatch({ type: "UPDATE_WORK_GROUP", group });
+    } else {
+      dispatch({ type: "ADD_WORK_GROUP", group });
+    }
+    setShowGroupModal(false);
+    setEditGroup(null);
+  };
+
+  const handleInsertGroup = (pid, sid, items) => {
+    dispatch({ type: "ADD_ITEMS_BULK", pid, sid, items });
+    // Also auto-save all items to priceBook
+    items.forEach(item => {
+      if (item.price > 0) dispatch({ type: "UPDATE_PRICE_BOOK", name: item.name, price: item.price, unit: item.unit || "м²" });
+    });
+  };
+
+  return (
+    React.createElement('div', { style: { padding: "16px", paddingBottom: 20 }}
+      /* Info banner */
+      , React.createElement('div', { style: { background:"linear-gradient(135deg,#eff6ff,#e0f2fe)", borderRadius:14, padding:"14px 16px", marginBottom:16, border:"1px solid #bfdbfe" }}
+        , React.createElement('div', { style: { fontSize:13, fontWeight:700, color:"#1e40af", marginBottom:4 }}, "⚡ Группы работ"  )
+        , React.createElement('div', { style: { fontSize:12, color:"#64748b", lineHeight:1.6 }}, "Создайте набор работ, который часто повторяется. Все работы в группе "
+                    , React.createElement('b', {}, "автоматически добавляются в Расценки"   ), ". Одним нажатием вставьте всю группу в смету."
+        )
+      )
+
+      /* Group cards */
+      , workGroups.length === 0 && (
+        React.createElement('div', { style: { textAlign:"center", padding:"36px 0", color:"#94a3b8" }}
+          , React.createElement('div', { style: { fontSize:44, marginBottom:10 }}, "⚡")
+          , React.createElement('div', { style: { fontWeight:700, color:"#64748b", marginBottom:6 }}, "Нет групп работ"  )
+          , React.createElement('div', { style: { fontSize:13 }}, "Создайте первую группу — например «Черновые полы» или «Ванная под ключ»"          )
+        )
+      )
+
+      , workGroups.map(group => {
+        const groupTotal = group.items.reduce((s, i) => s + ((i.qty||0) * (i.price||0)), 0);
+        return (
+          React.createElement(SwipeRow, {
+            key2: group.id,
+            onSwipeLeft: () => setConfirmDeleteGroup(group.id),
+            threshold: 80,
+            style: { marginBottom:12 }}
+          , React.createElement('div', { style: { background:"var(--s1)", borderRadius:16, overflow:"hidden", boxShadow:"0 2px 8px rgba(0,0,0,0.07)" }}
+            /* Header */
+            , React.createElement('div', { style: { background:`linear-gradient(135deg,${group.color}18,${group.color}08)`, padding:"14px 16px", borderBottom:`2px solid ${group.color}22`, display:"flex", alignItems:"center", gap:12 }}
+              , React.createElement('div', { style: { width:44, height:44, borderRadius:12, background:group.color+"22", display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0, border:`2px solid ${group.color}33` }}
+                , group.icon
+              )
+              , React.createElement('div', { style: { flex:1 }}
+                , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:14, fontWeight:800, color:"#1e293b" }}, group.name)
+                , React.createElement('div', { style: { fontSize:12, color:"#94a3b8", marginTop:2 }}, group.items.length, " работ • "   , fmt(groupTotal), " / ед."  )
+              )
+              , React.createElement('div', { style: { display:"flex", gap:6 }}
+                , React.createElement('button', { onClick: () => { setEditGroup(group); setShowGroupModal(true); },
+                  style: { background:"#f1f5f9", border:"none", borderRadius:8, padding:"6px 8px", cursor:"pointer" }}
+                  , React.createElement(Icon, { name: "edit", size: 14, color: "#64748b"} )
+                )
+                , React.createElement('button', { onClick: () => setConfirmDeleteGroup(group.id),
+                  style: { background:"#fef2f2", border:"none", borderRadius:8, padding:"6px 8px", cursor:"pointer" }}
+                  , React.createElement(Icon, { name: "trash", size: 14, color: "#ef4444"} )
+                )
+              )
+            )
+
+            /* Items */
+            , React.createElement('div', { style: { padding:"10px 16px" }}
+              , (group.items||[]).map((item, idx) => (
+                React.createElement('div', { key: item.id, style: { display:"flex", alignItems:"center", gap:8, padding:"5px 0", borderBottom:idx<group.items.length-1?"1px solid #f8fafc":"none" }}
+                  , React.createElement('div', { style: { width:6, height:6, borderRadius:"50%", background:group.color, flexShrink:0 }} )
+                  , React.createElement('div', { style: { flex:1, fontSize:12, color:"#475569", fontWeight:500 }}, item.name)
+                  , React.createElement('div', { style: { fontSize:11, color:"#94a3b8" }}, item.qty, " " , item.unit)
+                  , React.createElement('div', { style: { fontSize:12, fontWeight:700, color:"#1e293b", width:65, textAlign:"right" }}, fmt(item.qty*item.price))
+                  /* priceBook sync badge */
+                  , (state.priceBook||{})[item.name] && (
+                    React.createElement('span', { style: { fontSize:9, background:"#fffbeb", color:"#b45309", border:"1px solid #fde68a", borderRadius:4, padding:"1px 5px", fontWeight:700 }}, "МЦ")
+                  )
+                )
+              ))
+            )
+
+            /* Action button */
+            , React.createElement('div', { style: { padding:"10px 16px", borderTop:"1px solid #f1f5f9" }}
+              , React.createElement('button', { onClick: () => setInsertGroup(group),
+                style: { width:"100%", padding:"11px", border:"none", borderRadius:12, cursor:"pointer",
+                  background:`linear-gradient(135deg,${group.color},${group.color}cc)`,
+                  color:"#fff", fontWeight:800, fontSize:13, fontFamily:"inherit",
+                  display:"flex", alignItems:"center", justifyContent:"center", gap:8,
+                  boxShadow:`0 3px 12px ${group.color}44` }}
+                , React.createElement('span', { style: { fontSize:16 }}, "⚡"), " Добавить группу в смету"
+              )
+            )
+          )
+          )
+        );
+      })
+
+      , React.createElement('button', { onClick: () => { setEditGroup(null); setShowGroupModal(true); },
+        style: { width:"100%", background:"var(--s1)", border:"2px dashed var(--b2)", borderRadius:16, padding:"16px",
+          cursor:"pointer", color:"var(--tx2)", fontWeight:700, fontSize:14, fontFamily:"inherit",
+          display:"flex", alignItems:"center", justifyContent:"center", gap:8 }}
+        , React.createElement(Icon, { name: "plus", size: 18, color: "var(--acc)"} ), " Создать группу работ"
+      )
+
+      /* FAB — portal */
+      , React.createElement(FabButton, {
+          visible: true,
+          onClick: function() { setEditGroup(null); setShowGroupModal(true); },
+          color: "linear-gradient(135deg,#f59e0b,#d97706)",
+          shadow: "0 4px 24px rgba(245,158,11,0.55)",
+          label: "Добавить группу работ",
+        })
+      , React.createElement(ConfirmSheet, {
+        open: !!confirmDeleteGroup,
+        title: "Удалить группу работ?"  ,
+        subtitle: `«${_optionalChain([(state.workGroups||[]), 'access', _254 => _254.find, 'call', _255 => _255(g=>g.id===confirmDeleteGroup), 'optionalAccess', _256 => _256.name])||""}»`,
+        danger: true,
+        onCancel: () => setConfirmDeleteGroup(null),
+        onConfirm: () => { dispatch({ type:"DELETE_WORK_GROUP", id:confirmDeleteGroup }); setConfirmDeleteGroup(null); }}
+      )
+      , React.createElement(WorkGroupEditModal, {
+        open: showGroupModal,
+        onClose: () => { setShowGroupModal(false); setEditGroup(null); },
+        onSave: handleSaveGroup,
+        initial: editGroup,
+        priceBook: state.priceBook || {},
+        dispatch: dispatch}
+      )
+
+      , React.createElement(InsertGroupModal, {
+        open: !!insertGroup,
+        onClose: () => setInsertGroup(null),
+        group: insertGroup,
+        projects: state.projects,
+        onInsert: handleInsertGroup}
+      )
+    )
+  );
+}
+
+// ==================== SUBSCRIPTION SCREEN ====================
+const SUB_PLANS_DATA = [
+  {
+    id: "free",
+    name: { ru:"Бесплатно", en:"Free", uk:"Безкоштовно", kz:"Тегін", zh:"免费" },
+    icon: "🆓", color: "#6b7280",
+    features: {
+      ru:["1 смета в месяц","Реклама при входе (3–4 сек)","Все калькуляторы","Справочник материалов","1 устройство"],
+      en:["1 estimate per month","Ad on startup (3–4 sec)","All calculators","Materials catalog","1 device"],
+      uk:["1 кошторис на місяць","Реклама при вході","Всі калькулятори","Довідник матеріалів","1 пристрій"],
+      kz:["Айына 1 смета","Кіру кезіндегі жарнама","Барлық калькуляторлар","Материалдар анықтамалығы","1 құрылғы"],
+      zh:["每月1个估算","启动广告(3-4秒)","所有计算器","材料目录","1台设备"],
+    },
+  },
+  {
+    id: "min",
+    name: { ru:"Минимум", en:"Minimum", uk:"Мінімум", kz:"Минимум", zh:"基础版" },
+    icon: "🔹", color: "#0891b2",
+    tiers: [
+      { period:"month",  priceRub:150,  label:{ru:"1 месяц",   en:"1 month",   uk:"1 місяць",  kz:"1 ай",  zh:"1个月"}, save:null },
+      { period:"3month", priceRub:350,  label:{ru:"3 месяца",  en:"3 months",  uk:"3 місяці",  kz:"3 ай",  zh:"3个月"}, save:"22%" },
+      { period:"6month", priceRub:600,  label:{ru:"6 месяцев", en:"6 months",  uk:"6 місяців", kz:"6 ай",  zh:"6个月"}, save:"33%" },
+      { period:"year",   priceRub:1000, label:{ru:"1 год",     en:"1 year",    uk:"1 рік",     kz:"1 жыл", zh:"1年"},   save:"44%" },
+    ],
+    features: {
+      ru:["До 5 смет в месяц","Без рекламы","Экспорт/печать: 5 шт. в месяц","Все калькуляторы","1 устройство"],
+      en:["Up to 5 estimates/month","No ads","Export/print: 5 per month","All calculators","1 device"],
+      uk:["До 5 кошторисів на місяць","Без реклами","Експорт/друк: 5 шт. на місяць","Всі калькулятори","1 пристрій"],
+      kz:["Айына 5 сметаға дейін","Жарнамасыз","Экспорт/басып шығару: айына 5","Барлық калькуляторлар","1 құрылғы"],
+      zh:["每月最多5个估算","无广告","每月导出/打印5次","所有计算器","1台设备"],
+    },
+  },
+  {
+    id: "pro", popular: true,
+    name: { ru:"Про", en:"Pro", uk:"Про", kz:"Про", zh:"专业版" },
+    icon: "⭐", color: "#4f46e5",
+    tiers: [
+      { period:"month",  priceRub:230,  label:{ru:"1 месяц",   en:"1 month",   uk:"1 місяць",  kz:"1 ай",    zh:"1个月"}, save:null },
+      { period:"3month", priceRub:530,  label:{ru:"3 месяца",  en:"3 months",  uk:"3 місяці",  kz:"3 ай",    zh:"3个月"}, save:"23%" },
+      { period:"6month", priceRub:900,  label:{ru:"6 месяцев", en:"6 months",  uk:"6 місяців", kz:"6 ай",    zh:"6个月"}, save:"35%" },
+      { period:"year",   priceRub:1500, label:{ru:"1 год",     en:"1 year",    uk:"1 рік",     kz:"1 жыл",   zh:"1年"},   save:"46%" },
+    ],
+    features: {
+      ru:["Сметы без ограничений","Без рекламы","Синхронизация до 4 устройств","Экспорт PDF и Excel без лимита","Приоритетная поддержка"],
+      en:["Unlimited estimates","No ads","Sync up to 4 devices","Unlimited PDF & Excel export","Priority support"],
+      uk:["Кошториси без обмежень","Без реклами","Синхронізація до 4 пристроїв","Необмежений експорт PDF та Excel","Пріоритетна підтримка"],
+      kz:["Шектеусіз смета","Жарнамасыз","4 құрылғыға дейін синхрондау","Шектеусіз PDF және Excel экспорты","Басым қолдау"],
+      zh:["无限估算","无广告","最多4台设备同步","无限PDF和Excel导出","优先支持"],
+    },
+  },
+  {
+    id: "proplus",
+    name: { ru:"Про+", en:"Pro+", uk:"Про+", kz:"Про+", zh:"专业+版" },
+    icon: "🚀", color: "#059669",
+    tiers: [
+      { period:"month", priceRub:1500,  label:{ru:"1 месяц", en:"1 month", uk:"1 місяць", kz:"1 ай", zh:"1个月"}, save:null },
+      { period:"year",  priceRub:15000, label:{ru:"1 год",   en:"1 year",  uk:"1 рік",    kz:"1 жыл",zh:"1年"},   save:"17%" },
+    ],
+    features: {
+      ru:["Всё из Про","Синхронизация до 20 устройств","Командная работа","Белая метка (ваш логотип)","API интеграция","Персональный менеджер"],
+      en:["Everything in Pro","Sync up to 20 devices","Team collaboration","White label (your logo)","API integration","Personal manager"],
+      uk:["Все з Про","Синхронізація до 20 пристроїв","Командна робота","Біла мітка (ваш логотип)","API інтеграція","Персональний менеджер"],
+      kz:["Про-дағының бәрі","20 құрылғыға дейін синхрондау","Команда жұмысы","Ақ жапсырма","API интеграция","Жеке менеджер"],
+      zh:["专业版全部功能","最多20台设备同步","团队协作","白标(您的Logo)","API集成","专属客服"],
+    },
+  },
+];
+
+
+function SubscriptionScreen({ setTab, lang, subPlan: subPlanProp, setSubPlan: setSubPlanProp }) {
+  const L = T[lang] || T.ru;
+  const cur = CURRENCY[lang] || CURRENCY.ru;
+  const fmtSub = (rubPrice) => {
+    const c = CURRENCY[lang] || CURRENCY.ru;
+    const val = Math.round(parseFloat(rubPrice) * c.rate);
+    return c.pos === "before" ? c.sym + val.toLocaleString("ru-RU") : val.toLocaleString("ru-RU") + " " + c.sym;
+  };
+  const [activePlan, setActivePlan] = useState(subPlanProp || "free");
+  // Keep activePlan in sync with prop
+  useEffect(function() {
+    if (subPlanProp && subPlanProp !== activePlan) setActivePlan(subPlanProp);
+  }, [subPlanProp]);
+  const [selectedTier, setSelectedTier] = useState({});
+
+  return (
+    React.createElement('div', { style: { minHeight:"100%", background:"var(--bg)", display:"flex", flexDirection:"column", paddingBottom:80 }}
+      /* Header */
+      , React.createElement('div', { style: { background:"var(--hdr-bg)", padding:"52px 16px 20px", flexShrink:0 }}
+        , React.createElement('button', { onClick: ()=>setTab("account"), style: { background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.25)", borderRadius:10, padding:"6px 14px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, marginBottom:16, fontFamily:"inherit" }}
+          , React.createElement(Icon, { name: "back", size: 14, color: "var(--hdr-tx)"} )
+          , React.createElement('span', { style: { color:"var(--hdr-tx)", fontSize:12, fontWeight:700 }}, L.accountNav)
+        )
+        , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:20, fontWeight:900, color:"var(--hdr-tx)", marginBottom:4 }}, L.subTitle)
+        , React.createElement('div', { style: { fontSize:13, color:"var(--hdr-tx2)" }}, L.subPeriod)
+      )
+
+      /* Plans */
+      , React.createElement('div', { style: { flex:1, overflowY:"auto", padding:"16px 16px 40px" }}
+        , SUB_PLANS_DATA.map(function(plan) {
+          const isCurrent = activePlan === plan.id;
+          const tier = selectedTier[plan.id];
+          return (
+            React.createElement('div', { key: plan.id, style: { marginBottom:16, borderRadius:20,
+              border: isCurrent ? "2.5px solid "+plan.color : "1.5px solid var(--b1)",
+              overflow:"hidden",
+              boxShadow: isCurrent ? "0 8px 32px "+plan.color+"44" : "0 2px 8px rgba(0,0,0,0.06)",
+              transition:"all 0.2s" }}
+
+              /* Plan header */
+              , React.createElement('div', { style: { background: isCurrent ? "linear-gradient(135deg,"+plan.color+","+plan.color+"bb)" : plan.color+"12",
+                padding:"18px 20px", display:"flex", alignItems:"center", gap:14 }}
+                , React.createElement('div', { style: { width:56, height:56, borderRadius:16,
+                  background: isCurrent?"rgba(255,255,255,0.2)":plan.color+"20",
+                  display:"flex", alignItems:"center", justifyContent:"center", fontSize:28, flexShrink:0 }}
+                  , plan.icon
+                )
+                , React.createElement('div', { style: { flex:1 }}
+                  , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:8, marginBottom:4 }}
+                    , React.createElement('span', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900,
+                      color: isCurrent?"#fff":plan.color }}, plan.name[lang]||plan.name.ru||plan.name)
+                    , plan.popular && React.createElement('span', { style: { fontSize:10, fontWeight:800, padding:"3px 9px",
+                      borderRadius:7, background: isCurrent?"rgba(255,255,255,0.3)":plan.color,
+                      color:"#fff" }}, "★ ХИТ" )
+                    , isCurrent && React.createElement('span', { style: { fontSize:10, fontWeight:800, padding:"3px 9px",
+                      borderRadius:7, background:"rgba(255,255,255,0.25)", color:"#fff" }}, "✓ АКТИВЕН" )
+                  )
+                  , isCurrent
+                    ? React.createElement('span', { style: { fontSize:12, fontWeight:600, color:"rgba(255,255,255,0.85)" }}, "Ваш текущий план"  )
+                    : plan.tiers
+                      ? React.createElement('span', { style: { fontSize:13, color:plan.color+"cc" }}, "от " , fmtSub(plan.tiers[0].priceRub), " / "  , plan.tiers[0].label[lang]||plan.tiers[0].label.ru)
+                      : React.createElement('span', { style: { fontSize:13, color:plan.color+"99" }}, "Бесплатно")
+                  
+                )
+              )
+
+              /* Features list */
+              , React.createElement('div', { style: { padding:"14px 20px", background:"var(--s1)" }}
+                , (plan.features[lang]||plan.features.ru).map(function(f,i){ return (
+                  React.createElement('div', { key: i, style: { display:"flex", alignItems:"flex-start", gap:10, padding:"6px 0",
+                    borderBottom: i<plan.features.length-1?"1px solid var(--b1)":"none" }}
+                    , React.createElement('div', { style: { width:20, height:20, borderRadius:6,
+                      background:plan.color+"18", display:"flex", alignItems:"center", justifyContent:"center",
+                      flexShrink:0, marginTop:2 }}
+                      , React.createElement('span', { style: { color:plan.color, fontSize:12, fontWeight:800 }}, "✓")
+                    )
+                    , React.createElement('span', { style: { fontSize:13, color:"var(--tx2)", lineHeight:1.55 }}, f)
+                  )
+                ); })
+              )
+
+              /* Tiers / subscribe button */
+              , plan.tiers && (
+                React.createElement('div', { style: { padding:"14px 20px 18px", background:"var(--s1)", borderTop:"1px solid var(--b1)" }}
+                  , !isCurrent && (
+                    React.createElement(React.Fragment, null
+                      , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.08em", marginBottom:10 }}, L.subPeriod)
+                      , React.createElement('div', { style: { display:"flex", flexWrap:"wrap", gap:8, marginBottom:12 }}
+                        , plan.tiers.map(function(t){ return (
+                          React.createElement('button', { key: t.period,
+                            onClick: function(){ setSelectedTier(function(prev){ return {...prev,[plan.id]:t.period}; }); },
+                            style: { flex:"1 1 44%", padding:"12px 8px", borderRadius:13,
+                              border: (selectedTier[plan.id]||plan.tiers[0].period)===t.period
+                                ? "2.5px solid "+plan.color : "1.5px solid var(--b1)",
+                              background: (selectedTier[plan.id]||plan.tiers[0].period)===t.period
+                                ? plan.color+"12" : "var(--s2)",
+                              cursor:"pointer", fontFamily:"inherit", textAlign:"center", transition:"all 0.12s" }}
+                            , React.createElement('div', { style: { fontSize:17, fontWeight:900, color:plan.color }}, fmtSub(t.priceRub))
+                            , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", marginTop:2 }}, t.label[lang]||t.label.ru||t.label)
+                            , t.save && React.createElement('div', { style: { fontSize:10, fontWeight:800, color:"var(--green)", marginTop:3 }}, "−", t.save)
+                          )
+                        ); })
+                      )
+                      , React.createElement('button', { onClick: function(){ var newPlan = plan.id;
+                        setActivePlan(newPlan);
+                        if (typeof setSubPlanProp === "function") setSubPlanProp(newPlan);
+                        try { localStorage.setItem("sm_subplan", newPlan); } catch(e) {} },
+                        style: { width:"100%", padding:"14px", borderRadius:14, border:"none",
+                          background:"linear-gradient(135deg,"+plan.color+","+plan.color+"bb)",
+                          color:"#fff", fontWeight:900, fontSize:15, cursor:"pointer", fontFamily:"inherit",
+                          boxShadow:"0 4px 18px "+plan.color+"55" }}
+                        , L.subConnect, " " , plan.name[lang]||plan.name.ru||plan.name
+                      )
+                    )
+                  )
+                  , isCurrent && (
+                    React.createElement('button', { onClick: function(){ setActivePlan("free"); },
+                      style: { width:"100%", padding:"11px", borderRadius:12, border:"1.5px solid var(--b1)",
+                        background:"var(--s2)", cursor:"pointer", fontFamily:"inherit",
+                        fontSize:13, fontWeight:700, color:"var(--tx3)" }}
+                      , L.subCancel
+                    )
+                  )
+                )
+              )
+              , plan.id === "free" && !isCurrent && (
+                React.createElement('div', { style: { padding:"12px 20px 16px", background:"var(--s1)", borderTop:"1px solid var(--b1)" }}
+                  , React.createElement('button', { onClick: function(){ setActivePlan("free"); },
+                    style: { width:"100%", padding:"11px", borderRadius:12, border:"1.5px solid var(--b1)",
+                      background:"var(--s2)", cursor:"pointer", fontFamily:"inherit",
+                      fontSize:13, fontWeight:700, color:"var(--tx3)" }}
+                    , L.subToFree
+                  )
+                )
+              )
+            )
+          );
+        })
+
+        /* Legal note */
+        , React.createElement('div', { style: { textAlign:"center", padding:"8px 0 20px", color:"var(--tx3)", fontSize:11, lineHeight:1.6 }}
+          , L.subLegal
+        )
+      )
+    )
+  );
+}
+
+// ==================== ACCOUNT SCREEN ====================
+// ==========================================================
+// LANGUAGE SYSTEM
+// ==========================================================
+const LANGUAGES = [
+  { id:"ru", name:"Russian", native:"Русский" },
+];
+
+// Currency config per language
+const CURRENCY = {
+  ru: { sym:"₽", code:"RUB", rate:1, pos:"after" },
+};
+
+// Format money for a given language
+function fmtMoney(rubAmount, lang) {
+  const cur = CURRENCY[lang] || CURRENCY.ru;
+  const val = Math.round(rubAmount * cur.rate);
+  const formatted = val.toLocaleString("ru-RU");
+  return cur.pos === "before" ? cur.sym + formatted : formatted + " " + cur.sym;
+}
+
+const T = {
+  ru: {
+    appName:"СтройСмета", projects:"Проекты", prices:"Мои цены",
+    calc:"Расчёт", catalog:"Справочник", account:"Аккаунт",
+    newProject:"Новая смета", addProject:"+ Новая смета работ",
+    langTitle:"Выберите язык", langSub:"Можно изменить позже в Аккаунте",
+    langBtn:"Продолжить",
+    subTitle:"Подписка", subFree:"Бесплатно", subPro:"Про", subProPlus:"Про+",
+    subCurrent:"Текущий план", subMonth:"мес", subMonths3:"3 мес",
+    subMonths6:"6 мес", subYear:"год",
+    subSelect:"Выбрать", subActive:"Активен", subBuy:"Оформить подписку",
+    subConnect:"Подключить", subCancel:"Отменить подписку",
+    subToFree:"Перейти на бесплатный", subPeriod:"Выберите период",
+    themeTitle:"Тема оформления", dark:"Тёмная", light:"Светлая",
+    min:"Минимализм", classic:"Классика",
+    currencyLabel:"Валюта", noResults:"Ничего не найдено",
+    catEmptyTitle:"Каталог материалов",
+    catEmptyMsg:"Встроенный каталог доступен только на русском языке. Добавьте свои материалы через + кнопку.",
+    language:"Язык", profile:"Профиль", company:"Компания",
+    subscription:"Подписка", currentPlan:"Текущий план",
+    home:"Проекты", pricesNav:"Мои цены", calcNav:"Расчёт",
+    catalogNav:"Справочник", accountNav:"Аккаунт",
+    materials_tab:"Материалы", sets_tab:"Наборы",
+    myPrices:"Мои цены", priceBook:"Расценки", workGroups:"Группы работ",
+    calculator:"Калькулятор", calcMaterials:"Расчёт материалов",
+    sections:"По разделам", rooms:"По помещениям", total:"Итого",
+    delete:"Удалить", edit:"Редактировать", cancel:"Отмена",
+    save:"Сохранить", add:"Добавить", back:"Назад",
+    addSection:"+ Добавить раздел", addWork:"+ Добавить работу",
+    addRoom:"+ Помещение", noProjects:"Нет проектов",
+    estimate:"Смета работ", materials:"С материалами",
+    subLegal:"Оплата через Google Play / App Store. Подписка продлевается автоматически.",
+  },
+  en: {
+    appName:"ConstructEst", projects:"Projects", prices:"My Prices",
+    calc:"Calc", catalog:"Catalog", account:"Account",
+    newProject:"New Estimate", addProject:"+ New Estimate",
+    langTitle:"Choose Language", langSub:"You can change it later in Account",
+    langBtn:"Continue",
+    subTitle:"Subscription", subFree:"Free", subPro:"Pro", subProPlus:"Pro+",
+    subCurrent:"Current plan", subMonth:"mo", subMonths3:"3 mo",
+    subMonths6:"6 mo", subYear:"year",
+    subSelect:"Select", subActive:"Active", subBuy:"Subscribe",
+    subConnect:"Subscribe to", subCancel:"Cancel subscription",
+    subToFree:"Switch to Free", subPeriod:"Choose period",
+    themeTitle:"App Theme", dark:"Dark", light:"Light",
+    min:"Minimal", classic:"Classic",
+    currencyLabel:"Currency", noResults:"Nothing found",
+    catEmptyTitle:"Material Catalog",
+    catEmptyMsg:"The built-in catalog is in Russian only. Add your own materials via the + button.",
+    language:"Language", profile:"Profile", company:"Company",
+    subscription:"Subscription", currentPlan:"Current plan",
+    home:"Projects", pricesNav:"Prices", calcNav:"Calc",
+    catalogNav:"Catalog", accountNav:"Account",
+    materials_tab:"Materials", sets_tab:"Sets",
+    myPrices:"My Prices", priceBook:"Price Book", workGroups:"Work Groups",
+    calculator:"Calculator", calcMaterials:"Material Calc",
+    sections:"By Sections", rooms:"By Rooms", total:"Total",
+    delete:"Delete", edit:"Edit", cancel:"Cancel",
+    save:"Save", add:"Add", back:"Back",
+    addSection:"+ Add Section", addWork:"+ Add Work",
+    addRoom:"+ Room", noProjects:"No projects",
+    estimate:"Work Estimate", materials:"With Materials",
+    subLegal:"Payment via Google Play / App Store. Subscription renews automatically.",
+  },
+  kz: {
+    appName:"ҚұрылысСмета", projects:"Жобалар", prices:"Менің бағам",
+    calc:"Есептеу", catalog:"Анықтамалық", account:"Аккаунт",
+    newProject:"Жаңа смета", addProject:"+ Жаңа смета",
+    langTitle:"Тілді таңдаңыз", langSub:"Кейін Аккаунтта өзгертуге болады",
+    langBtn:"Жалғастыру",
+    subTitle:"Жазылым", subFree:"Тегін", subPro:"Про", subProPlus:"Про+",
+    subCurrent:"Ағымдағы жоспар", subMonth:"ай", subMonths3:"3 ай",
+    subMonths6:"6 ай", subYear:"жыл",
+    subSelect:"Таңдау", subActive:"Белсенді", subBuy:"Жазылымды рәсімдеу",
+    subConnect:"Қосылу", subCancel:"Жазылымды болдырмау",
+    subToFree:"Тегінге ауысу", subPeriod:"Мерзімді таңдаңыз",
+    themeTitle:"Безендіру тақырыбы", dark:"Қараңғы", light:"Жарық",
+    min:"Минимализм", classic:"Классика",
+    currencyLabel:"Валюта", noResults:"Ештеңе табылмады",
+    catEmptyTitle:"Материалдар каталогы",
+    catEmptyMsg:"Кірістірілген каталог тек орыс тілінде. + батырмасы арқылы өз материалдарыңызды қосыңыз.",
+    language:"Тіл", profile:"Профиль", company:"Компания",
+    subscription:"Жазылым", currentPlan:"Ағымдағы жоспар",
+    home:"Жобалар", pricesNav:"Бағалар", calcNav:"Есептеу",
+    catalogNav:"Анықтамалық", accountNav:"Аккаунт",
+    materials_tab:"Материалдар", sets_tab:"Жиынтықтар",
+    myPrices:"Менің бағам", priceBook:"Бағалар кітабы", workGroups:"Жұмыс топтары",
+    calculator:"Калькулятор", calcMaterials:"Материалдарды есептеу",
+    sections:"Бөлімдер бойынша", rooms:"Бөлмелер бойынша", total:"Барлығы",
+    delete:"Жою", edit:"Өңдеу", cancel:"Болдырмау",
+    save:"Сақтау", add:"Қосу", back:"Артқа",
+    addSection:"+ Бөлім қосу", addWork:"+ Жұмыс қосу",
+    addRoom:"+ Бөлме", noProjects:"Жоба жоқ",
+    estimate:"Жұмыс сметасы", materials:"Материалдармен",
+    subLegal:"Google Play / App Store арқылы төлем. Жазылым автоматты жаңартылады.",
+  },
+};
+const t = (lang, key) => (T[lang]||T.ru)[key] || T.ru[key] || key;
+
+// Currency config per language
+const CURRENCIES = {
+  ru: { symbol:"₽", code:"RUB", rate:1, pos:"after" },
+};
+// Format money in the user's currency
+const fmtCurrency = (rubAmount) => {
+  const amount = Math.round(rubAmount);
+  return amount.toLocaleString("ru-RU") + "\u00a0₽";
+};
+
+// Language selector full-screen (shown on first launch)
+// ===============================================================
+
+
+// ═══════════════════════════════════════════════════════════════
+//  CONTACT MODAL — sends email to sstroysmeta@gmail.com
+//  Uses mailto: fallback (works without backend)
+//  For real sending integrate EmailJS: https://www.emailjs.com
+// ═══════════════════════════════════════════════════════════════
+function ContactModal({ open, onClose }) {
+  const [name,    setName]    = useState("");
+  const [contact, setContact] = useState("");
+  const [subject, setSubject] = useState("question");
+  const [message, setMessage] = useState("");
+  const [sending, setSending] = useState(false);
+  const [sent,    setSent]    = useState(false);
+  const [error,   setError]   = useState("");
+
+  useEffect(function(){ if (!open) { setSent(false); setError(""); setSending(false); } }, [open]);
+
+  if (!open) return null;
+
+  const SUBJECTS = [
+    { id:"question", label:"❓ Вопрос по работе приложения" },
+    { id:"bug",      label:"🐛 Нашёл ошибку / баг" },
+    { id:"suggest",  label:"💡 Предложение / идея" },
+    { id:"billing",  label:"💳 Вопрос по оплате / подписке" },
+    { id:"other",    label:"📋 Другое" },
+  ];
+
+  const IS = {
+    width:"100%", padding:"12px 14px", borderRadius:12,
+    border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)",
+    fontSize:14, fontFamily:"inherit", outline:"none", boxSizing:"border-box",
+  };
+
+  const canSend = contact.trim().length > 3 && message.trim().length > 10;
+
+  const handleSend = function() {
+    if (!canSend) return;
+    setSending(true);
+    setError("");
+
+    var subjectLabel = (SUBJECTS.find(function(s){ return s.id === subject; }) || SUBJECTS[0]).label;
+    var emailBody = "Тема: " + subjectLabel
+      + "\n\nИмя: " + (name || "не указано")
+      + "\nКонтакт: " + contact
+      + "\n\nСообщение:\n" + message
+      + "\n\n---\nОтправлено из приложения СтройСмета";
+
+    // Primary: try mailto (opens email client)
+    var mailtoUrl = "mailto:sstroysmeta@gmail.com"
+      + "?subject=" + encodeURIComponent("[СтройСмета] " + subjectLabel)
+      + "&body=" + encodeURIComponent(emailBody);
+
+    try {
+      window.open(mailtoUrl, "_blank");
+      setSending(false);
+      setSent(true);
+    } catch(e) {
+      setError("Не удалось открыть почтовый клиент. Напишите напрямую: sstroysmeta@gmail.com");
+      setSending(false);
+    }
+  };
+
+  return (
+    <div style={{ position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", zIndex:700,
+      display:"flex", flexDirection:"column", justifyContent:"flex-end" }}>
+      <div style={{ background:"var(--s1)", borderRadius:"24px 24px 0 0", width:"100%",
+        maxHeight:"92vh", display:"flex", flexDirection:"column" }}>
+
+        {/* Header */}
+        <div style={{ padding:"18px 20px 0", flexShrink:0 }}>
+          <div style={{ width:40, height:4, borderRadius:2, background:"var(--b2)", margin:"0 auto 18px" }} />
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:16 }}>
+            <div>
+              <div style={{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)" }}>Связаться с нами</div>
+              <div style={{ fontSize:12, color:"var(--tx3)", marginTop:2 }}>Ответим в течение 24 часов</div>
+            </div>
+            <button onClick={onClose} style={{ background:"var(--s2)", border:"none", borderRadius:10,
+              width:36, height:36, cursor:"pointer", fontSize:15, color:"var(--tx3)", fontFamily:"inherit" }}>✕</button>
+          </div>
+        </div>
+
+        {/* Scrollable body */}
+        <div style={{ flex:1, overflowY:"auto", padding:"0 20px 40px" }}>
+
+          {sent ? (
+            <div style={{ textAlign:"center", padding:"40px 16px" }}>
+              <div style={{ fontSize:56, marginBottom:16 }}>✅</div>
+              <div style={{ fontFamily:"'Unbounded',sans-serif", fontSize:17, fontWeight:900,
+                color:"var(--tx)", marginBottom:10 }}>Сообщение отправлено!</div>
+              <div style={{ fontSize:14, color:"var(--tx2)", lineHeight:1.65, marginBottom:20 }}>
+                Откроется ваш почтовый клиент с готовым письмом. Отправьте его — и мы ответим в течение 24 часов.
+              </div>
+              <div style={{ background:"rgba(79,70,229,0.08)", border:"1.5px solid rgba(79,70,229,0.2)",
+                borderRadius:14, padding:14, marginBottom:20, fontSize:13, color:"var(--tx2)" }}>
+                Если почтовый клиент не открылся — напишите напрямую:
+                <div style={{ fontSize:15, fontWeight:800, color:"var(--acc)", marginTop:6 }}>
+                  службу поддержки СтройСмета
+                </div>
+              </div>
+              <button onClick={function(){ setSent(false); setMessage(""); }}
+                style={{ padding:"12px 28px", borderRadius:12, border:"1.5px solid var(--b1)",
+                  background:"var(--s2)", color:"var(--tx3)", fontSize:13,
+                  cursor:"pointer", fontFamily:"inherit", fontWeight:600 }}>
+                Написать ещё раз
+              </button>
+            </div>
+          ) : (
+            <div style={{ display:"flex", flexDirection:"column", gap:14 }}>
+
+              {/* Contact info */}
+              <div style={{ background:"linear-gradient(135deg,rgba(5,150,105,0.1),rgba(16,185,129,0.06))",
+                border:"1.5px solid rgba(5,150,105,0.25)", borderRadius:14, padding:14 }}>
+                <div style={{ display:"flex", alignItems:"center", gap:10 }}>
+                  <div style={{ fontSize:24, flexShrink:0 }}>📬</div>
+                  <div>
+                    <div style={{ fontSize:13, fontWeight:800, color:"var(--tx)", marginBottom:2 }}>Электронная почта</div>
+                    <div style={{ fontSize:14, fontWeight:700, color:"#059669" }}>Форма обратной связи</div>
+                  </div>
+                </div>
+              </div>
+
+              {/* Subject */}
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:"var(--tx3)",
+                  textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 }}>Тема обращения</div>
+                <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
+                  {SUBJECTS.map(function(s){ return (
+                    <button key={s.id} onClick={function(){ setSubject(s.id); }}
+                      style={{ padding:"11px 14px", borderRadius:11, textAlign:"left",
+                        border: subject===s.id ? "2px solid var(--acc)" : "1.5px solid var(--b1)",
+                        background: subject===s.id ? "var(--acc3)" : "var(--s2)",
+                        color: subject===s.id ? "var(--acc)" : "var(--tx2)",
+                        fontWeight: subject===s.id ? 700 : 500,
+                        fontSize:13, cursor:"pointer", fontFamily:"inherit" }}>
+                      {s.label}
+                    </button>
+                  ); })}
+                </div>
+              </div>
+
+              {/* Name */}
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:"var(--tx3)",
+                  textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:5 }}>Ваше имя</div>
+                <input value={name} onChange={function(e){ setName(e.target.value); }}
+                  placeholder="Иван Петров" style={IS} />
+              </div>
+
+              {/* Contact */}
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:"var(--tx3)",
+                  textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:5 }}>
+                  Email или телефон для ответа *
+                </div>
+                <input value={contact} onChange={function(e){ setContact(e.target.value); }}
+                  placeholder="you@mail.ru или +7 900 000-00-00"
+                  style={{ ...IS, border: contact.length > 0 && contact.length < 4
+                    ? "1.5px solid var(--red)" : "1.5px solid var(--b1)" }} />
+                {contact.length > 0 && contact.length < 4 && (
+                  <div style={{ fontSize:11, color:"var(--red)", marginTop:4 }}>Введите корректный контакт</div>
+                )}
+              </div>
+
+              {/* Message */}
+              <div>
+                <div style={{ fontSize:11, fontWeight:700, color:"var(--tx3)",
+                  textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:5 }}>
+                  Сообщение * <span style={{ fontWeight:400, textTransform:"none", letterSpacing:0 }}>(минимум 10 символов)</span>
+                </div>
+                <textarea value={message} onChange={function(e){ setMessage(e.target.value); }}
+                  placeholder="Опишите ваш вопрос или проблему как можно подробнее..."
+                  rows={5}
+                  style={{ ...IS, resize:"vertical", minHeight:120 }} />
+                <div style={{ fontSize:11, color: message.length >= 10 ? "var(--green)" : "var(--tx3)",
+                  marginTop:4, textAlign:"right" }}>
+                  {message.length} символов {message.length >= 10 ? "✓" : "(мин. 10)"}
+                </div>
+              </div>
+
+              {/* Error */}
+              {error && (
+                <div style={{ background:"rgba(239,68,68,0.08)", border:"1.5px solid rgba(239,68,68,0.3)",
+                  borderRadius:12, padding:12, fontSize:13, color:"var(--red)", fontWeight:600 }}>
+                  ⚠️ {error}
+                </div>
+              )}
+
+              {/* Send button */}
+              <button onClick={handleSend} disabled={!canSend || sending}
+                style={{ width:"100%", padding:"16px", borderRadius:14, border:"none",
+                  background: canSend ? "linear-gradient(135deg,#059669,#10b981)" : "var(--s3)",
+                  color: canSend ? "#fff" : "var(--tx3)",
+                  fontWeight:900, fontSize:15,
+                  cursor: canSend ? "pointer" : "default",
+                  fontFamily:"inherit",
+                  boxShadow: canSend ? "0 4px 20px rgba(5,150,105,0.35)" : "none",
+                  transition:"all 0.2s" }}>
+                {sending ? "⏳ Открываем почту..." : canSend ? "✉️ Отправить сообщение" : "Заполните обязательные поля"}
+              </button>
+
+              <div style={{ textAlign:"center", fontSize:11, color:"var(--tx3)", lineHeight:1.5 }}>
+                Нажатие откроет почтовый клиент с готовым письмом.
+                Письмо уйдёт на sstroysmeta@gmail.com
+              </div>
+
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  GUEST WARNING MODAL — shown on first open if not logged in
+// ═══════════════════════════════════════════════════════════════
+function GuestWarningModal({ onLogin, onDismiss }) {
+  return (
+    React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", zIndex:800, display:"flex", alignItems:"flex-end", justifyContent:"center" } },
+      React.createElement('div', { style: { background:"var(--s1)", borderRadius:"24px 24px 0 0", width:"100%", maxWidth:"min(480px, 95vw)", padding:"28px 24px 36px" } },
+        React.createElement('div', { style: { width:40, height:4, borderRadius:2, background:"var(--b2)", margin:"0 auto 24px" } }),
+        React.createElement('div', { style: { textAlign:"center", marginBottom:20 } },
+          React.createElement('div', { style: { fontSize:52, marginBottom:12 } }, "⚠️"),
+          React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:17, fontWeight:900, color:"var(--tx)", marginBottom:8 } },
+            "Данные не сохранятся"
+          ),
+          React.createElement('div', { style: { fontSize:14, color:"var(--tx2)", lineHeight:1.65 } },
+            "Без входа в аккаунт ваши сметы и проекты ",
+            React.createElement('span', { style: { fontWeight:700, color:"var(--red)" } }, "хранятся только в этом браузере"),
+            ". При очистке кэша или смене устройства все данные будут потеряны."
+          )
+        ),
+        React.createElement('div', { style: { background:"rgba(239,68,68,0.07)", border:"1.5px solid rgba(239,68,68,0.2)", borderRadius:14, padding:14, marginBottom:20 } },
+          React.createElement('div', { style: { fontSize:12, color:"var(--tx2)", lineHeight:1.6 } },
+            React.createElement('div', { style: { marginBottom:4 } }, "❌ ", React.createElement('strong', {}, "Без аккаунта:"), " данные только в браузере, нет синхронизации, нельзя отправить смету"),
+            React.createElement('div', {}, "✅ ", React.createElement('strong', {}, "С аккаунтом:"), " данные в облаке, синхронизация устройств, экспорт и отправка смет")
+          )
+        ),
+        React.createElement('button', { onClick: onLogin, style: { width:"100%", padding:"15px", borderRadius:14, border:"none",
+          background:"linear-gradient(135deg,#4f46e5,#6366f1)", color:"#fff",
+          fontWeight:900, fontSize:15, cursor:"pointer", fontFamily:"inherit",
+          boxShadow:"0 4px 20px rgba(79,70,229,0.35)", marginBottom:10 } },
+          "Войти / Зарегистрироваться"
+        ),
+        React.createElement('button', { onClick: onDismiss, style: { width:"100%", padding:"13px", borderRadius:12,
+          border:"1.5px solid var(--b1)", background:"transparent", color:"var(--tx3)",
+          fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } },
+          "Продолжить без входа"
+        )
+      )
+    )
+  );
+}
+
+// ── Estimate auth warning (when clicking Смета without login) ──
+function EstimateAuthWarnModal({ onLogin, onClose }) {
+  return (
+    React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", zIndex:700, display:"flex", alignItems:"flex-end", justifyContent:"center" } },
+      React.createElement('div', { style: { background:"var(--s1)", borderRadius:"24px 24px 0 0", width:"100%", maxWidth:"min(480px, 95vw)", padding:"24px 22px 36px" } },
+        React.createElement('div', { style: { width:40, height:4, borderRadius:2, background:"var(--b2)", margin:"0 auto 20px" } }),
+        React.createElement('div', { style: { textAlign:"center", marginBottom:18 } },
+          React.createElement('div', { style: { fontSize:48, marginBottom:10 } }, "🔒"),
+          React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:16, fontWeight:900, color:"var(--tx)", marginBottom:8 } },
+            "Войдите в аккаунт"
+          ),
+          React.createElement('div', { style: { fontSize:13, color:"var(--tx2)", lineHeight:1.65 } },
+            "Для просмотра, экспорта и отправки сметы необходимо войти в аккаунт. Без входа данные ",
+            React.createElement('span', { style: { color:"var(--red)", fontWeight:700 } }, "не сохраняются"),
+            " и смету нельзя отправить."
+          )
+        ),
+        React.createElement('button', { onClick: onLogin, style: { width:"100%", padding:"14px", borderRadius:13, border:"none",
+          background:"linear-gradient(135deg,#4f46e5,#6366f1)", color:"#fff",
+          fontWeight:900, fontSize:14, cursor:"pointer", fontFamily:"inherit",
+          boxShadow:"0 4px 16px rgba(79,70,229,0.3)", marginBottom:10 } },
+          "Войти / Зарегистрироваться"
+        ),
+        React.createElement('button', { onClick: onClose, style: { width:"100%", padding:"12px", borderRadius:11,
+          border:"1.5px solid var(--b1)", background:"transparent", color:"var(--tx3)",
+          fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } },
+          "Отмена"
+        )
+      )
+    )
+  );
+}
+
+// ═══════════════════════════════════════════════════════════════
+//  HELP MODAL — FAQ + Contact
+// ═══════════════════════════════════════════════════════════════
+function HelpModal({ open, onClose }) {
+  const [section, setSection] = useState(0);
+  const [name, setName] = useState("");
+  const [contact, setContact] = useState("");
+  const [message, setMessage] = useState("");
+  const [sent, setSent] = useState(false);
+
+  if (!open) return null;
+
+  const SECTIONS = [
+    {
+      icon: "🚀",
+      title: "С чего начать",
+      color: "#4f46e5",
+      content: [
+        {
+          step: "1",
+          title: "Войдите в аккаунт",
+          text: "Нажмите «Войти» в разделе Аккаунт → зарегистрируйтесь по email или телефону. Без входа данные хранятся только в браузере и могут быть потеряны при очистке кэша.",
+          tip: "💡 Зарегистрируйтесь в первую очередь — иначе все введённые данные могут пропасть.",
+        },
+        {
+          step: "2",
+          title: "Заполните профиль",
+          text: "Перейдите в «Аккаунт» → заполните название компании, ИНН, адрес, телефон и email. Загрузите логотип. Эти данные автоматически появятся в шапке каждой сметы.",
+          tip: "💡 Заполните профиль один раз — реквизиты подставятся во все сметы автоматически.",
+        },
+        {
+          step: "3",
+          title: "Добавьте помещения и размеры — это главное!",
+          text: "Создайте проект → нажмите «🏠 Помещения» → добавьте все комнаты с размерами (длина, ширина, высота). Можно загрузить фото плана и распознать автоматически кнопкой «Распознать план». Или введите размеры вручную. Приложение само посчитает площадь пола, стен и потолка.",
+          tip: "💡 Сначала помещения с размерами — только потом разделы! Без размеров нельзя автоматически рассчитать количество материалов.",
+        },
+        {
+          step: "4",
+          title: "Добавьте свои расценки",
+          text: "Перейдите в «Мои цены» → нажмите «+» → введите название работы, единицу измерения и цену. Сгруппируйте по этапам: подготовка, полы, стены, потолок и т.д. Это ваш личный прайс-лист.",
+          tip: "💡 Заполненный прайс сильно ускоряет создание смет — работы добавляются в один клик.",
+        },
+        {
+          step: "5",
+          title: "Теперь создайте смету и добавляйте работы",
+          text: "На главном экране нажмите «+ Новая смета» → введите название и адрес → нажмите «Добавить раздел». Выберите этапы работ (полы, стены, потолок...) и добавляйте позиции из прайса. Количество материалов подтянется из помещений автоматически.",
+          tip: "💡 Правильный порядок: аккаунт → профиль → помещения → расценки → разделы сметы.",
+        },
+      ],
+    },
+    {
+      icon: "📋",
+      title: "Сметы и проекты",
+      color: "#0891b2",
+      content: [
+        {
+          step: null,
+          title: "Список проектов",
+          text: "Главный экран показывает все ваши сметы с суммами и датами. Нажмите на смету чтобы открыть. Смахните карточку влево — появится кнопка удаления.",
+          tip: null,
+        },
+        {
+          step: null,
+          title: "Добавление разделов",
+          text: "Внутри проекта нажмите «Добавить раздел» → выберите тип (Работы или Материалы) → выберите этап (полы, стены, потолок, сантехника и т.д.) → отметьте нужные позиции галочками → нажмите «Добавить».",
+          tip: "💡 Разделы по этапам помогают заказчику понять за что он платит.",
+        },
+        {
+          step: null,
+          title: "Добавление позиций вручную",
+          text: "Внутри раздела нажмите «+ Добавить работу» → введите название, единицу измерения (м², шт, м.п.), количество и цену. Или выберите из своего прайс-листа нажав на иконку прайса.",
+          tip: null,
+        },
+        {
+          step: null,
+          title: "Отслеживание оплат",
+          text: "Нажмите на любую позицию в смете → введите оплаченную сумму. Приложение покажет что оплачено и что нет. В итоговой строке видно общий долг.",
+          tip: "💡 Удобно на объекте: открыли смету, отметили оплату — всё в одном месте.",
+        },
+        {
+          step: null,
+          title: "Переупорядочивание позиций",
+          text: "Зажмите и перетащите любую строку в разделе чтобы изменить порядок. Это влияет и на порядок в PDF.",
+          tip: null,
+        },
+        {
+          step: null,
+          title: "Экспорт сметы",
+          text: "В проекте нажмите кнопку «Смета» в верхней части → вкладка «Просмотр» покажет готовый документ → кнопки внизу: Печать, Экспорт PDF, Экспорт Excel. Перед экспортом проверьте и отредактируйте данные во вкладке «Данные».",
+          tip: "💡 В PDF-смете будут ваши реквизиты и логотип из Аккаунта.",
+        },
+      ],
+    },
+    {
+      icon: "🏠",
+      title: "Помещения",
+      color: "#059669",
+      content: [
+        {
+          step: null,
+          title: "Зачем добавлять помещения",
+          text: "Помещения позволяют привязать работы к конкретным комнатам. Смета тогда группируется по помещениям — заказчику понятно сколько стоит каждая комната отдельно.",
+          tip: null,
+        },
+        {
+          step: null,
+          title: "Как добавить помещение",
+          text: "В проекте нажмите плитку «🏠 Помещения» → «+ Добавить помещение» → введите название (Кухня, Спальня, Коридор...) → задайте длину, ширину и высоту в метрах. Приложение автоматически посчитает площадь пола, потолка, стен и периметр.",
+          tip: "💡 Стены считаются с вычетом дверей и окон. Укажите их количество чтобы площадь была точной.",
+        },
+        {
+          step: null,
+          title: "Нестандартные формы",
+          text: "Если комната не прямоугольная — выберите тип «Сложная форма» при создании помещения. Откроется чертёжный инструмент: нажимайте на экране ставя точки контура комнаты, приложение рассчитает площадь.",
+          tip: null,
+        },
+        {
+          step: null,
+          title: "Добавление работ в помещение",
+          text: "Откройте помещение → вкладка «Работы» → нажмите «+ Добавить» → выберите из прайс-листа или введите вручную. Работы помещения автоматически попадают в общую смету проекта.",
+          tip: "💡 Работы помещения можно синхронизировать с разделами проекта — они появятся и там и там.",
+        },
+      ],
+    },
+    {
+      icon: "📐",
+      title: "Калькулятор",
+      color: "#7c3aed",
+      content: [
+        {
+          step: null,
+          title: "6 видов расчётов",
+          text: "Перейдите на вкладку «Расчёт» → выберите тип материала вверху: Плитка, Краска, Газоблок, Стяжка, Штукатурка или ГКЛ.",
+          tip: null,
+        },
+        {
+          step: null,
+          title: "Плитка",
+          text: "Введите размеры комнаты (длина × ширина), размер плитки и процент отходов. Калькулятор посчитает количество плитки, клея CM17 и затирки с учётом запаса.",
+          tip: "💡 Стандартный запас на подрезку — 10%. Для сложной укладки диагональю берите 15%.",
+        },
+        {
+          step: null,
+          title: "Краска",
+          text: "Введите площадь стен (или возьмите из помещения кнопкой «Взять из проекта»), расход краски на м² и количество слоёв. Получите количество банок и стоимость.",
+          tip: "💡 Кнопка «🏠 Взять из проекта» подставит реальные размеры из ваших помещений.",
+        },
+        {
+          step: null,
+          title: "Стяжка и штукатурка",
+          text: "Введите площадь и толщину слоя → калькулятор покажет количество мешков смеси. Для стяжки также считается фибра и плёнка.",
+          tip: null,
+        },
+        {
+          step: null,
+          title: "Добавить в смету",
+          text: "После расчёта нажмите «+ Добавить в смету» → выберите проект и раздел → все материалы добавятся с нужным количеством автоматически.",
+          tip: "💡 Сначала создайте смету и разделы, потом делайте расчёты — тогда кнопка «добавить» будет активна.",
+        },
+      ],
+    },
+    {
+      icon: "📦",
+      title: "Справочник",
+      color: "#d97706",
+      content: [
+        {
+          step: null,
+          title: "Материалы",
+          text: "База из 100+ строительных материалов с ценами — плитка, ламинат, краска, штукатурка, сантехника и т.д. Фильтруйте по категории нажав на цветной тег сверху. Ищите по названию через строку поиска.",
+          tip: null,
+        },
+        {
+          step: null,
+          title: "Наборы материалов",
+          text: "Вкладка «Наборы» — это готовые комплекты для вида работ. Например набор «Укладка плитки» содержит: плитку, клей, затирку, крестики. Отметьте галочкой один или несколько наборов и нажмите «Добавить N наборов».",
+          tip: "💡 Количество рассчитывается автоматически по площади ваших помещений. Добавьте помещения заранее.",
+        },
+        {
+          step: null,
+          title: "Добавление в смету",
+          text: "Нажмите и удерживайте позицию (или включите мультивыбор) → отметьте нужные материалы → нажмите «+ В смету» → выберите проект и раздел. Все отмеченные позиции добавятся одним действием.",
+          tip: null,
+        },
+        {
+          step: null,
+          title: "Свои материалы",
+          text: "Нажмите «+» справа вверху → введите название, единицу и цену. Ваши материалы появятся в начале списка со специальной пометкой. Смахните влево чтобы удалить.",
+          tip: null,
+        },
+      ],
+    },
+    {
+      icon: "💰",
+      title: "Мои расценки",
+      color: "#059669",
+      content: [
+        {
+          step: null,
+          title: "Личный прайс-лист",
+          text: "Вкладка «Мои цены» — ваши персональные расценки на работы. Они не меняются от проекта к проекту. Заполните один раз и используйте в любой смете.",
+          tip: "💡 Заполните прайс до создания смет — это сэкономит время при каждом новом проекте.",
+        },
+        {
+          step: null,
+          title: "Добавление расценки",
+          text: "Нажмите «+» → введите название (например: «Укладка ламината»), единицу измерения (м²) и цену (350 ₽). Выберите группу работ — это нужно для правильной сортировки в смете.",
+          tip: null,
+        },
+        {
+          step: null,
+          title: "Группы работ",
+          text: "Вкладка «Группы» позволяет создавать пакеты работ. Например группа «Ремонт ванной» содержит: гидроизоляция, плитка стены, плитка пол, сантехника. Добавьте группу в смету одним нажатием.",
+          tip: "💡 Группы работ — это ваш шаблон для часто повторяющихся комплексов работ.",
+        },
+        {
+          step: null,
+          title: "Добавление в смету",
+          text: "Долгое нажатие на расценку включает мультивыбор → отметьте несколько → нажмите «+ В смету». Или добавляйте по одной кнопкой «+» рядом с каждой позицией.",
+          tip: null,
+        },
+      ],
+    },
+    {
+      icon: "✉️",
+      title: "Написать нам",
+      color: "#4f46e5",
+      isContact: true,
+    },
+  ];
+
+  const cur = SECTIONS[section];
+  const IS = { width:"100%", padding:"12px 14px", borderRadius:12, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:14, fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+
+  const handleSend = function() {
+    if (!contact.trim() || !message.trim()) return;
+    var mailto = "mailto:sstroysmeta@gmail.com"
+      + "?subject=" + encodeURIComponent("Вопрос из СтройСмета: " + (name||contact))
+      + "&body=" + encodeURIComponent("Имя: "+(name||"—")+"\\nКонтакт: "+contact+"\\n\\nСообщение:\\n"+message);
+    window.open(mailto, "_blank");
+    setSent(true);
+  };
+
+  return (
+    <div style={{ position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", zIndex:600, display:"flex", flexDirection:"column", justifyContent:"flex-end" }}>
+      <div style={{ background:"var(--s1)", borderRadius:"24px 24px 0 0", width:"100%", maxHeight:"94vh", display:"flex", flexDirection:"column" }}>
+
+        {/* Header */}
+        <div style={{ padding:"16px 18px 0", flexShrink:0 }}>
+          <div style={{ width:40, height:4, borderRadius:2, background:"var(--b2)", margin:"0 auto 16px" }} />
+          <div style={{ display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:14 }}>
+            <div>
+              <div style={{ fontFamily:"'Unbounded',sans-serif", fontSize:17, fontWeight:900, color:"var(--tx)" }}>Помощь</div>
+              <div style={{ fontSize:11, color:"var(--tx3)", marginTop:1 }}>Инструкция и поддержка</div>
+            </div>
+            <button onClick={onClose} style={{ background:"var(--s2)", border:"none", borderRadius:10, width:34, height:34, cursor:"pointer", fontSize:15, color:"var(--tx3)", fontFamily:"inherit" }}>✕</button>
+          </div>
+
+          {/* Section tabs — horizontal scroll */}
+          <div style={{ display:"flex", gap:7, overflowX:"auto", paddingBottom:10 }}>
+            {SECTIONS.map(function(s, i){ return (
+              <button key={i} onClick={function(){ setSection(i); }}
+                style={{ flexShrink:0, padding:"8px 13px", borderRadius:22,
+                  border: section===i ? "2px solid "+s.color : "2px solid var(--b1)",
+                  background: section===i ? s.color+"18" : "var(--s2)",
+                  color: section===i ? s.color : "var(--tx3)",
+                  fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit",
+                  display:"flex", alignItems:"center", gap:5, whiteSpace:"nowrap" }}>
+                <span>{s.icon}</span><span>{s.title}</span>
+              </button>
+            ); })}
+          </div>
+        </div>
+
+        {/* Content */}
+        <div style={{ flex:1, overflowY:"auto", padding:"4px 18px 40px" }}>
+
+          {!cur.isContact ? (
+            <div style={{ display:"flex", flexDirection:"column", gap:12, paddingTop:4 }}>
+              {/* Section intro bar */}
+              <div style={{ display:"flex", alignItems:"center", gap:10, padding:"12px 14px",
+                background: cur.color+"12", border:"1.5px solid "+cur.color+"33",
+                borderRadius:14 }}>
+                <div style={{ fontSize:28, flexShrink:0 }}>{cur.icon}</div>
+                <div>
+                  <div style={{ fontSize:14, fontWeight:900, color:cur.color }}>{cur.title}</div>
+                  <div style={{ fontSize:11, color:"var(--tx3)", marginTop:1 }}>{cur.content.length} раздела</div>
+                </div>
+              </div>
+
+              {cur.content.map(function(item, i){ return (
+                <div key={i} style={{ background:"var(--s2)", borderRadius:14, border:"1px solid var(--b1)", overflow:"hidden" }}>
+                  {/* Title row */}
+                  <div style={{ display:"flex", alignItems:"center", gap:10, padding:"13px 14px 8px" }}>
+                    {item.step && (
+                      <div style={{ width:28, height:28, borderRadius:8, background:cur.color,
+                        display:"flex", alignItems:"center", justifyContent:"center",
+                        flexShrink:0, fontSize:13, fontWeight:900, color:"#fff" }}>{item.step}</div>
+                    )}
+                    <div style={{ fontSize:14, fontWeight:800, color:"var(--tx)" }}>{item.title}</div>
+                  </div>
+                  {/* Body */}
+                  <div style={{ padding:"0 14px 13px", paddingLeft: item.step ? 52 : 14 }}>
+                    <div style={{ fontSize:13, color:"var(--tx2)", lineHeight:1.7, marginBottom: item.tip ? 8 : 0 }}>{item.text}</div>
+                    {item.tip && (
+                      <div style={{ background:cur.color+"12", border:"1px solid "+cur.color+"33",
+                        borderRadius:9, padding:"8px 11px", fontSize:12, color:cur.color,
+                        lineHeight:1.5, fontWeight:600 }}>{item.tip}</div>
+                    )}
+                  </div>
+                </div>
+              ); })}
+            </div>
+          ) : (
+
+            /* Contact form */
+            <div style={{ paddingTop:8 }}>
+              <div style={{ background:"rgba(79,70,229,0.08)", border:"1.5px solid rgba(79,70,229,0.2)", borderRadius:14, padding:14, marginBottom:16 }}>
+                <div style={{ fontSize:13, fontWeight:800, color:"var(--tx)", marginBottom:4 }}>📬 Служба поддержки</div>
+                <div style={{ fontSize:12, color:"var(--tx3)", lineHeight:1.5 }}>
+                  Отвечаем в течение 24 часов в рабочие дни.
+                  Обращения обрабатываются службой поддержки СтройСмета
+                </div>
+              </div>
+
+              {sent ? (
+                <div style={{ textAlign:"center", padding:"32px 16px" }}>
+                  <div style={{ fontSize:52, marginBottom:12 }}>✅</div>
+                  <div style={{ fontFamily:"'Unbounded',sans-serif", fontSize:15, fontWeight:900, color:"var(--tx)", marginBottom:8 }}>Заявка отправлена!</div>
+                  <div style={{ fontSize:13, color:"var(--tx3)", lineHeight:1.5 }}>
+                    Откроется почтовый клиент. Если не открылся — напишите напрямую на
+                    <span style={{ color:"var(--acc)", fontWeight:700 }}> sstroysmeta@gmail.com</span>
+                  </div>
+                  <button onClick={function(){ setSent(false); }} style={{ marginTop:16, padding:"11px 22px", borderRadius:11, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx3)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 }}>Написать ещё раз</button>
+                </div>
+              ) : (
+                <div style={{ display:"flex", flexDirection:"column", gap:12 }}>
+                  <div>
+                    <div style={{ fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:5 }}>Ваше имя</div>
+                    <input value={name} onChange={function(e){ setName(e.target.value); }} placeholder="Иван Петров" style={IS} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:5 }}>Email или телефон *</div>
+                    <input value={contact} onChange={function(e){ setContact(e.target.value); }} placeholder="you@mail.ru" style={IS} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:5 }}>Сообщение *</div>
+                    <textarea value={message} onChange={function(e){ setMessage(e.target.value); }} placeholder="Опишите вопрос подробно..." rows={5} style={{ ...IS, resize:"vertical" }} />
+                  </div>
+                  <button onClick={handleSend} disabled={!contact.trim()||!message.trim()}
+                    style={{ width:"100%", padding:"14px", borderRadius:13, border:"none",
+                      background:contact.trim()&&message.trim()?"linear-gradient(135deg,#4f46e5,#6366f1)":"var(--s3)",
+                      color:contact.trim()&&message.trim()?"#fff":"var(--tx3)",
+                      fontWeight:800, fontSize:14, cursor:contact.trim()&&message.trim()?"pointer":"default", fontFamily:"inherit" }}>
+                    Отправить →
+                  </button>
+                  <div style={{ textAlign:"center", fontSize:11, color:"var(--tx3)" }}>Нажатие отправит ваше сообщение в службу поддержки</div>
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+
+function AuthModal({ onClose, onAuth }) {
+  const [screen, setScreen] = useState("login");
+  const [method, setMethod] = useState("email");
+  const [contact, setContact] = useState("");
+  const [password, setPassword] = useState("");
+  const [password2, setPassword2] = useState("");
+  const [otp, setOtp] = useState("");
+  const [name, setName] = useState("");
+  const [error, setError] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [showPass, setShowPass] = useState(false);
+  const confirmResultRef = useRef(null);
+  const recaptchaRef = useRef(null);
+  const recaptchaContainerId = "sm-recaptcha-" + Math.random().toString(36).slice(2,7);
+
+  // Check if Firebase is configured
+  const fbReady = typeof window !== "undefined" && window._smFirebase && window._smFirebase.auth;
+
+  const reset = function() { setError(""); setOtp(""); setPassword(""); setPassword2(""); setLoading(false); };
+
+  // ── EMAIL: Register ──────────────────────────────────────────────
+  const handleEmailRegister = async function() {
+    const c = contact.trim();
+    if (!c || !password) { setError("Заполните все поля"); return; }
+    if (password.length < 6) { setError("Пароль минимум 6 символов"); return; }
+    if (password !== password2) { setError("Пароли не совпадают"); return; }
+    setLoading(true); setError("");
+    try {
+      if (fbReady) {
+        const cred = await window._smFirebase.auth.createUserWithEmailAndPassword(c, password);
+        if (name.trim()) await cred.user.updateProfile({ displayName: name.trim() });
+        const u = { uid: cred.user.uid, id: cred.user.uid, name: name.trim() || c.split("@")[0], email: c, phone: "" };
+        onAuth(u);
+      } else {
+        // Fallback: localStorage (no Firebase)
+        const users = JSON.parse(localStorage.getItem("sm_users")||"[]");
+        if (users.find(u => u.email === c)) { setError("Этот email уже зарегистрирован"); setLoading(false); return; }
+        const u = { id:"u_"+Date.now(), name:name||c.split("@")[0], email:c, phone:"", password, createdAt:new Date().toISOString() };
+        users.push(u); localStorage.setItem("sm_users", JSON.stringify(users));
+        onAuth(u);
+      }
+    } catch(e) {
+      const msgs = { "auth/email-already-in-use":"Этот email уже зарегистрирован", "auth/invalid-email":"Неверный формат email", "auth/weak-password":"Пароль слишком простой" };
+      setError(msgs[e.code] || e.message || "Ошибка регистрации");
+      setLoading(false);
+    }
+  };
+
+  // ── EMAIL: Login ─────────────────────────────────────────────────
+  const handleEmailLogin = async function() {
+    const c = contact.trim();
+    if (!c || !password) { setError("Введите email и пароль"); return; }
+    setLoading(true); setError("");
+    try {
+      if (fbReady) {
+        const cred = await window._smFirebase.auth.signInWithEmailAndPassword(c, password);
+        const u = { uid: cred.user.uid, id: cred.user.uid, name: cred.user.displayName || c.split("@")[0], email: c, phone: "" };
+        onAuth(u);
+      } else {
+        const users = JSON.parse(localStorage.getItem("sm_users")||"[]");
+        const u = users.find(u => u.email === c);
+        if (!u) { setError("Пользователь не найден"); setLoading(false); return; }
+        if (u.password !== password) { setError("Неверный пароль"); setLoading(false); return; }
+        onAuth(u);
+      }
+    } catch(e) {
+      const msgs = { "auth/user-not-found":"Пользователь не найден", "auth/wrong-password":"Неверный пароль", "auth/invalid-email":"Неверный email", "auth/invalid-credential":"Неверный email или пароль" };
+      setError(msgs[e.code] || "Ошибка входа");
+      setLoading(false);
+    }
+  };
+
+  // ── EMAIL: Forgot password ────────────────────────────────────────
+  const handleForgotPassword = async function() {
+    const c = contact.trim();
+    if (!c) { setError("Введите email"); return; }
+    setLoading(true); setError("");
+    try {
+      if (fbReady) {
+        await window._smFirebase.auth.sendPasswordResetEmail(c);
+        setScreen("forgot_sent");
+      } else {
+        setError("Firebase не подключён. Восстановление через email недоступно.");
+      }
+    } catch(e) {
+      const msgs = { "auth/user-not-found":"Email не найден", "auth/invalid-email":"Неверный email" };
+      setError(msgs[e.code] || "Ошибка отправки письма");
+    }
+    setLoading(false);
+  };
+
+  // ── PHONE: Send SMS OTP ──────────────────────────────────────────
+  const handlePhoneSendOtp = async function() {
+    const phone = contact.trim();
+    if (!phone.match(/^\+?[0-9]{7,15}$/)) { setError("Введите номер телефона с кодом страны, например +79001234567"); return; }
+    setLoading(true); setError("");
+    try {
+      if (fbReady) {
+        // Create invisible reCAPTCHA
+        if (!recaptchaRef.current) {
+          recaptchaRef.current = new window._smFirebase.RecaptchaVerifier(recaptchaContainerId, {
+            size: "invisible",
+            callback: function() {}
+          }, window._smFirebase.authInstance);
+        }
+        const result = await window._smFirebase.auth.signInWithPhoneNumber(phone, recaptchaRef.current);
+        confirmResultRef.current = result;
+        setScreen("otp_phone");
+      } else {
+        // Fallback: fake OTP via alert
+        const code = String(Math.floor(100000 + Math.random() * 900000));
+        window._smFakeOtp = code;
+        alert("⚠️ Firebase не подключён. Тестовый код: " + code);
+        setScreen("otp_phone");
+      }
+    } catch(e) {
+      const msgs = { "auth/invalid-phone-number":"Неверный формат номера. Используйте +79001234567", "auth/too-many-requests":"Слишком много попыток. Попробуйте позже" };
+      setError(msgs[e.code] || e.message || "Ошибка отправки SMS");
+      if (recaptchaRef.current) { try { recaptchaRef.current.clear(); } catch(_){} recaptchaRef.current = null; }
+    }
+    setLoading(false);
+  };
+
+  // ── PHONE: Verify OTP ────────────────────────────────────────────
+  const handlePhoneVerifyOtp = async function() {
+    if (!otp || otp.length < 4) { setError("Введите код из SMS"); return; }
+    setLoading(true); setError("");
+    try {
+      if (fbReady && confirmResultRef.current) {
+        const cred = await confirmResultRef.current.confirm(otp);
+        const u = { uid: cred.user.uid, id: cred.user.uid, name: name || contact, email: "", phone: contact };
+        onAuth(u);
+      } else {
+        // Fallback: check fake OTP
+        if (otp === window._smFakeOtp) {
+          const users = JSON.parse(localStorage.getItem("sm_users")||"[]");
+          let u = users.find(u => u.phone === contact);
+          if (!u) {
+            u = { id:"u_"+Date.now(), name:name||contact, email:"", phone:contact, createdAt:new Date().toISOString() };
+            users.push(u); localStorage.setItem("sm_users", JSON.stringify(users));
+          }
+          onAuth(u);
+        } else {
+          setError("Неверный код");
+        }
+      }
+    } catch(e) {
+      const msgs = { "auth/invalid-verification-code":"Неверный код", "auth/code-expired":"Код истёк. Запросите новый" };
+      setError(msgs[e.code] || "Ошибка подтверждения");
+    }
+    setLoading(false);
+  };
+
+  const BS = function(bg) { return { width:"100%", padding:"15px", borderRadius:14, border:"none",
+    background:bg||"var(--acc)", color:"#fff", fontWeight:800, fontSize:15,
+    cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 16px rgba(79,70,229,0.3)" }; };
+  const IS = { width:"100%", padding:"14px 16px", borderRadius:12, border:"1.5px solid var(--b1)",
+    background:"var(--s2)", color:"var(--tx)", fontSize:15, fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+  const LS = { fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase",
+    letterSpacing:"0.06em", marginBottom:5, display:"block" };
+  const backBtn = function(scr) { return React.createElement("button", { onClick:function(){ setScreen(scr); reset(); },
+    style:{ width:"100%", marginTop:12, padding:"12px", borderRadius:12, border:"1.5px solid var(--b1)",
+      background:"transparent", color:"var(--tx3)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "← Назад"); };
+  const skipBtn = React.createElement("button", { onClick:onClose,
+    style:{ width:"100%", marginTop:12, padding:"12px", borderRadius:12, border:"1.5px solid var(--b1)",
+      background:"transparent", color:"var(--tx3)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } },
+    "Продолжить без входа");
+  const errEl = error ? React.createElement("div", { style:{ color:"var(--red)", fontSize:12, marginBottom:12, fontWeight:600 } }, "⚠️ "+error) : null;
+  const methodPicker = React.createElement("div", { style:{ display:"flex", gap:8, marginBottom:14 } },
+    [["email","✉️ Email"],["phone","📱 Телефон"]].map(function(pair) {
+      const id=pair[0], lbl=pair[1];
+      return React.createElement("button", { key:id, onClick:function(){ setMethod(id); setContact(""); setError(""); },
+        style:{ flex:1, padding:"10px", borderRadius:10,
+          border:"2px solid "+(method===id?"var(--acc)":"var(--b1)"),
+          background:method===id?"var(--acc3)":"var(--s2)", color:method===id?"var(--acc)":"var(--tx3)",
+          fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" } }, lbl);
+    })
+  );
+  const contactInput = React.createElement("div", { style:{ marginBottom:16 } },
+    React.createElement("label", { style:LS }, method==="email"?"Email":"Телефон"),
+    React.createElement("input", { value:contact, onChange:function(e){ setContact(e.target.value); },
+      type:method==="email"?"email":"tel", placeholder:method==="email"?"you@mail.ru":"+7 900 000-00-00",
+      style:IS, onKeyDown:function(e){ if(e.key==="Enter") handleSendOtp(); } })
+  );
+
+  return React.createElement("div", { style:{ position:"absolute", inset:0, background:"rgba(0,0,0,0.7)", zIndex:600,
+      display:"flex", alignItems:"flex-end", justifyContent:"center" } },
+    React.createElement("div", { style:{ background:"var(--s1)", borderRadius:"24px 24px 0 0", width:"100%",
+        maxWidth:"min(480px, 95vw)", padding:"28px 24px 40px", boxShadow:"0 -8px 40px rgba(0,0,0,0.4)" } },
+      React.createElement("div", { style:{ width:40, height:4, borderRadius:2, background:"var(--b2)", margin:"0 auto 24px" } }),
+
+      // LOGIN
+      screen==="login" && React.createElement(React.Fragment, null,
+        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:20, fontWeight:900, color:"var(--tx)", marginBottom:6 } }, "Войти"),
+        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:24 } }, "В аккаунт СтройСмета"),
+        methodPicker,
+        React.createElement("div", { style:{ marginBottom:14 } },
+          React.createElement("label", { style:LS }, method==="email"?"Email":"Телефон"),
+          React.createElement("input", { value:contact, onChange:function(e){ setContact(e.target.value); },
+            type:method==="email"?"email":"tel", placeholder:method==="email"?"you@mail.ru":"+7 900 000-00-00",
+            style:IS, onKeyDown:function(e){ if(e.key==="Enter") handleSendOtp(); } })
+        ),
+        React.createElement("div", { style:{ marginBottom:20, position:"relative" } },
+          React.createElement("label", { style:LS }, "Пароль"),
+          React.createElement("input", { value:password, onChange:function(e){ setPassword(e.target.value); },
+            type:showPass?"text":"password", placeholder:"Введите пароль",
+            style:IS, onKeyDown:function(e){ if(e.key==="Enter") handleLoginWithPassword(); } }),
+          React.createElement("button", { onClick:function(){ setShowPass(function(p){ return !p; }); },
+            style:{ position:"absolute", right:12, top:30, background:"none", border:"none", cursor:"pointer", color:"var(--tx3)", fontSize:16 } },
+            showPass?"🙈":"👁")
+        ),
+        errEl,
+        React.createElement("button", { onClick: method==="email" ? handleEmailLogin : handlePhoneSendOtp, disabled:loading, style:BS() }, loading ? "⏳ Входим..." : "Войти"),
+        React.createElement("div", { style:{ textAlign:"center", marginTop:14, display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap" } },
+          React.createElement("button", { onClick:function(){ setScreen("forgot"); reset(); }, style:{ background:"none", border:"none", color:"var(--acc)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "Забыли пароль?"),
+          React.createElement("span", { style:{ color:"var(--tx3)", fontSize:13 } }, "·"),
+          React.createElement("button", { onClick:function(){ if(contact.trim()){ sendOtp(contact.trim()); setScreen("otp_login"); } else { setError("Введите email/телефон"); } },
+            style:{ background:"none", border:"none", color:"var(--acc)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "Войти по коду"),
+          React.createElement("span", { style:{ color:"var(--tx3)", fontSize:13 } }, "·"),
+          React.createElement("button", { onClick:function(){ setScreen("register"); reset(); }, style:{ background:"none", border:"none", color:"var(--acc)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "Регистрация")
+        ),
+        skipBtn
+      ),
+
+      // REGISTER
+      screen==="register" && React.createElement(React.Fragment, null,
+        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } }, "Регистрация"),
+        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20 } }, "Создайте аккаунт СтройСмета"),
+        methodPicker,
+        React.createElement("div", { style:{ marginBottom:14 } },
+          React.createElement("label", { style:LS }, "Ваше имя"),
+          React.createElement("input", { value:name, onChange:function(e){ setName(e.target.value); }, placeholder:"Иван Петров", style:IS })
+        ),
+        contactInput, errEl,
+        React.createElement("button", { onClick: method==="email" ? handleEmailRegister : handlePhoneSendOtp, disabled:loading, style:BS("linear-gradient(135deg,#065f46,#10b981)") }, loading ? "⏳..." : method==="email" ? "Зарегистрироваться →" : "Получить SMS-код →"),
+        React.createElement("div", { style:{ textAlign:"center", marginTop:14 } },
+          React.createElement("button", { onClick:function(){ setScreen("login"); reset(); }, style:{ background:"none", border:"none", color:"var(--tx3)", fontSize:13, cursor:"pointer", fontFamily:"inherit" } },
+            "Уже есть аккаунт? ", React.createElement("span", { style:{ color:"var(--acc)", fontWeight:700 } }, "Войти"))
+        ),
+        skipBtn
+      ),
+
+      // OTP
+      (screen==="otp_login"||screen==="otp_register"||screen==="otp_forgot") && React.createElement(React.Fragment, null,
+        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } },
+          screen==="otp_forgot"?"Восстановление":"Подтверждение"),
+        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:6 } }, "Код отправлен на"),
+        React.createElement("div", { style:{ fontSize:14, fontWeight:700, color:"var(--acc)", marginBottom:20 } }, contact),
+        React.createElement("div", { style:{ marginBottom:20 } },
+          React.createElement("label", { style:LS }, "Код из SMS / письма"),
+          React.createElement("input", { value:otp, onChange:function(e){ setOtp(e.target.value.replace(/\D/g,"").slice(0,6)); },
+            placeholder:"000000", maxLength:6,
+            style:Object.assign({},IS,{ fontSize:28, fontWeight:900, letterSpacing:"0.35em", textAlign:"center" }),
+            onKeyDown:function(e){ if(e.key==="Enter") handleVerifyOtp(); } })
+        ),
+        errEl,
+        React.createElement("button", { onClick:handlePhoneVerifyOtp, disabled:otp.length<4||loading,
+          style:BS(otp.length>=4?"var(--acc)":"var(--s3)") }, loading?"⏳ Проверяем...":otp.length>=4?"Подтвердить →":"Введите код"),
+        React.createElement("div", { style:{ textAlign:"center", marginTop:14 } },
+          React.createElement("button", { onClick:function(){ sendOtp(contact); setOtp(""); setError(""); },
+            style:{ background:"none", border:"none", color:"var(--acc)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "🔄 Отправить код снова")
+        ),
+        backBtn(screen==="otp_forgot"?"forgot":"login")
+      ),
+
+      // SET PASSWORD
+      screen==="set_password" && React.createElement(React.Fragment, null,
+        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } },
+          findUser(contact)?"Новый пароль":"Создайте пароль"),
+        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20 } }, "Для аккаунта "+contact),
+        React.createElement("div", { style:{ marginBottom:14, position:"relative" } },
+          React.createElement("label", { style:LS }, "Пароль"),
+          React.createElement("input", { value:password, onChange:function(e){ setPassword(e.target.value); },
+            type:showPass?"text":"password", placeholder:"Минимум 6 символов", style:IS }),
+          React.createElement("button", { onClick:function(){ setShowPass(function(p){ return !p; }); },
+            style:{ position:"absolute",right:12,top:30,background:"none",border:"none",cursor:"pointer",color:"var(--tx3)",fontSize:16 } }, showPass?"🙈":"👁")
+        ),
+        React.createElement("div", { style:{ marginBottom:8 } },
+          React.createElement("label", { style:LS }, "Повторите пароль"),
+          React.createElement("input", { value:password2, onChange:function(e){ setPassword2(e.target.value); },
+            type:showPass?"text":"password", placeholder:"Повторите пароль",
+            style:IS, onKeyDown:function(e){ if(e.key==="Enter") handleSetPassword(); } })
+        ),
+        password.length>0 && React.createElement("div", { style:{ display:"flex", gap:4, marginBottom:12, marginTop:6 } },
+          ["6+","A-Z","0-9","!@#"].map(function(req,i) {
+            const ok = i===0?password.length>=6:i===1?/[A-ZА-Я]/.test(password):i===2?/\d/.test(password):/[!@#$%^&*]/.test(password);
+            return React.createElement("span", { key:i, style:{ fontSize:10, padding:"2px 8px", borderRadius:5,
+              background:ok?"rgba(16,185,129,0.15)":"var(--s3)", color:ok?"var(--green)":"var(--tx3)", fontWeight:700 } },
+              req+" "+(ok?"✓":"·"));
+          })
+        ),
+        errEl,
+        React.createElement("button", { onClick:handleSetPassword, style:BS() },
+          findUser(contact)?"Сохранить пароль":"Создать аккаунт")
+      ),
+
+      // FORGOT
+      screen==="forgot" && React.createElement(React.Fragment, null,
+        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } }, "Сброс пароля"),
+        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20 } }, "Введите email или телефон аккаунта"),
+        methodPicker, contactInput, errEl,
+        React.createElement("button", { onClick: handleForgotPassword, disabled:loading, style:BS() }, loading ? "⏳..." : "Отправить письмо →"),
+        backBtn("login")
+      )
+    )
+  );
+}
+
+// -- ChangePasswordModal — from AccountScreen ------------------
+function ChangePasswordModal({ open, onClose, authUser, saveAuth }) {
+  const [step, setStep] = useState("otp"); // "otp" | "set"
+  const [otp, setOtp] = useState("");
+  const [generated, setGenerated] = useState("");
+  const [password, setPassword] = useState("");
+  const [password2, setPassword2] = useState("");
+  const [error, setError] = useState("");
+  const [showPass, setShowPass] = useState(false);
+
+  useEffect(() => {
+    if (open) {
+      const code = String(Math.floor(100000 + Math.random() * 900000));
+      setGenerated(code);
+      setOtp(""); setPassword(""); setPassword2(""); setError(""); setStep("otp");
+      const contact = authUser.email || authUser.phone;
+      console.log("[СтройСмета OTP] Код смены пароля для", contact, "→", code);
+      alert("Код подтверждения отправлен на " + contact + ". Демо: смотрите консоль (F12).");
+    }
+  }, [open]);
+
+  if (!open) return null;
+
+  const inputStyle = { width:"100%", padding:"13px 16px", borderRadius:12,
+    border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)",
+    fontSize:14, fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
+
+  const handleVerify = () => {
+    if (otp.trim() !== generated) { setError("Неверный код"); return; }
+    setStep("set"); setError("");
+  };
+
+  const handleSave = () => {
+    if (password.length < 6) { setError("Минимум 6 символов"); return; }
+    if (password !== password2) { setError("Пароли не совпадают"); return; }
+    let users = []; try { users = JSON.parse(localStorage.getItem("sm_users")||"[]"); } catch(e) {}
+    const u = users.find(x => x.id === authUser.id);
+    if (u) { u.password = password; try { localStorage.setItem("sm_users", JSON.stringify(users)); } catch(e) {} }
+    const updated = { ...authUser, password };
+    saveAuth(updated);
+    onClose();
+    alert("Пароль успешно изменён!");
+  };
+
+  const IS2 = inputStyle;
+  const errEl2 = error ? React.createElement("div",{style:{color:"var(--red)",fontSize:12,marginBottom:12,fontWeight:600}},"⚠️ "+error) : null;
+
+  return React.createElement("div",{style:{position:"absolute",inset:0,background:"rgba(0,0,0,0.7)",zIndex:700,display:"flex",alignItems:"flex-end",justifyContent:"center"}},
+    React.createElement("div",{style:{background:"var(--s1)",borderRadius:"24px 24px 0 0",width:"100%",maxWidth:"min(480px, 95vw)",padding:"28px 24px 40px"}},
+      React.createElement("div",{style:{width:40,height:4,borderRadius:2,background:"var(--b2)",margin:"0 auto 24px"}}),
+      React.createElement("div",{style:{fontFamily:"'Unbounded',sans-serif",fontSize:17,fontWeight:900,color:"var(--tx)",marginBottom:6}},"Смена пароля"),
+      React.createElement("div",{style:{fontSize:13,color:"var(--tx3)",marginBottom:20}},"Код отправлен на "+(authUser.email||authUser.phone)),
+      step==="otp" && React.createElement(React.Fragment,null,
+        React.createElement("div",{style:{marginBottom:16}},
+          React.createElement("div",{style:{fontSize:11,fontWeight:700,color:"var(--tx3)",textTransform:"uppercase",marginBottom:5}},"Код подтверждения"),
+          React.createElement("input",{value:otp,onChange:function(e){setOtp(e.target.value.replace(/\D/g,"").slice(0,6));},
+            placeholder:"000000",maxLength:6,
+            style:Object.assign({},IS2,{fontSize:26,fontWeight:900,letterSpacing:"0.3em",textAlign:"center"})})
+        ),
+        errEl2,
+        React.createElement("button",{onClick:handleVerify,disabled:otp.length!==6,
+          style:{width:"100%",padding:"14px",borderRadius:13,border:"none",
+            background:otp.length===6?"var(--acc)":"var(--s3)",color:otp.length===6?"#fff":"var(--tx3)",
+            fontWeight:800,fontSize:14,cursor:"pointer",fontFamily:"inherit"}},"Подтвердить →")
+      ),
+      step==="set" && React.createElement(React.Fragment,null,
+        React.createElement("div",{style:{marginBottom:14,position:"relative"}},
+          React.createElement("div",{style:{fontSize:11,fontWeight:700,color:"var(--tx3)",textTransform:"uppercase",marginBottom:5}},"Новый пароль"),
+          React.createElement("input",{value:password,onChange:function(e){setPassword(e.target.value);},type:showPass?"text":"password",placeholder:"Минимум 6 символов",style:IS2}),
+          React.createElement("button",{onClick:function(){setShowPass(function(p){return !p;});},style:{position:"absolute",right:12,top:28,background:"none",border:"none",cursor:"pointer",color:"var(--tx3)",fontSize:16}},showPass?"🙈":"👁")
+        ),
+        React.createElement("div",{style:{marginBottom:16}},
+          React.createElement("div",{style:{fontSize:11,fontWeight:700,color:"var(--tx3)",textTransform:"uppercase",marginBottom:5}},"Повторите пароль"),
+          React.createElement("input",{value:password2,onChange:function(e){setPassword2(e.target.value);},type:showPass?"text":"password",placeholder:"Повторите пароль",style:IS2})
+        ),
+        errEl2,
+        React.createElement("button",{onClick:handleSave,style:{width:"100%",padding:"14px",borderRadius:13,border:"none",
+          background:"linear-gradient(135deg,#065f46,#10b981)",color:"#fff",fontWeight:800,fontSize:14,cursor:"pointer",fontFamily:"inherit"}},"Сохранить пароль")
+      ),
+      React.createElement("button",{onClick:onClose,style:{width:"100%",marginTop:12,padding:"12px",borderRadius:12,
+        border:"1.5px solid var(--b1)",background:"transparent",color:"var(--tx3)",fontSize:13,cursor:"pointer",fontFamily:"inherit",fontWeight:600}},"Отмена")
+    )
+  );
+}
+
+
+function AccountScreen({ theme, setTheme, profile, setProfile, lang, setLang, currency, setCurrency, setTab, subPlan: subPlanProp, setSubPlan: setSubPlanProp, authUser, saveAuth, setShowAuth }) {
+  const [showChangePwd, setShowChangePwd] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [showContact, setShowContact] = useState(false);
+  // profile/setProfile passed from App
+  const [saved, setSaved] = useState(false);
+  const [activeSection, setActiveSection] = useState(null);
+  // Use prop subPlan if available, fallback to local
+  const [_localSubPlan, _setLocalSubPlan] = useState(function(){
+    try { return localStorage.getItem("sm_subplan") || "free"; } catch(e) { return "free"; }
+  });
+  const subPlan = subPlanProp !== undefined ? subPlanProp : _localSubPlan;
+  const setSubPlan = subPlanProp !== undefined ? setSubPlanProp : function(v) {
+    _setLocalSubPlan(v);
+    try { localStorage.setItem("sm_subplan", v); } catch(e) {}
+  };
+  const [showSubScreen, setShowSubScreen] = useState(false);
+  const [showLangPicker, setShowLangPicker] = useState(false);
+  const currentLang = LANGUAGES.find(l => l.id === lang) || LANGUAGES[0];
+
+
+
+  const save = () => {
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const Field = ({ icon, label, value, onChange, type = "text", placeholder = "" }) => (
+    React.createElement('div', { style: { marginBottom: 12 }}
+      , React.createElement('label', { style: { fontSize: 10, fontWeight: 600, color: "var(--tx3)", letterSpacing: "0.08em", textTransform: "uppercase", display: "block", marginBottom: 5 }}, label)
+      , React.createElement('div', { style: { position: "relative", display: "flex", alignItems: "center" }}
+        , React.createElement('div', { style: { position: "absolute", left: 12, color: "var(--tx3)", display: "flex" }}
+          , React.createElement(Icon, { name: icon, size: 15, color: "var(--tx3)"} )
+        )
+        , React.createElement('input', {
+          type: type, value: value, placeholder: placeholder,
+          onChange: e => onChange(e.target.value),
+          style: {
+            width: "100%", padding: "11px 14px 11px 36px", borderRadius: "var(--rs)",
+            border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", outline: "none",
+            background: "var(--s2)", fontFamily: "inherit", transition: "border-color 0.2s, box-shadow 0.2s",
+          },
+          onFocus: e => { e.target.style.borderColor = "var(--acc)"; e.target.style.boxShadow = "0 0 0 3px rgba(108,99,255,0.15)"; },
+          onBlur: e => { e.target.style.borderColor = "var(--b1)"; e.target.style.boxShadow = "none"; }}
+        )
+      )
+    )
+  );
+
+  const Section = ({ id, title, icon, emoji, children }) => {
+    const open = activeSection === id;
+    return (
+      React.createElement('div', { style: { marginBottom: 10, borderRadius: "var(--r)", border: "1px solid var(--b1)", overflow: "hidden", background: "var(--s1)" }}
+        , React.createElement('button', {
+          onClick: () => setActiveSection(open ? null : id),
+          style: {
+            width: "100%", padding: "14px 16px", display: "flex", alignItems: "center", gap: 12,
+            background: "none", border: "none", cursor: "pointer", textAlign: "left",
+          }}
+          , React.createElement('div', { style: {
+            width: 36, height: 36, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center",
+            background: "var(--acc3)", fontSize: 18,
+          }}, emoji)
+          , React.createElement('span', { style: { flex: 1, fontSize: 14, fontWeight: 600, color: "var(--tx)" }}, title)
+          , React.createElement('div', { style: { transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.25s", color: "var(--tx3)" }}
+            , React.createElement(Icon, { name: "chevronDown", size: 16, color: "var(--tx3)"} )
+          )
+        )
+        , open && (
+          React.createElement('div', { style: { padding: "0 16px 16px", borderTop: "1px solid var(--b1)", paddingTop: 16, animation: "fadeIn 0.2s ease" }}
+            , children
+          )
+        )
+      )
+    );
+  };
+
+  const isDark = theme === "dark";
+
+  return (
+    React.createElement('div', { style: { minHeight: "100vh", background: "var(--bg)", paddingBottom: 100 }}
+      /* Header */
+      , React.createElement('div', { style: {
+        padding: "20px 20px 0",
+        background: "linear-gradient(180deg, var(--s1) 0%, transparent 100%)",
+      }}
+        , React.createElement('div', { style: { display: "flex", alignItems: "center", gap: 12, marginBottom: 24 }}
+          , React.createElement('div', { style: {
+            width: 44, height: 44, borderRadius: 14, display: "flex", alignItems: "center", justifyContent: "center",
+            background: (profile && profile.logo) ? "transparent" : "linear-gradient(135deg, #6c63ff, #a78bfa)",
+            boxShadow: (profile && profile.logo) ? "none" : "0 4px 16px rgba(108,99,255,0.4)",
+            overflow: "hidden", border: profile.logo ? "1.5px solid var(--b1)" : "none",
+          }}
+            , (profile && profile.logo)
+              ? React.createElement("img", { src: profile.logo, style: { width:"100%", height:"100%", objectFit:"contain" } })
+              : React.createElement(Icon, { name: "user", size: 22, color: "#fff" })
+          )
+          , React.createElement('div', {}
+            , React.createElement('div', { style: { fontSize: 18, fontWeight: 700, fontFamily: "'Unbounded',sans-serif", color: (theme==="light"||theme==="min"||theme==="classic") ? "var(--tx)" : "var(--hdr-tx)" } }, "Аккаунт")
+            , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)" } }, "Профиль и настройки")
+          )
+        )
+
+        /* -- Auth Card -- */
+        , React.createElement('div', { style: {
+          background: authUser ? "linear-gradient(135deg,rgba(16,185,129,0.1),rgba(6,182,212,0.08))" : "linear-gradient(135deg,rgba(79,70,229,0.1),rgba(99,102,241,0.08))",
+          border: authUser ? "1.5px solid rgba(16,185,129,0.3)" : "1.5px solid rgba(79,70,229,0.3)",
+          borderRadius: "var(--rm)", padding: "16px 18px", marginBottom: 16,
+          display: "flex", alignItems: "center", gap: 14
+        }}
+          , React.createElement('div', { style: { fontSize: 32, flexShrink: 0 } }, authUser ? "✅" : "👤")
+          , React.createElement('div', { style: { flex: 1, minWidth: 0 } }
+            , authUser
+              ? React.createElement(React.Fragment, null
+                , React.createElement('div', { style: { fontSize: 14, fontWeight: 800, color: "var(--tx)", marginBottom: 2 } }, authUser.name || "Пользователь")
+                , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" } }, authUser.email || authUser.phone)
+              )
+              : React.createElement(React.Fragment, null
+                , React.createElement('div', { style: { fontSize: 14, fontWeight: 800, color: "var(--tx)", marginBottom: 2 } }, "Вы не вошли в аккаунт")
+                , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)" } }, "Войдите для синхронизации данных")
+              )
+          )
+          , authUser
+            ? React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 6, flexShrink: 0 } }
+              , React.createElement('button', { onClick: () => setShowChangePwd(true),
+                style: { padding: "7px 12px", borderRadius: 9, border: "1px solid var(--b1)",
+                  background: "var(--s2)", color: "var(--tx3)", fontSize: 11, fontWeight: 700,
+                  cursor: "pointer", fontFamily: "inherit", whiteSpace: "nowrap" } }, "🔑 Пароль")
+              , React.createElement('button', { onClick: () => { if(window.confirm("Выйти из аккаунта?")) { saveAuth(null); } },
+                style: { padding: "7px 12px", borderRadius: 9, border: "1.5px solid rgba(239,68,68,0.4)",
+                  background: "rgba(239,68,68,0.08)", color: "var(--red)", fontSize: 11, fontWeight: 700,
+                  cursor: "pointer", fontFamily: "inherit" } }, "Выйти")
+            )
+            : React.createElement('button', { onClick: () => setShowAuth(true),
+                style: { padding: "10px 16px", borderRadius: 11, border: "none",
+                  background: "var(--acc)", color: "#fff", fontSize: 13, fontWeight: 800,
+                  cursor: "pointer", fontFamily: "inherit", flexShrink: 0 } }, "Войти")
+        )
+
+        /* ChangePassword modal */
+        , authUser && React.createElement(ChangePasswordModal, { open: showChangePwd, onClose: () => setShowChangePwd(false), authUser: authUser, saveAuth: saveAuth })
+        , React.createElement(HelpModal, { open: showHelp, onClose: () => setShowHelp(false) })
+        , React.createElement(ContactModal, { open: showContact, onClose: () => setShowContact(false) })
+
+        /* Avatar card */
+        , React.createElement('div', { style: {
+          background: "var(--s1)", border: "1px solid var(--b1)", borderRadius: "var(--rm)",
+          padding: "20px", display: "flex", alignItems: "center", gap: 16, marginBottom: 20,
+          boxShadow: "var(--sh)",
+        }}
+          , React.createElement('div', { style: { position:"relative", flexShrink:0 }}
+            , React.createElement('div', {
+              onClick: () => subPlan !== "free" && document.getElementById("profile-photo-input").click(),
+              style: {
+                width: 64, height: 64, borderRadius: 20, flexShrink: 0,
+                background: profile.photo ? "transparent" : "linear-gradient(135deg, #6c63ff 0%, #a78bfa 50%, #06b6d4 100%)",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                boxShadow: "0 8px 24px rgba(108,99,255,0.4)",
+                fontSize: 26, fontWeight: 700, color: "#fff", fontFamily: "'Unbounded',sans-serif",
+                cursor: subPlan !== "free" ? "pointer" : "default",
+                overflow: "hidden",
+              }}
+              , profile.photo
+                ? React.createElement('img', { src: profile.photo, style: { width:"100%", height:"100%", objectFit:"cover" } })
+                : profile.name.split(" ").map(w => w[0]).slice(0, 2).join("")
+            )
+            , subPlan !== "free"
+              ? React.createElement('div', {
+                  onClick: () => document.getElementById("profile-photo-input").click(),
+                  style: { position:"absolute", bottom:-4, right:-4, width:22, height:22, borderRadius:"50%",
+                    background:"var(--acc)", display:"flex", alignItems:"center", justifyContent:"center",
+                    cursor:"pointer", boxShadow:"0 2px 8px rgba(0,0,0,0.3)" }
+                }, React.createElement('span', { style:{ fontSize:12, color:"#fff" } }, "📷"))
+              : React.createElement('div', {
+                  title:"Доступно в платной подписке",
+                  style: { position:"absolute", bottom:-4, right:-4, width:22, height:22, borderRadius:"50%",
+                    background:"#f59e0b", display:"flex", alignItems:"center", justifyContent:"center",
+                    boxShadow:"0 2px 8px rgba(0,0,0,0.3)" }
+                }, React.createElement('span', { style:{ fontSize:10 } }, "⭐"))
+            , React.createElement('input', {
+                id:"profile-photo-input", type:"file", accept:"image/*",
+                style:{ display:"none" },
+                onChange: e => {
+                  const file = e.target.files && e.target.files[0];
+                  if (!file) return;
+                  const reader = new FileReader();
+                  reader.onload = ev => setProfile(p => ({ ...p, photo: ev.target.result }));
+                  reader.readAsDataURL(file);
+                  e.target.value = "";
+                }
+              })
+          )
+          , React.createElement('div', { style: { flex: 1 }}
+            , React.createElement('div', { style: { fontSize: 16, fontWeight: 700, color: "var(--tx)", marginBottom: 3 }}, profile.name)
+            , React.createElement('div', { style: { fontSize: 12, color: "var(--tx2)", marginBottom: 6 }}, profile.email)
+            , React.createElement('div', { style: {
+              display: "inline-flex", alignItems: "center", gap: 5, padding: "3px 10px",
+              background: "rgba(16,185,129,0.12)", border: "1px solid rgba(16,185,129,0.25)",
+              borderRadius: 20, fontSize: 10, fontWeight: 700, color: "var(--green)", textTransform: "uppercase", letterSpacing: "0.06em",
+            }}, "✓ Активен"
+
+            )
+          )
+        )
+      )
+
+      , React.createElement('div', { style: { padding: "0 20px" } }
+        /* -- Subscription button -- */
+        , React.createElement('div', { onClick: ()=>setShowHelp(true), style: { background:"var(--s1)", border:"1.5px solid var(--b1)", borderRadius:"var(--r)", padding:"14px 16px", marginBottom:10, display:"flex", alignItems:"center", gap:12, cursor:"pointer" } }
+          , React.createElement('div', { style: { width:38, height:38, borderRadius:10, background:"linear-gradient(135deg,#0891b2,#06b6d4)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 } }
+            , React.createElement('span', { style: { fontSize:20 } }, "❓")
+          )
+          , React.createElement('div', { style: { flex:1 } }
+            , React.createElement('div', { style: { fontSize:13, fontWeight:800, color:"var(--tx)" } }, "Помощь и FAQ")
+            , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", marginTop:1 } }, "Инструкция, частые вопросы, поддержка")
+          )
+          , React.createElement('div', { style: { color:"var(--tx3)", fontSize:18 } }, "›")
+        )
+
+        , React.createElement('div', { onClick: ()=>setShowContact(true), style: { background:"var(--s1)", border:"1.5px solid var(--b1)", borderRadius:"var(--r)", padding:"14px 16px", marginBottom:10, display:"flex", alignItems:"center", gap:12, cursor:"pointer" } }
+          , React.createElement('div', { style: { width:38, height:38, borderRadius:10, background:"linear-gradient(135deg,#059669,#10b981)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0 } }
+            , React.createElement('span', { style: { fontSize:20 } }, "✉️")
+          )
+          , React.createElement('div', { style: { flex:1 } }
+            , React.createElement('div', { style: { fontSize:13, fontWeight:800, color:"var(--tx)" } }, "Связаться с нами")
+            , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)", marginTop:1 } }, "Задать вопрос · Предложение · Поддержка")
+          )
+          , React.createElement('div', { style: { color:"var(--tx3)", fontSize:18 } }, "›")
+        )
+
+        , React.createElement('div', { onClick: ()=>setTab("subscription"), style: { background:"var(--s1)", border:"1.5px solid var(--b1)", borderRadius:"var(--r)", padding:"14px 16px", marginBottom:10, display:"flex", alignItems:"center", gap:12, cursor:"pointer" }}
+          , React.createElement('div', { style: { width:44, height:44, borderRadius:14, background:"linear-gradient(135deg,#4f46e5,#7c3aed)", display:"flex", alignItems:"center", justifyContent:"center", fontSize:22, flexShrink:0 }}, "⭐"
+
+          )
+          , React.createElement('div', { style: { flex:1 }}
+            , React.createElement('div', { style: { fontSize:13, fontWeight:800, color:"var(--tx)" }}, (T[lang]||T.ru).subscription)
+            , React.createElement('div', { style: { fontSize:12, color:"var(--tx3)", marginTop:2 }}
+              , (T[lang]||T.ru).currentPlan, ": " , React.createElement('span', { style: { color:"var(--acc)", fontWeight:700 }}, (T[lang]||T.ru).subFree)
+            )
+          )
+          , React.createElement(Icon, { name: "chevronRight", size: 18, color: "var(--acc)"} )
+        )
+
+        /* Theme toggle */
+        , React.createElement('div', { style: {
+          background: "var(--s1)", border: "1px solid var(--b1)", borderRadius: "var(--r)",
+          padding: "16px", marginBottom: 10,
+        }}
+          , React.createElement('div', { style: { fontSize: 11, fontWeight: 700, color: "var(--tx3)", letterSpacing: "0.1em", textTransform: "uppercase", marginBottom: 12 }}, (T[lang]||T.ru).themeTitle)
+          , React.createElement('div', { style: { display: "flex", gap: 8 }}
+            , [
+              { id: "dark",    label: t(lang,"dark"),    preview: { bg:"#f3f5fa", s1:"#ffffff", acc:"#5b52e8", tx:"#0f1523" } },
+              { id: "light",   label: t(lang,"light"),   preview: { bg:"#ffffff", s1:"#f8faff", acc:"#4f46e5", tx:"#111827" } },
+              { id: "min",     label: t(lang,"min"),     preview: { bg:"#ffffff", s1:"#f4f4f4", acc:"#111111", tx:"#0a0a0a" } },
+              { id: "classic", label: t(lang,"classic"), preview: { bg:"#f2f2f2", s1:"#ffffff", acc:"#e53935", tx:"#212121" } },
+            ].map(t => {
+              const on = theme === t.id;
+              return (
+                React.createElement('button', { key: t.id, onClick: () => {
+                  if (t.id !== "light" && subPlan === "free") {
+                    alert("Тёмная тема, Минимализм и Классик доступны только в платных подписках");
+                    return;
+                  }
+                  setTheme(t.id);
+                }, style: {
+                  flex: 1, padding: "10px 6px", borderRadius: t.id === "min" ? 3 : 12, cursor: "pointer",
+                  border: on ? `2px solid ${t.preview.acc}` : "1.5px solid var(--b1)",
+                  background: on ? `${t.preview.acc}18` : "var(--s2)",
+                  display: "flex", flexDirection: "column", alignItems: "center", gap: 7,
+                  transition: "all 0.2s",
+                  boxShadow: on ? `0 0 0 1px ${t.preview.acc}44, 0 4px 12px ${t.preview.acc}22` : "none",
+                }}
+                  /* Mini preview */
+                  , React.createElement('div', { style: { width: 44, height: 32, borderRadius: t.id === "min" ? 2 : 8, background: t.preview.bg, overflow: "hidden", position: "relative", border: `1px solid ${t.preview.acc}33` }}
+                    , React.createElement('div', { style: { position: "absolute", top: 4, left: 4, right: 4, height: 7, background: t.preview.s1, borderRadius: t.id === "min" ? 0 : 3 }} )
+                    , React.createElement('div', { style: { position: "absolute", top: 15, left: 4, width: 16, height: 5, background: t.preview.s1, borderRadius: t.id === "min" ? 0 : 2 }} )
+                    , React.createElement('div', { style: { position: "absolute", top: 15, right: 4, width: 12, height: 5, background: t.preview.acc, borderRadius: t.id === "min" ? 0 : 2 }} )
+                    , React.createElement('div', { style: { position: "absolute", bottom: 3, left: "50%", transform: "translateX(-50%)", width: 20, height: 3, background: t.preview.acc, borderRadius: t.id === "min" ? 0 : 2 }} )
+                  )
+                  , React.createElement('span', { style: { fontSize: 10, fontWeight: 700, color: on ? t.preview.acc : "var(--tx2)", textAlign: "center", lineHeight: 1.2 } }, t.label)
+                  , t.id !== "light" && subPlan === "free" && React.createElement('span', { style: { fontSize: 9, color: "var(--tx3)" } }, "🔒")
+                  , on && (
+                    React.createElement('div', { style: { width: 16, height: 16, borderRadius: t.id === "min" ? 1 : "50%", background: t.preview.acc, display: "flex", alignItems: "center", justifyContent: "center" }}
+                      , React.createElement(Icon, { name: "check", size: 9, color: "#fff"} )
+                    )
+                  )
+                )
+              );
+            })
+          )
+        )
+
+        /* Profile section */
+        , React.createElement(Section, { id: "personal", title: "Личные данные" , emoji: "👤"}
+          , React.createElement(Field, { icon: "user", label: "Имя и фамилия"  , value: profile.name, onChange: v => setProfile(p => ({ ...p, name: v })), placeholder: "Иван Петров" } )
+          , React.createElement(Field, { icon: "phone", label: "Телефон", value: profile.phone, onChange: v => setProfile(p => ({ ...p, phone: v })), type: "tel", placeholder: "+7 900 000-00-00"  } )
+          , React.createElement(Field, { icon: "mail", label: "Email", value: profile.email, onChange: v => setProfile(p => ({ ...p, email: v })), type: "email", placeholder: "you@mail.ru"} )
+        )
+
+        /* Company section */
+        , React.createElement(Section, { id: "company", title: "Компания / ИП"  , emoji: "🏢"}
+          , React.createElement('div', { style: { background:"var(--s2)", borderRadius:"var(--r)", padding:14, marginBottom:14, border:"1px solid var(--b1)" } }
+            , React.createElement('div', { style: { display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 } }
+              , React.createElement('div', null
+                , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:11, fontWeight:800, color:"var(--tx)", marginBottom:2 } }, "Логотип компании")
+                , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" } }, "Отображается в шапке сметы (PDF)")
+              )
+              , (subPlan === "free" || subPlan === "min") && React.createElement('div', { style: { fontSize:9, padding:"3px 8px", borderRadius:6, background:"rgba(79,70,229,0.1)", color:"var(--acc)", fontWeight:700 } }, "⭐ Про и выше")
+            )
+            , React.createElement('div', { style: { display:"flex", alignItems:"center", gap:14 } }
+              , React.createElement('div', {
+                  onClick: function(){ if(subPlan==="free"||subPlan==="min"){ alert("Логотип компании доступен с тарифа Про и выше"); return; } document.getElementById("company-logo-input").click(); },
+                  style: { width:72, height:72, borderRadius:12, border:"2px dashed var(--b2)", background:"var(--s1)", display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, cursor:"pointer", overflow:"hidden", position:"relative" }
+                }
+                , (profile && profile.logo)
+                  ? React.createElement('img', { src:profile.logo, style:{ width:"100%", height:"100%", objectFit:"contain" } })
+                  : React.createElement('div', { style:{ textAlign:"center" } }
+                    , React.createElement('div', { style:{ fontSize:24, marginBottom:3 } }, "🖼️")
+                    , React.createElement('div', { style:{ fontSize:9, color:"var(--tx3)", fontWeight:600 } }, "Загрузить")
+                  )
+              )
+              , React.createElement('div', { style:{ flex:1 } }
+                , React.createElement('div', { style:{ fontSize:12, color:"var(--tx2)", lineHeight:1.5, marginBottom:8 } },
+                    (subPlan==="free"||subPlan==="min")
+                      ? "Доступно с тарифа Про — логотип появится в шапке PDF-сметы"
+                      : "PNG, JPG · рекомендуем 400×400 пикселей · появится в правом верхнем углу сметы"
+                  )
+                , (profile && profile.logo) && React.createElement('button', {
+                    onClick: function(){ setProfile(function(p){ return {...p, logo:""}; }); },
+                    style:{ fontSize:11, color:"var(--red)", background:"none", border:"none", cursor:"pointer", fontFamily:"inherit", fontWeight:600 }
+                  }, "✕ Удалить логотип")
+              )
+            )
+            , React.createElement('input', { id:"company-logo-input", type:"file", accept:"image/*", style:{ display:"none" },
+                onChange: function(e){
+                  const file = e.target.files&&e.target.files[0];
+                  if(!file) return;
+                  const reader = new FileReader();
+                  reader.onload = function(ev){ setProfile(function(p){ return {...p, logo:ev.target.result}; }); };
+                  reader.readAsDataURL(file);
+                }
+              })
+          )
+
+          , React.createElement(Field, { icon: "building", label: "Название компании" , value: profile.companyName, onChange: v => setProfile(p => ({ ...p, companyName: v })), placeholder: "ООО Строитель" } )
+          , React.createElement(Field, { icon: "card", label: "ИНН", value: profile.companyInn, onChange: v => setProfile(p => ({ ...p, companyInn: v })), placeholder: "000000000000"} )
+          , React.createElement(Field, { icon: "card", label: "ОГРН / ОГРНИП"  , value: profile.companyOgrn, onChange: v => setProfile(p => ({ ...p, companyOgrn: v })), placeholder: "000000000000000"} )
+          , React.createElement(Field, { icon: "home", label: "Юридический адрес" , value: profile.companyAddress, onChange: v => setProfile(p => ({ ...p, companyAddress: v })), placeholder: "г. Москва"    } )
+        )
+
+        /* Bank section */
+        , React.createElement(Section, { id: "bank", title: "Реквизиты", emoji: "🏦"}
+          , React.createElement(Field, { icon: "building", label: "Название банка" , value: profile.bankName, onChange: v => setProfile(p => ({ ...p, bankName: v })), placeholder: "Сбербанк"} )
+          , React.createElement(Field, { icon: "card", label: "Расчётный счёт" , value: profile.bankAccount, onChange: v => setProfile(p => ({ ...p, bankAccount: v })), placeholder: "00000000000000000000"} )
+          , React.createElement(Field, { icon: "card", label: "БИК", value: profile.bankBik, onChange: v => setProfile(p => ({ ...p, bankBik: v })), placeholder: "000000000"} )
+          , React.createElement(Field, { icon: "card", label: "Корр. счёт" , value: profile.bankKs, onChange: v => setProfile(p => ({ ...p, bankKs: v })), placeholder: "00000000000000000000"} )
+        )
+
+        /* Save button */
+        , React.createElement('button', {
+          onClick: save,
+          style: {
+            width: "100%", padding: "14px", borderRadius: "var(--r)", border: "none", cursor: "pointer",
+            background: saved ? "linear-gradient(135deg, #10b981, #059669)" : "linear-gradient(135deg, #6c63ff, #a78bfa)",
+            color: "#fff", fontSize: 15, fontWeight: 700, fontFamily: "'Unbounded', sans-serif",
+            boxShadow: saved ? "0 4px 16px rgba(16,185,129,0.35)" : "0 4px 16px rgba(108,99,255,0.35)",
+            transition: "all 0.3s", marginTop: 8, display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+          }}
+          , saved ? React.createElement(React.Fragment, null, React.createElement(Icon, { name: "check", size: 18, color: "#fff"} ), " Сохранено!" ) : "Сохранить изменения"
+        )
+
+        /* Logout */
+        , React.createElement('button', { style: {
+          width: "100%", marginTop: 12, padding: "13px", borderRadius: "var(--r)",
+          border: "1.5px solid rgba(239,68,68,0.25)", background: "rgba(239,68,68,0.08)",
+          color: "var(--red)", fontSize: 14, fontWeight: 600, cursor: "pointer",
+          fontFamily: "inherit", display: "flex", alignItems: "center", justifyContent: "center", gap: 8,
+        }}
+          , React.createElement(Icon, { name: "logout", size: 16, color: "var(--red)"} ), "Выйти из аккаунта"
+
+        )
+
+        , React.createElement('div', { style: { height: 20 }} )
+      )
+
+    )
+  );
+}
+
+// ==================== BOTTOM NAV ====================
+function BottomNav({ tab, setTab, lang }) {
+  const tabs = [
+    { id: "home",    label: t(lang,"projects"), icon: "home"     },
+    { id: "prices",  label: t(lang,"prices"),   icon: "pricetag" },
+    { id: "calc",    label: t(lang,"calc"),      icon: "calc"     },
+    { id: "catalog", label: t(lang,"catalog"),   icon: "book"     },
+    { id: "account", label: t(lang,"account"),   icon: "user"     },
+  ];
+  return (
+    React.createElement('div', { style: {
+      position: "relative", width: "100%", maxWidth: "min(480px, 95vw)", flexShrink: 0, zIndex: 100,
+      background: "rgba(15,17,23,0.92)", backdropFilter: "blur(20px) saturate(180%)",
+      borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", zIndex: 200,
+      boxShadow: "0 -1px 0 rgba(255,255,255,0.04), 0 -20px 40px rgba(0,0,0,0.4)",
+      paddingBottom: "env(safe-area-inset-bottom, 0px)",
+    }}
+      , tabs.map(t => {
+        const isActive = tab === t.id;
+        return (
+          React.createElement('button', { key: t.id, onClick: () => setTab(t.id), style: {
+            flex: 1, padding: "10px 4px 14px", border: "none", background: "none", cursor: "pointer",
+            display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+            color: isActive ? "#a78bfa" : "rgba(148,163,184,0.6)", transition: "color 0.2s",
+            position: "relative",
+          }}
+            , isActive && (
+              React.createElement('div', { style: {
+                position: "absolute", top: 0, left: "50%", transform: "translateX(-50%)",
+                width: 36, height: 2, borderRadius: "0 0 3px 3px",
+                background: "linear-gradient(90deg, #6c63ff, #a78bfa)",
+              }} )
+            )
+            , React.createElement('div', { style: {
+              width: 36, height: 36, borderRadius: 11,
+              background: isActive ? "rgba(108,99,255,0.15)" : "transparent",
+              display: "flex", alignItems: "center", justifyContent: "center",
+              transition: "all 0.2s",
+              border: isActive ? "1px solid rgba(108,99,255,0.25)" : "1px solid transparent",
+            }}
+              , React.createElement(Icon, { name: t.icon, size: 19, color: isActive ? "#a78bfa" : "rgba(148,163,184,0.6)"} )
+            )
+            , React.createElement('span', { style: { fontSize: 9, fontWeight: isActive ? 700 : 400, letterSpacing: "0.04em", textTransform: "uppercase" }}, t.label)
+          )
+        );
+      })
+    )
+  );
+}
+
+// ==================== APP ====================
+
+// ==================== ONBOARDING ====================
+
+
+function OnboardingScreen({ onDone }) {
+  const { lang } = useApp();
+  const [step, setStep] = useState(1);   // skip lang, go straight to slides
+  const [pickedLang, setPickedLang] = useState("ru");
+  const [slide, setSlide] = useState(0);
+  const [animKey, setAnimKey] = useState(0);
+
+  const SLIDES = [
+    { bg:"linear-gradient(135deg,#1e1b4b,#3730a3)", icon:"🏗️",
+      title:{"ru":"СтройСмета","en":"ConstructEst","kz":"ҚұрылысСмета"},
+      subtitle:"ConstructEst",
+      desc:{"ru":"Профессиональные сметы для ремонта и строительства",
+            "en":"Professional estimates for renovation & construction",
+            "kz":"Жөндеу мен құрылысқа арналған кәсіби сметалар"},
+      features:{"ru":["📋 Сметы работ","🧱 Материалы","🏠 По помещениям","💰 Мои цены"],
+                "en":["📋 Work Estimates","🧱 Materials","🏠 By Rooms","💰 My Prices"],
+                "kz":["📋 Жұмыс сметалары","🧱 Материалдар","🏠 Бөлмелер бойынша","💰 Менің бағам"]},
+      accent:"#818cf8" },
+    { bg:"linear-gradient(135deg,#0c4a6e,#0284c7)", icon:"📋",
+      title:{"ru":"Сметы работ","en":"Work Estimates","kz":"Жұмыс сметалары"},
+      subtitle:"",
+      desc:{"ru":"Разделы, работы, объёмы, цены. Экспорт в PDF и CSV.",
+            "en":"Sections, works, volumes, prices. Export to PDF & CSV.",
+            "kz":"Бөлімдер, жұмыстар, көлемдер, бағалар. PDF және CSV экспорты."},
+      features:{"ru":["➕ Разделы и работы","📐 Авторасчёт объёмов","💾 Экспорт PDF/CSV","📊 Итого по разделам"],
+                "en":["➕ Sections & works","📐 Auto volume calc","💾 PDF/CSV export","📊 Section totals"],
+                "kz":["➕ Бөлімдер мен жұмыстар","📐 Авто есептеу","💾 PDF/CSV экспорт","📊 Бөлімдер жиыны"]},
+      accent:"#38bdf8" },
+    { bg:"linear-gradient(135deg,#064e3b,#059669)", icon:"🧱",
+      title:{"ru":"Материалы","en":"Materials","kz":"Материалдар"},
+      subtitle:"",
+      desc:{"ru":"Встроенный справочник 200+ материалов. Считайте по площади.",
+            "en":"Built-in catalog of 200+ materials. Calculate by area.",
+            "kz":"200+ материалдан тұратын кірістірілген каталог."},
+      features:{"ru":["📦 200+ материалов","🔍 Поиск по каталогу","➕ Свои материалы","📐 Расчёт по площади"],
+                "en":["📦 200+ materials","🔍 Catalog search","➕ Own materials","📐 Area calculation"],
+                "kz":["📦 200+ материал","🔍 Каталог іздеу","➕ Өз материалдарыңыз","📐 Аудан есебі"]},
+      accent:"#34d399" },
+    { bg:"linear-gradient(135deg,#4a1d96,#7c3aed)", icon:"🏠",
+      title:{"ru":"По помещениям","en":"By Rooms","kz":"Бөлмелер бойынша"},
+      subtitle:"",
+      desc:{"ru":"Разбивайте по комнатам. Площадь считается автоматически.",
+            "en":"Break down by rooms. Area is calculated automatically.",
+            "kz":"Бөлмелер бойынша бөліңіз. Аудан автоматты есептеледі."},
+      features:{"ru":["🛋️ Любые помещения","📐 Авто-геометрия","📊 Итого по комнате","🔄 Синхронизация"],
+                "en":["🛋️ Any rooms","📐 Auto geometry","📊 Room total","🔄 Sync"],
+                "kz":["🛋️ Кез келген бөлмелер","📐 Авто геометрия","📊 Бөлме жиыны","🔄 Синхронизация"]},
+      accent:"#a78bfa" },
+    { bg:"linear-gradient(135deg,#78350f,#d97706)", icon:"💰",
+      title:{"ru":TT(lang,"Мои цены"),"en":"My Prices","kz":"Менің бағам"},
+      subtitle:"",
+      desc:{"ru":"Сохраняйте расценки. Группы работ — одним нажатием.",
+            "en":"Save your prices. Work groups — one tap.",
+            "kz":"Бағаларыңызды сақтаңыз. Жұмыс топтары — бір рет басыңыз."},
+      features:{"ru":["🏷️ Расценки работ","⚡ Группы работ","📋 Вставка в смету","✏️ Редактирование"],
+                "en":["🏷️ Work prices","⚡ Work groups","📋 Insert to estimate","✏️ Edit"],
+                "kz":["🏷️ Жұмыс бағалары","⚡ Жұмыс топтары","📋 Сметаға кірістіру","✏️ Өңдеу"]},
+      accent:"#fbbf24" },
+    { bg:"linear-gradient(135deg,#0f172a,#1e3a5f)", icon:"🧮",
+      title:{"ru":"Калькулятор","en":"Calculator","kz":"Калькулятор"},
+      subtitle:"",
+      desc:{"ru":"Плитка, краска, обои, ламинат — с учётом отходов.",
+            "en":"Tiles, paint, wallpaper, laminate — with waste factor.",
+            "kz":"Плитка, бояу, тапет, ламинат — қалдықтарды ескеріп."},
+      features:{"ru":["🪟 Плитка и кафель","🎨 Краска и грунт","📄 Обои и ламинат","♻️ Учёт отходов"],
+                "en":["🪟 Tiles & ceramic","🎨 Paint & primer","📄 Wallpaper & laminate","♻️ Waste factor"],
+                "kz":["🪟 Плитка мен кафель","🎨 Бояу мен топырақтағыш","📄 Тапет пен ламинат","♻️ Қалдық есебі"]},
+      accent:"#60a5fa" },
+  ];
+
+  const LABELS = {
+    ru: { skip:"Пропустить", next:"Далее →", start:"Начать →", chooseLang:"Выберите язык" },
+    en: { skip:"Skip", next:"Next →", start:"Start →", chooseLang:"Choose Language" },
+    kz: { skip:"Өткізу", next:"Келесі →", start:"Бастау →", chooseLang:"Тілді таңдаңыз" },
+  };
+
+  const L = LABELS[pickedLang] || LABELS.ru;
+
+  const goSlide = function(n) {
+    setSlide(n);
+    setAnimKey(function(k){ return k+1; });
+  };
+
+  // -- Feature slides -----------------------------------------
+  const s = SLIDES[slide];
+  const isLast = slide === SLIDES.length - 1;
+  const sTitle    = (typeof s.title    === "object") ? (s.title[pickedLang]    || s.title.ru)    : s.title;
+  const sDesc     = (typeof s.desc     === "object") ? (s.desc[pickedLang]     || s.desc.ru)     : s.desc;
+  const sFeatures = (typeof s.features === "object") ? (s.features[pickedLang] || s.features.ru) : s.features;
+
+  return React.createElement('div', {
+    style:{ position:"absolute", inset:0, zIndex:9999, display:"flex",
+      flexDirection:"column", overflow:"hidden", fontFamily:"inherit" }
+  },
+    React.createElement('style', null,
+      "@keyframes fadeUp{from{transform:translateY(24px);opacity:0}to{transform:translateY(0);opacity:1}}" +
+      ".ob-slide{animation:fadeUp 0.4s ease forwards}" +
+      ".ob-feat{animation:fadeUp 0.5s ease forwards;opacity:0}" +
+      ".ob-feat:nth-child(1){animation-delay:0.05s}" +
+      ".ob-feat:nth-child(2){animation-delay:0.12s}" +
+      ".ob-feat:nth-child(3){animation-delay:0.19s}" +
+      ".ob-feat:nth-child(4){animation-delay:0.26s}"
+    ),
+    React.createElement('div', {
+      key: "hero-"+animKey, className:"ob-slide",
+      style:{ background:s.accent+"dd", flex:"0 0 50%", display:"flex", flexDirection:"column",
+        alignItems:"center", justifyContent:"center", padding:"28px 24px 20px", position:"relative" }
+    },
+      React.createElement('div', {
+        style:{ position:"absolute", top:16, left:18, background:"rgba(255,255,255,0.15)",
+          borderRadius:10, padding:"3px 9px", fontSize:11, color:"rgba(255,255,255,0.7)", fontWeight:700 }
+      }, (slide+1)+" / "+SLIDES.length),
+      React.createElement('button', {
+        onClick: function(){ onDone(pickedLang); },
+        style:{ position:"absolute", top:16, right:16, background:"rgba(255,255,255,0.15)",
+          border:"1px solid rgba(255,255,255,0.3)", borderRadius:20, padding:"5px 14px",
+          color:"rgba(255,255,255,0.8)", fontSize:12, fontWeight:600, cursor:"pointer", fontFamily:"inherit" }
+      }, L.skip),
+      React.createElement('div', { style:{ fontSize:60, marginBottom:12, filter:"drop-shadow(0 4px 16px rgba(0,0,0,0.3))" } }, s.icon),
+      React.createElement('div', { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:20,
+        fontWeight:900, color:"#fff", marginBottom:8, textAlign:"center" } }, sTitle),
+      React.createElement('div', { style:{ fontSize:13, color:"rgba(255,255,255,0.9)",
+        textAlign:"center", lineHeight:1.65, maxWidth:300 } }, sDesc)
+    ),
+    React.createElement('div', {
+      style:{ background:"var(--bg,#f8faff)", flex:1, display:"flex", flexDirection:"column", padding:"16px 16px 0" }
+    },
+      React.createElement('div', {
+        key: "feats-"+animKey,
+        style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 }
+      },
+        sFeatures.map(function(f, i) {
+          return React.createElement('div', {
+            key: i, className:"ob-feat",
+            style:{ background:"rgba(255,255,255,0.9)", border:"1.5px solid rgba(0,0,0,0.08)",
+              borderRadius:12, padding:"10px 12px", display:"flex", alignItems:"center", gap:8 }
+          },
+            React.createElement('span', { style:{ fontSize:16 } }, f.split(" ")[0]),
+            React.createElement('span', { style:{ fontSize:11, fontWeight:600, color:"#374151", lineHeight:1.3 } },
+              f.split(" ").slice(1).join(" "))
+          );
+        })
+      ),
+      React.createElement('div', { style:{ display:"flex", justifyContent:"center", gap:6, marginBottom:12 } },
+        SLIDES.map(function(_, i) {
+          return React.createElement('div', {
+            key: i, onClick: function(){ goSlide(i); },
+            style:{ width: i===slide?22:7, height:7, borderRadius:4, cursor:"pointer",
+              background: i===slide ? s.accent : "#d1d5db", transition:"all 0.25s" }
+          });
+        })
+      ),
+      React.createElement('div', { style:{ display:"flex", gap:10, paddingBottom:24 } },
+        slide > 0 && React.createElement('button', {
+          onClick: function(){ goSlide(slide-1); },
+          style:{ flex:1, padding:"13px", borderRadius:14, border:"1.5px solid #e5e7eb",
+            background:"#f9fafb", color:"#6b7280", fontWeight:700, fontSize:14,
+            cursor:"pointer", fontFamily:"inherit" }
+        }, "‹ "+L.skip),
+        React.createElement('button', {
+          onClick: function(){ isLast ? onDone(pickedLang) : goSlide(slide+1); },
+          style:{ flex:2, padding:"13px", borderRadius:14, border:"none",
+            background:s.accent, color:"#fff", fontWeight:800, fontSize:14,
+            cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 16px "+s.accent+"55" }
+        }, isLast ? L.start : L.next)
+      )
+    )
+  );
+}
+
+
+
+
+
+
+export default function App() {
+  const [state, dispatch] = useReducer(appReducer, initialData, function(init) {
+    // Restore persisted state from localStorage on startup
+    try {
+      const saved = localStorage.getItem("sm_appstate");
+      if (saved) {
+        const parsed = JSON.parse(saved);
+        // Merge saved state with initialData so new fields added in updates are present
+        return {
+          ...init,
+          ...parsed,
+          // Always keep priceBook merged (saved overrides defaults)
+          priceBook: parsed.priceBook
+            ? { ...init.priceBook, ...parsed.priceBook }
+            : init.priceBook,
+          // Ensure arrays always exist
+          projects:        Array.isArray(parsed.projects)        ? parsed.projects        : init.projects,
+          workGroups:      Array.isArray(parsed.workGroups)      ? parsed.workGroups      : init.workGroups,
+          customMaterials: Array.isArray(parsed.customMaterials) ? parsed.customMaterials : init.customMaterials,
+          userMatGroups:   Array.isArray(parsed.userMatGroups)   ? parsed.userMatGroups   : init.userMatGroups,
+          deletedCatalogIds: Array.isArray(parsed.deletedCatalogIds) ? parsed.deletedCatalogIds : init.deletedCatalogIds,
+          priceOrder:      Array.isArray(parsed.priceOrder)      ? parsed.priceOrder      : init.priceOrder,
+          catalogPriceOverrides: parsed.catalogPriceOverrides && typeof parsed.catalogPriceOverrides === 'object'
+            ? parsed.catalogPriceOverrides : init.catalogPriceOverrides,
+        };
+      }
+    } catch(e) {
+      // If saved state is corrupt, start fresh
+      try { localStorage.removeItem("sm_appstate"); } catch(_) {}
+    }
+    return init;
+  });
+
+  // Persist app state: localStorage + Firestore (when logged in)
+  const _saveTimer = useRef(null);
+  useEffect(function() {
+    clearTimeout(_saveTimer.current);
+    _saveTimer.current = setTimeout(function() {
+      // Always save locally
+      try { localStorage.setItem("sm_appstate", JSON.stringify(state)); } catch(e) {}
+      // If logged in with Firebase — also save to Firestore
+      const fb = typeof window !== "undefined" && window._smFirebase;
+      const fbUser = fb && fb.auth && fb.auth.currentUser;
+      if (fbUser && fb.db) {
+        fb.db.collection("users").doc(fbUser.uid)
+          .set({ appstate: state, updatedAt: new Date().toISOString() }, { merge: true })
+          .catch(function(e) { console.warn("[СтройСмета] Firestore save error:", e.message); });
+      }
+    }, 1500);
+  }, [state]);
+  const [tab, setTab] = useState("home");
+  const [nav, setNav] = useState({ screen: "home", params: {} });
+  const lang = "ru"; const setLang = () => {};
+  const currency = "ru"; const setCurrency = () => {};
+  const [firstLaunch, setFirstLaunch] = useState(false);
+
+  // Global subscription plan - shared across all screens
+  const [subPlan, setSubPlan] = useState(function() {
+    try { return localStorage.getItem("sm_subplan") || "free"; } catch(e) { return "free"; }
+  });
+  useEffect(function() {
+    try { localStorage.setItem("sm_subplan", subPlan); } catch(e) {}
+  }, [subPlan]);
+  const isPaid = subPlan !== "free";
+  if (typeof window !== "undefined") { window.__appLang = lang; window.__appCurrency = currency; }
+  const [theme, setTheme] = useState("light");
+
+  // -- Auth state — Firebase + localStorage fallback ------------------
+  const [authUser, setAuthUser] = useState(() => {
+    try { const s = localStorage.getItem("stroismeta_auth"); return s ? JSON.parse(s) : null; } catch(e) { return null; }
+  });
+  const [showAuth, setShowAuth] = useState(false);
+  const [showGuestWarn, setShowGuestWarn] = useState(false);
+  const [fbSyncStatus, setFbSyncStatus] = useState("idle"); // idle | syncing | synced | error
+
+  // Listen to Firebase Auth state changes
+  useEffect(function() {
+    const fb = typeof window !== "undefined" && window._smFirebase;
+    if (!fb || !fb.auth) return;
+    const unsubscribe = fb.auth.onAuthStateChanged(function(fbUser) {
+      if (fbUser) {
+        const u = {
+          uid: fbUser.uid, id: fbUser.uid,
+          name: fbUser.displayName || fbUser.email || fbUser.phoneNumber || "Пользователь",
+          email: fbUser.email || "",
+          phone: fbUser.phoneNumber || "",
+        };
+        setAuthUser(u);
+        try { localStorage.setItem("stroismeta_auth", JSON.stringify(u)); } catch(e) {}
+        // Load data from Firestore
+        _fbLoadState(fbUser.uid);
+      } else {
+        // Firebase signed out but might have local auth — keep it
+        const local = localStorage.getItem("stroismeta_auth");
+        if (!local) setAuthUser(null);
+      }
+    });
+    return unsubscribe;
+  }, []);
+
+  // Load state from Firestore
+  const _fbLoadState = async function(uid) {
+    const fb = window._smFirebase;
+    if (!fb || !fb.db) return;
+    try {
+      setFbSyncStatus("syncing");
+      const doc = await fb.db.collection("users").doc(uid).get();
+      if (doc.exists) {
+        const saved = doc.data().appstate;
+        if (saved) {
+          dispatch({ type: "_FB_LOAD_STATE", payload: saved });
+        }
+      }
+      setFbSyncStatus("synced");
+    } catch(e) {
+      console.warn("[СтройСмета] Firestore load error:", e.message);
+      setFbSyncStatus("error");
+    }
+  };
+
+  const saveAuth = (u) => {
+    if (u === null) {
+      // Sign out
+      const fb = typeof window !== "undefined" && window._smFirebase;
+      if (fb && fb.auth) { fb.auth.signOut().catch(function(){}); }
+      setAuthUser(null);
+      try { localStorage.removeItem("stroismeta_auth"); } catch(e) {}
+    } else {
+      setAuthUser(u);
+      try { localStorage.setItem("stroismeta_auth", JSON.stringify(u)); } catch(e) {}
+    }
+  };
+
+  const [profile, setProfile] = useState(() => {
+    try {
+      const s = localStorage.getItem("stroismeta_profile");
+      if (s) try { return JSON.parse(s); } catch(e2) {}
+    } catch(e) {}
+    return {
+      name: "", phone: "", email: "",
+      companyName: "СтройМастер ИП",
+      companyInn: "",
+      companyOgrn: "",
+      companyAddress: "г. Москва",
+      bankName: "Сбербанк",
+      bankAccount: "", bankBik: "", bankKs: "",
+      site: "", photo: "", logo: "",
+    };
+  });
+
+  // Sync profile to localStorage on change
+  useEffect(() => {
+    try { localStorage.setItem("stroismeta_profile", JSON.stringify(profile)); } catch(e) {}
+  }, [profile]);
+
+  // When auth changes, pre-fill profile name/email/phone if empty
+  useEffect(() => {
+    if (authUser) {
+      setProfile(p => ({
+        ...p,
+        name: p.name || authUser.name || "",
+        email: p.email || authUser.email || "",
+        phone: p.phone || authUser.phone || "",
+      }));
+    }
+  }, [authUser]);
+
+  // Responsive app width
+  const [appMaxWidth] = useState(() => {
+    try {
+      if (typeof window !== "undefined") {
+        return window.innerWidth >= 1024 ? "900px" : window.innerWidth >= 600 ? "600px" : "100%";
+      }
+    } catch(e) {}
+    return "100%";
+  });
+
+  // Apply theme CSS variables
+  const lightVars = `
+    --bg:#ffffff; --s1:#f8faff; --s2:#f0f3fa; --s3:#e4e8f2;
+    --b1:rgba(0,0,0,0.08); --b2:rgba(0,0,0,0.13);
+    --acc:#4f46e5; --acc2:#6366f1; --acc3:rgba(79,70,229,0.1);
+    --gold:#92400e; --glow:rgba(79,70,229,0.1);
+    --green:#065f46; --red:#b91c1c; --cyan:#0369a1;
+    --tx:#111827; --tx2:#374151; --tx3:#6b7280;
+    --r:16px; --rs:10px; --rm:20px;
+    --sh:0 1px 6px rgba(0,0,0,0.07);
+    --hdr-bg:linear-gradient(135deg,#4f46e5 0%,#6366f1 100%);
+    --hdr-tx:#ffffff;
+    --hdr-tx2:rgba(255,255,255,0.8);
+  `;
+  const darkVars = `
+    --bg:#0d0f14; --s1:#151821; --s2:#1c1f2e; --s3:#252940;
+    --b1:rgba(255,255,255,0.07); --b2:rgba(255,255,255,0.13);
+    --acc:#7c6fff; --acc2:#a78bfa; --acc3:rgba(124,111,255,0.18);
+    --gold:#fbbf24; --glow:rgba(124,111,255,0.3);
+    --green:#34d399; --red:#f87171; --cyan:#22d3ee;
+    --tx:#e8eaf6; --tx2:#9fa8c0; --tx3:#525d78;
+    --r:16px; --rs:10px; --rm:20px;
+    --sh:0 8px 32px rgba(0,0,0,0.6);
+    --hdr-bg:linear-gradient(135deg,#1c1f2e 0%,#252940 100%);
+    --hdr-tx:#e8eaf6;
+    --hdr-tx2:rgba(232,234,246,0.6);
+  `;
+  const minVars = `
+    --bg:#ffffff; --s1:#fafafa; --s2:#f2f2f2; --s3:#e5e5e5;
+    --b1:rgba(0,0,0,0.12); --b2:rgba(0,0,0,0.2);
+    --acc:#111111; --acc2:#000000; --acc3:rgba(0,0,0,0.07);
+    --gold:#111111; --glow:rgba(0,0,0,0.08);
+    --green:#1a5c2a; --red:#8b0000; --cyan:#1a3a5c;
+    --tx:#000000; --tx2:#1a1a1a; --tx3:#666666;
+    --r:14px; --rs:8px; --rm:18px;
+    --sh:0 2px 8px rgba(0,0,0,0.12);
+    --hdr-bg:#1a1a1a; --hdr-tx:#ffffff; --hdr-tx2:rgba(255,255,255,0.7);
+  `;
+  // Classic theme: red header, white cards, clean Material Design look
+  const classicVars = `
+    --bg:#f2f2f2; --s1:#ffffff; --s2:#f5f5f5; --s3:#ebebeb;
+    --b1:rgba(0,0,0,0.1); --b2:rgba(0,0,0,0.18);
+    --acc:#e53935; --acc2:#ef5350; --acc3:rgba(229,57,53,0.08);
+    --gold:#f57c00; --glow:rgba(229,57,53,0.1);
+    --green:#2e7d32; --red:#c62828; --cyan:#0277bd;
+    --tx:#212121; --tx2:#424242; --tx3:#9e9e9e;
+    --r:6px; --rs:4px; --rm:8px;
+    --sh:0 1px 3px rgba(0,0,0,0.12),0 1px 2px rgba(0,0,0,0.08);
+    --hdr-bg:#e53935; --hdr-tx:#ffffff; --hdr-tx2:rgba(255,255,255,0.8);
+  `;
+
+  const navigate = useCallback((screen, params = {}) => {
+    setNav({ screen, params });
+    if (screen === "home") setTab("home");
+  }, []);
+
+  const [prevTab, setPrevTab] = useState("home");
+  const handleTabChange = (t) => {
+    setPrevTab(tab);
+    setTab(t);
+    setNav({ screen: t, params: {} });
+  };
+
+  // Language selector shown as overlay (not early return - CSS vars must be loaded first)
+
+  let screen;
+  if (nav.screen === "rooms") {
+    screen = React.createElement(RoomsScreen, { state: state, dispatch: dispatch, projectId: nav.params.projectId, navigate: navigate} );
+  } else if (nav.screen === "roomdetail") {
+    screen = React.createElement(RoomDetailScreen, { state: state, dispatch: dispatch, projectId: nav.params.projectId, roomId: nav.params.roomId, navigate: navigate} );
+  } else if (nav.screen === "project") {
+    screen = React.createElement(ProjectScreen, { state: state, dispatch: dispatch, projectId: nav.params.projectId, navigate: navigate, mode: nav.params.mode, profile: profile, authUser: authUser, setShowAuth: setShowAuth} );
+  } else if (tab === "catalog") {
+    screen = React.createElement(CatalogScreen, { state: state, dispatch: dispatch, navigate: navigate, prevTab: prevTab, setTab: handleTabChange, lang: lang} );
+  } else if (tab === "calc") {
+    screen = React.createElement(CalcScreen, { state: state, dispatch: dispatch, prevTab: prevTab, setTab: handleTabChange, lang: lang} );
+  } else if (tab === "prices") {
+    screen = React.createElement(PriceBookScreen, { state: state, dispatch: dispatch, lang: lang} );
+  } else if (tab === "export") {
+    screen = React.createElement('div', { style: {padding:20,color:"var(--tx3)"}}, "Экспорт");
+  } else if (tab === "account") {
+    screen = React.createElement(AccountScreen, { theme: theme, setTheme: setTheme, profile: profile, setProfile: setProfile, lang: lang, setLang: setLang, currency: currency, setCurrency: setCurrency, setTab: handleTabChange, authUser: authUser, saveAuth: saveAuth, setShowAuth: setShowAuth, subPlan: subPlan, setSubPlan: setSubPlan} );
+  } else if (tab === "subscription") {
+    screen = React.createElement(SubscriptionScreen, { setTab: handleTabChange, lang: lang, subPlan: subPlan, setSubPlan: setSubPlan} );
+  } else {
+    screen = React.createElement(ProjectsScreen, { state: state, dispatch: dispatch, navigate: navigate, theme: theme, lang: lang, subPlan: subPlan} );
+  }
+
+  return (
+    React.createElement(AppCtx.Provider, { value: { lang, currency: currency || lang } }
+      , React.createElement(React.Fragment, null
+      , React.createElement('style', {}, `
+        @import url('https://fonts.googleapis.com/css2?family=Unbounded:wght@400;600;700;800;900&family=Golos+Text:wght@400;500;600;700&display=swap');
+        :root {
+          ${theme === "dark" ? darkVars : theme === "min" ? minVars : theme === "classic" ? classicVars : lightVars}
+        }
+        *{box-sizing:border-box;margin:0;padding:0}
+        html,body{background:var(--bg);color:var(--tx);height:100%;margin:0;padding:0}
+        #root{height:100%;display:flex;flex-direction:column;align-items:center;background:var(--bg)}
+        body{font-family:'Golos Text',-apple-system,BlinkMacSystemFont,sans-serif;-webkit-font-smoothing:antialiased}
+        input,select,textarea{color-scheme:${theme === "light" || theme === "min" ? "dark" : "light"};font-family:'Golos Text',sans-serif}
+        button{font-family:'Golos Text',sans-serif;cursor:pointer}
+        input::placeholder{color:var(--tx3)}
+        /* ── Responsive layout ── */
+        @media (min-width:600px){
+          #root{background:var(--bg);justify-content:center;}
+          body{background:#0a0a0a}
+        }
+        @media (min-width:768px){
+          .resp-2col{display:grid!important;grid-template-columns:1fr 1fr;gap:14px!important}
+          .resp-3col{display:grid!important;grid-template-columns:repeat(3,1fr);gap:12px!important}
+          .resp-sidebar{display:grid!important;grid-template-columns:260px 1fr;gap:0!important;height:100vh}
+        }
+        @keyframes slideUp{from{transform:translateY(100%);opacity:0}to{transform:translateY(0);opacity:1}}
+        @keyframes slideInRight{from{transform:translateX(calc(-50% + 100%));opacity:0}to{transform:translateX(-50%);opacity:1}}
+        @keyframes fadeIn{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:translateY(0)}}
+        @keyframes spin{to{transform:rotate(360deg)}}
+        @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+        @keyframes shimmer{0%{background-position:-400px 0}100%{background-position:400px 0}}
+        /* ── Responsive breakpoints ── */
+        @media (min-width:600px){
+          :root{--r:18px;--rs:12px;--rm:22px}
+        }
+        @media (min-width:1024px){
+          :root{--r:20px;--rs:14px;--rm:24px}
+        }
+        /* Tablet grid layouts */
+        @media (min-width:768px){
+          .resp-grid-2{display:grid!important;grid-template-columns:1fr 1fr;gap:14px}
+          .resp-grid-3{display:grid!important;grid-template-columns:1fr 1fr 1fr;gap:12px}
+        }
+        @keyframes popIn{0%{transform:scale(.85);opacity:0}60%{transform:scale(1.04)}100%{transform:scale(1);opacity:1}}
+        ::-webkit-scrollbar{width:3px;height:3px}
+        ::-webkit-scrollbar-track{background:transparent}
+        ::-webkit-scrollbar-thumb{background:var(--s3);border-radius:2px}
+        ${theme === "min" ? `
+          :root { --acc: #111; --acc2: #000; --hdr-bg: #1a1a1a !important; --hdr-tx: #ffffff; }
+          [style*="linear-gradient(160deg"] { background: #1a1a1a !important; color: #fff !important; }
+          input, select, textarea { border-color: #cccccc !important; }
+          button { font-weight: 700 !important; }
+        ` : ""}
+        ${theme === "classic" ? `
+          * { border-radius: 4px !important; }
+          .unbounded-text { font-family: 'Roboto', sans-serif !important; }
+          [style*="Unbounded"] { font-family: sans-serif !important; font-weight: 700 !important; }
+          input, select, textarea { border-radius: 4px !important; border-bottom: 2px solid #e53935 !important; border-top: none !important; border-left: none !important; border-right: none !important; }
+          button { border-radius: 4px !important; }
+          ::-webkit-scrollbar-thumb { background: #e5393533 !important; }
+        ` : ""}
+      `)
+      , React.createElement('div', { style: {
+        width: "100%",
+        maxWidth: appMaxWidth,
+        height: "100vh",
+        background: "var(--bg)",
+        position: "relative",
+        overflow: "visible",
+        display: "flex",
+        flexDirection: "column",
+      }}
+        , React.createElement('div', { id: "scrollContainer", style: { flex: 1, overflowY: "auto", paddingBottom: 80, position: "relative", minHeight: 0 }}
+          , React.createElement(ErrorBoundary, null, screen)
+        )
+        , firstLaunch && (
+          React.createElement(OnboardingScreen, {
+            onDone: function(selectedLang){ setLang(selectedLang); setFirstLaunch(false); }
+          })
+        )
+        , showGuestWarn && !authUser && React.createElement(GuestWarningModal, {
+            onLogin: function(){ setShowGuestWarn(false); setShowAuth(true); },
+            onDismiss: function(){
+              setShowGuestWarn(false);
+              try { localStorage.setItem("sm_guest_dismissed","1"); } catch(e) {}
+            }
+          })
+        , showAuth && React.createElement(AuthModal, { onClose: () => setShowAuth(false), onAuth: function(user){ saveAuth(user); setShowAuth(false); } })
+        , React.createElement(BottomNav, { tab: nav.screen === "project" || nav.screen === "rooms" || nav.screen === "roomdetail" ? "" : tab, setTab: handleTabChange, lang: lang })
+      )
+    )
+    )
+  );
+}
+
+
+
+
