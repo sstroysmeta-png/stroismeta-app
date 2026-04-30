@@ -18,7 +18,7 @@
   <!-- Babel Standalone -->
   <script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.10/babel.min.js"></script>
 
-  <link rel="manifest" href="/manifest.json">
+  <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#7c6fff">
 
   <style>
@@ -43,14 +43,13 @@
   //  2. Настройки проекта → Ваши приложения → </> → SDK setup
   //  3. Скопируйте блок firebaseConfig и вставьте сюда
   // ═══════════════════════════════════════════════════════════
-const firebaseConfig = {
-  apiKey: "AIzaSyDbPXLB-eP4n6PryTeJi19eVnDZ-GvhCxU",
-  authDomain: "stroismeta-39ae1.firebaseapp.com",
-  projectId: "stroismeta-39ae1",
-  storageBucket: "stroismeta-39ae1.firebasestorage.app",
-  messagingSenderId: "304504642509",
-  appId: "1:304504642509:web:f6ef4af08ccfc793010284"
-};
+  const firebaseConfig = {
+    apiKey: "AIzaSyDbPXLB-eP4n6PryTeJi19eVnDZ-GvhCxU",
+    authDomain: "stroismeta-39ae1.firebaseapp.com",
+    projectId: "stroismeta-39ae1",
+    storageBucket: "stroismeta-39ae1.firebasestorage.app",
+    messagingSenderId: "304504642509",
+    appId: "1:304504642509:web:f6ef4af08ccfc793010284",
   };
   // ═══════════════════════════════════════════════════════════
 
@@ -13048,7 +13047,7 @@ function BottomNav({ tab, setTab, lang }) {
   ];
   return (
     React.createElement('div', { style: {
-      position: "relative", width: "100%", maxWidth: "min(480px, 95vw)", flexShrink: 0, zIndex: 100,
+      position: "relative", width: "100%", flexShrink: 0,
       background: "rgba(15,17,23,0.92)", backdropFilter: "blur(20px) saturate(180%)",
       borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", zIndex: 200,
       boxShadow: "0 -1px 0 rgba(255,255,255,0.04), 0 -20px 40px rgba(0,0,0,0.4)",
