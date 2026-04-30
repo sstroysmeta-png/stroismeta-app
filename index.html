@@ -49,7 +49,7 @@
     projectId: "stroismeta-39ae1",
     storageBucket: "stroismeta-39ae1.firebasestorage.app",
     messagingSenderId: "304504642509",
-    appId: "1:304504642509:web:f6ef4af08ccfc793010284",
+    appId: "1:304504642509:web:f6ef4af08ccfc793010284"
   };
   // ═══════════════════════════════════════════════════════════
 
@@ -12477,17 +12477,53 @@ function AuthModal({ onClose, onAuth }) {
         skipBtn
       ),
 
-      // REGISTER
+      // REGISTER - UNIFIED FORM
       screen==="register" && React.createElement(React.Fragment, null,
-        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } }, "Регистрация"),
-        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20 } }, "Создайте аккаунт СтройСмета"),
-        methodPicker,
+        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } }, "Создать аккаунт"),
+        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20 } }, "Заполните все поля"),
+        
+        // Name
         React.createElement("div", { style:{ marginBottom:14 } },
           React.createElement("label", { style:LS }, "Ваше имя"),
           React.createElement("input", { value:name, onChange:function(e){ setName(e.target.value); }, placeholder:"Иван Петров", style:IS })
         ),
-        contactInput, errEl,
-        React.createElement("button", { onClick: method==="email" ? handleEmailRegister : handlePhoneSendOtp, disabled:loading, style:BS("linear-gradient(135deg,#065f46,#10b981)") }, loading ? "⏳..." : method==="email" ? "Зарегистрироваться →" : "Получить SMS-код →"),
+        
+        // Email
+        React.createElement("div", { style:{ marginBottom:14 } },
+          React.createElement("label", { style:LS }, "✉️ Email"),
+          React.createElement("input", { value:contact, onChange:function(e){ setContact(e.target.value); }, type:"email", placeholder:"you@mail.ru", style:IS })
+        ),
+        
+        // Phone
+        React.createElement("div", { style:{ marginBottom:14 } },
+          React.createElement("label", { style:LS }, "📱 Телефон (опционально)"),
+          React.createElement("input", { value:otp, onChange:function(e){ setOtp(e.target.value.replace(/\D/g,"").slice(0,20)); }, type:"tel", placeholder:"+7 900 000-00-00", style:IS })
+        ),
+        
+        // Password
+        React.createElement("div", { style:{ marginBottom:14, position:"relative" } },
+          React.createElement("label", { style:LS }, "Пароль"),
+          React.createElement("input", { value:password, onChange:function(e){ setPassword(e.target.value); }, type:showPass?"text":"password", placeholder:"Минимум 6 символов", style:IS }),
+          React.createElement("button", { onClick:function(){ setShowPass(function(p){ return !p; }); }, style:{ position:"absolute", right:12, top:30, background:"none", border:"none", cursor:"pointer", color:"var(--tx3)", fontSize:16 } }, showPass?"🙈":"👁")
+        ),
+        
+        // Password Confirm
+        React.createElement("div", { style:{ marginBottom:14, position:"relative" } },
+          React.createElement("label", { style:LS }, "Подтвердите пароль"),
+          React.createElement("input", { value:password2, onChange:function(e){ setPassword2(e.target.value); }, type:showPass?"text":"password", placeholder:"Повторите пароль", style:IS }),
+          React.createElement("button", { onClick:function(){ setShowPass(function(p){ return !p; }); }, style:{ position:"absolute", right:12, top:30, background:"none", border:"none", cursor:"pointer", color:"var(--tx3)", fontSize:16 } }, showPass?"🙈":"👁")
+        ),
+        
+        errEl,
+        React.createElement("button", { onClick: function() {
+          const email = contact.trim();
+          const pass = password;
+          const pass2 = password2;
+          if (!name.trim() || !email || !pass) { setError("Заполните имя, email и пароль"); return; }
+          if (pass.length < 6) { setError("Пароль минимум 6 символов"); return; }
+          if (pass !== pass2) { setError("Пароли не совпадают"); return; }
+          handleEmailRegister();
+        }, disabled:loading, style:BS("linear-gradient(135deg,#065f46,#10b981)") }, loading ? "⏳ Регистрируемся..." : "Создать аккаунт →"),
         React.createElement("div", { style:{ textAlign:"center", marginTop:14 } },
           React.createElement("button", { onClick:function(){ setScreen("login"); reset(); }, style:{ background:"none", border:"none", color:"var(--tx3)", fontSize:13, cursor:"pointer", fontFamily:"inherit" } },
             "Уже есть аккаунт? ", React.createElement("span", { style:{ color:"var(--acc)", fontWeight:700 } }, "Войти"))
@@ -13047,7 +13083,7 @@ function BottomNav({ tab, setTab, lang }) {
   ];
   return (
     React.createElement('div', { style: {
-      position: "relative", width: "100%", flexShrink: 0,
+      position: "relative", width: "100%", maxWidth: "min(480px, 95vw)", flexShrink: 0, zIndex: 100,
       background: "rgba(15,17,23,0.92)", backdropFilter: "blur(20px) saturate(180%)",
       borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", zIndex: 200,
       boxShadow: "0 -1px 0 rgba(255,255,255,0.04), 0 -20px 40px rgba(0,0,0,0.4)",
