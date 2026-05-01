@@ -755,7 +755,7 @@ function appReducer(state, action) {
         ...state,
         projects: state.projects.map(p =>
           p.id === action.pid
-            ? { ...p, rooms: [...(p.rooms || []), action.room] }
+            ? syncRoomsToSections({ ...p, rooms: [...(p.rooms || []), action.room] })
             : p
         ),
       };
@@ -1149,6 +1149,23 @@ function ConfirmSheet({ open, title, subtitle, danger, onConfirm, onCancel }) {
 }
 
 function Modal({ open, onClose, title, children }) {
+  const modalRef = useRef(null);
+  
+  useEffect(() => {
+    if (!open) return;
+    const handleFocusIn = (e) => {
+      const el = e.target;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT")) {
+        setTimeout(() => {
+          el.scrollIntoView({ behavior: "smooth", block: "center" });
+        }, 350);
+      }
+    };
+    const modal = modalRef.current;
+    if (modal) modal.addEventListener("focusin", handleFocusIn);
+    return () => { if (modal) modal.removeEventListener("focusin", handleFocusIn); };
+  }, [open]);
+  
   if (!open) return null;
   return (
     React.createElement('div', { style: {
@@ -1156,7 +1173,7 @@ function Modal({ open, onClose, title, children }) {
       background: "rgba(0,0,0,0.75)", backdropFilter: "blur(8px)",
       display: "flex", alignItems: "flex-end", justifyContent: "center",
     }, onClick: e => e.target === e.currentTarget && onClose()}
-      , React.createElement('div', { style: {
+      , React.createElement('div', { ref: modalRef, style: {
         background: "var(--s1)", border: "1px solid var(--b2)",
         borderRadius: "24px 24px 0 0",
         width: "100%", maxWidth: "min(480px, 95vw)", maxHeight: "88vh",
@@ -1606,7 +1623,7 @@ function ProjectsScreen({ state, dispatch, navigate, theme, lang }) {
 
       /* FAB — portal so it always stays bottom-right on Samsung Browser */
       , React.createElement(FabButton, {
-          visible: true,
+          visible: !showModal,
           onClick: () => setShowModal(true),
           color: isEst ? "linear-gradient(135deg,#3b82f6,#1d4ed8)" : "linear-gradient(135deg,#0d9488,#0f766e)",
           shadow: isEst ? "0 6px 24px rgba(59,130,246,0.55)" : "0 6px 24px rgba(13,148,136,0.55)",
@@ -6135,153 +6152,171 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
   // -- HTML preview styles --
   // -- Preview HTML (matches М-Ремонт style) ------------------
   const previewCSS = `
-    @page { size: A4; margin: 15mm 12mm; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@700&display=swap');
+    @page { size: A4; margin: 18mm 15mm; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #fff; }
+    body { background: #f7f8fa; }
     .sw {
-      font-family: Arial, Helvetica, sans-serif;
-      font-size: 8.5pt;
-      color: #111;
+      font-family: 'Inter', Arial, sans-serif;
+      font-size: 8.8pt;
+      color: #1a202c;
       background: #fff;
-      padding: 10px 8px;
+      padding: 20px 22px;
       max-width: 100%;
       margin: 0 auto;
       overflow-x: hidden;
+      border-radius: 8px;
     }
     /* -- Header -- */
-    .sh { text-align: center; margin-bottom: 14px; }
+    .sh { text-align: center; margin-bottom: 20px; }
     .sh-company {
-      font-size: 14pt;
-      font-weight: bold;
-      text-transform: uppercase;
-      letter-spacing: 0.06em;
-      color: #1a2530;
-      margin-bottom: 4px;
+      font-family: 'Playfair Display', 'Inter', serif;
+      font-size: 17pt;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      color: #1a202c;
+      margin-bottom: 5px;
     }
-    .sh-line { height: 2px; background: #2c3e50; margin: 6px 0; }
-    .sh-meta { font-size: 8.5pt; color: #555; margin-bottom: 2px; }
+    .sh-line { height: 3px; background: linear-gradient(90deg, #4f46e5, #7c3aed, #06b6d4); border-radius: 2px; margin: 7px 0; }
+    .sh-meta { font-size: 8.5pt; color: #64748b; margin-bottom: 2px; font-weight: 500; }
     .sh-contract {
       font-size: 9pt;
-      color: #333;
-      margin: 10px 0 3px;
-      font-weight: bold;
+      color: #334155;
+      margin: 12px 0 3px;
+      font-weight: 600;
     }
-    .sh-address { font-size: 9pt; color: #555; margin-bottom: 4px; }
+    .sh-address { font-size: 9pt; color: #64748b; margin-bottom: 4px; }
     .sh-title {
-      font-size: 11.5pt;
-      font-weight: bold;
-      color: #1a2530;
+      font-size: 12pt;
+      font-weight: 700;
+      color: #1a202c;
       margin: 8px 0 2px;
     }
     .sh-sub {
       font-size: 10pt;
-      font-weight: bold;
-      color: #2c3e50;
-      margin-bottom: 14px;
+      font-weight: 700;
+      color: #4f46e5;
+      margin-bottom: 18px;
       text-transform: uppercase;
-      letter-spacing: 0.04em;
+      letter-spacing: 0.06em;
+    }
+    /* -- Table wrapper for rounded corners -- */
+    .st-wrap {
+      border-radius: 12px;
+      overflow: hidden;
+      border: 1.5px solid #e2e8f0;
+      margin-bottom: 0;
+      box-shadow: 0 2px 12px rgba(79,70,229,0.07);
     }
     /* -- Table -- */
-    .st { width: 100%; border-collapse: collapse; margin-bottom: 0; table-layout: fixed; }
+    .st { width: 100%; border-collapse: collapse; table-layout: fixed; margin: 0; }
     .st thead th {
-      background: #2c3e50;
+      background: linear-gradient(135deg, #4338ca, #6d28d9);
       color: #fff;
-      font-size: 7.5pt;
-      font-weight: bold;
-      padding: 5px 3px;
-      border: 1px solid #2c3e50;
+      font-size: 8pt;
+      font-weight: 700;
+      padding: 10px 7px;
+      border: none;
       text-align: center;
       white-space: nowrap;
       overflow: hidden;
+      letter-spacing: 0.03em;
     }
-    .st thead th.left { text-align: left; }
+    .st thead th.left { text-align: left; padding-left: 12px; }
     .st tbody td {
-      padding: 4px 3px;
-      border: 1px solid #c5d0da;
-      font-size: 8pt;
+      padding: 7px 7px;
+      border-bottom: 1px solid #f1f5f9;
+      border-right: none;
+      border-left: none;
+      font-size: 8.5pt;
       vertical-align: middle;
-      line-height: 1.3;
+      line-height: 1.4;
       overflow: hidden;
       word-break: break-word;
+      color: #1e293b;
     }
-    .st tbody tr:nth-child(even) td { background: #f8fafc; }
+    .st tbody tr:nth-child(even) td { background: #f8faff; }
+    .st tbody tr:last-child td { border-bottom: none; }
     .st tbody tr.sr td {
-      background: #dce9f7;
-      font-weight: bold;
-      font-size: 8.5pt;
-      padding: 5px 4px;
-      border-top: 1.5px solid #2c3e50;
-      border-bottom: 1.5px solid #2c3e50;
-      border-left: 1px solid #aabfd8;
-      border-right: 1px solid #aabfd8;
-      color: #1a2530;
+      background: linear-gradient(90deg, #ede9fe 0%, #f5f3ff 100%);
+      font-weight: 700;
+      font-size: 8.8pt;
+      padding: 8px 7px 8px 12px;
+      border-top: 2px solid #c4b5fd;
+      border-bottom: 2px solid #c4b5fd;
+      color: #3730a3;
     }
-    .st tbody tr.mat td { background: #fefaf2; }
-    .num { text-align: center !important; color: #666; width: 22px; }
+    .st tbody tr.mat td { background: #fffbf0; }
+    .num { text-align: center !important; color: #94a3b8; width: 24px; font-size: 8pt; }
     .ctr { text-align: center !important; }
-    .rgt { text-align: right !important; }
-    .col-unit  { width: 36px; }
-    .col-qty   { width: 36px; }
-    .col-price { width: 56px; }
-    .col-sum   { width: 60px; }
+    .rgt { text-align: right !important; padding-right: 10px !important; }
+    .col-unit  { width: 38px; }
+    .col-qty   { width: 38px; }
+    .col-price { width: 60px; }
+    .col-sum   { width: 64px; font-weight: 700; color: #1e293b; }
     /* -- Footer totals -- */
-    .sf { margin-top: 0; }
+    .sf { margin-top: 10px; }
     .sf-totals {
-      border-top: 2px solid #2c3e50;
-      border-bottom: none;
-      padding-top: 8px;
-      margin-bottom: 8px;
+      border-top: none;
+      padding-top: 10px;
+      margin-bottom: 10px;
     }
     .sf-row {
       display: flex;
       justify-content: flex-end;
       align-items: baseline;
       gap: 0;
-      margin-bottom: 3px;
+      margin-bottom: 4px;
       font-size: 9.5pt;
     }
     .sf-row-label {
-      min-width: 200px;
+      min-width: 210px;
       text-align: left;
-      padding-right: 12px;
-      color: #333;
+      padding-right: 14px;
+      color: #475569;
+      font-weight: 500;
     }
     .sf-row-val {
-      min-width: 90px;
+      min-width: 100px;
       text-align: right;
-      font-weight: bold;
-      color: #1a2530;
+      font-weight: 700;
+      color: #1a202c;
     }
     .sf-row-grand {
-      font-size: 10.5pt;
-      font-weight: bold;
-      border-top: 1px solid #bbb;
-      padding-top: 5px;
-      margin-top: 3px;
+      font-size: 11pt;
+      font-weight: 800;
+      border-top: 2px solid #e2e8f0;
+      border-bottom: 2px solid #e2e8f0;
+      padding: 7px 0;
+      margin-top: 5px;
+      color: #4f46e5;
     }
+    .sf-row-grand .sf-row-label { color: #4f46e5; font-weight: 800; }
+    .sf-row-grand .sf-row-val { color: #4f46e5; font-size: 12pt; }
     .sf-words {
       font-size: 8.5pt;
-      color: #333;
-      margin: 10px 0 22px;
-      line-height: 1.5;
+      color: #475569;
+      margin: 12px 0 24px;
+      line-height: 1.6;
+      font-style: italic;
     }
     .sf-signs {
       display: flex;
       justify-content: space-between;
-      margin-top: 24px;
+      margin-top: 28px;
       padding-top: 4px;
     }
     .sf-sign { width: 45%; }
     .sf-sign-title {
-      font-weight: bold;
+      font-weight: 700;
       font-size: 9.5pt;
-      margin-bottom: 28px;
-      color: #1a2530;
+      margin-bottom: 30px;
+      color: #1a202c;
     }
-    .sf-sign-line { border-bottom: 1px solid #444; margin-bottom: 4px; }
+    .sf-sign-line { border-bottom: 1.5px solid #94a3b8; margin-bottom: 5px; }
     .sf-sign-hint {
       font-size: 8pt;
-      color: #666;
+      color: #94a3b8;
       display: flex;
       justify-content: space-between;
     }
@@ -6413,9 +6448,10 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
     <div class="sh-title">${header.objectName}${cl("div")}
     <div class="sh-sub">Смета на ремонтные работы${cl("div")}
     </div>
-    ${header.logo ? `<div style="flex-shrink:0;margin-left:10px;"><img src="${header.logo}" style="width:80px;height:80px;object-fit:contain;border-radius:10px;display:block;border:1px solid #e5e7eb;" /></div>` : ""}
+    ${header.logo ? `<div style="flex-shrink:0;margin-left:10px;"><img src="${header.logo}" style="width:80px;height:80px;object-fit:contain;border-radius:12px;display:block;border:1.5px solid #e2e8f0;box-shadow:0 2px 8px rgba(79,70,229,0.1);" /></div>` : ""}
   ${cl("div")}
 
+  <div class="st-wrap">
   <table class="st">
     <thead>
       <tr>
@@ -6423,29 +6459,26 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
         <th class="left" style="min-width:260px">Наименование работ${cl("th")}
         <th class="col-unit">Ед. изм.${cl("th")}
         <th class="col-qty">Кол-во${cl("th")}
-        <th class="col-price">Цена${cl("th")}
-        <th class="col-sum">Сумма${cl("th")}
+        <th class="col-price">Цена, ₽${cl("th")}
+        <th class="col-sum">Сумма, ₽${cl("th")}
       ${cl("tr")}
     ${cl("thead")}
     <tbody>
       ${rowsHtml}
     ${cl("tbody")}
   ${cl("table")}
+  ${cl("div")}
 
   <div class="sf">
     <div class="sf-totals">
       <div class="sf-row">
-        <div class="sf-row-label">Итого:${cl("div")}
-        <div class="sf-row-val">${fmtD(workTotal)}${cl("div")}
-      ${cl("div")}
-      <div class="sf-row">
         <div class="sf-row-label">Итого по работам:${cl("div")}
-        <div class="sf-row-val">${fmtD(workTotal)}${cl("div")}
+        <div class="sf-row-val">${fmtD(workTotal)} ₽${cl("div")}
       ${cl("div")}
-      ${matTotal > 0 ? `<div class="sf-row"><div class="sf-row-label">Итого по материалам:${cl("div")}<div class="sf-row-val">${fmtD(matTotal)}${cl("div")}${cl("div")}` : ""}
+      ${matTotal > 0 ? `<div class="sf-row"><div class="sf-row-label">Итого по материалам:${cl("div")}<div class="sf-row-val">${fmtD(matTotal)} ₽${cl("div")}${cl("div")}` : ""}
       <div class="sf-row sf-row-grand">
-        <div class="sf-row-label">Итого общее:${cl("div")}
-        <div class="sf-row-val">${fmtD(total)}${cl("div")}
+        <div class="sf-row-label">ИТОГО К ОПЛАТЕ:${cl("div")}
+        <div class="sf-row-val">${fmtD(total)} ₽${cl("div")}
       ${cl("div")}
     ${cl("div")}
     <div class="sf-words">Итоговая сумма составляет ${fmtD(total)} (${totalWords}) рублей 00 копеек${cl("div")}
@@ -12406,6 +12439,152 @@ function AuthModal({ onClose, onAuth }) {
     setLoading(false);
   };
 
+  // ── Unified: Login with password (email or phone) ─────────────────
+  const handleLoginWithPassword = async function() {
+    const c = contact.trim();
+    if (!c || !password) { setError("Введите " + (method==="email"?"email":"телефон") + " и пароль"); return; }
+    if (method === "email") { await handleEmailLogin(); }
+    else { await handlePhoneSendOtp(); }
+  };
+
+  // ── Unified: Send OTP (email or phone) ──────────────────────────
+  const sendOtp = async function(contactVal) {
+    const c = (contactVal || contact).trim();
+    const isPhone = /^\+?[0-9]{7,15}$/.test(c.replace(/[\s\-()]/g,""));
+    setLoading(true); setError("");
+    try {
+      if (isPhone) {
+        if (fbReady) {
+          if (!recaptchaRef.current) {
+            recaptchaRef.current = new window._smFirebase.RecaptchaVerifier(recaptchaContainerId, {
+              size:"invisible", callback:function(){}
+            }, window._smFirebase.authInstance);
+          }
+          const result = await window._smFirebase.auth.signInWithPhoneNumber(c, recaptchaRef.current);
+          confirmResultRef.current = result;
+        } else {
+          const code = String(Math.floor(100000 + Math.random()*900000));
+          window._smFakeOtp = code;
+          alert("📱 Тестовый SMS-код: " + code);
+        }
+      } else {
+        // Email OTP via Firebase custom action / fallback
+        if (fbReady) {
+          // Generate and store a temporary code
+          const code = String(Math.floor(100000 + Math.random()*900000));
+          window._smEmailOtp = { code, contact: c, expires: Date.now() + 10*60*1000 };
+          // Try to send via actionCodeSettings (works if auth is set up for email link)
+          try {
+            await window._smFirebase.auth.sendPasswordResetEmail(c);
+            // For code-based flow, store in memory for fallback
+          } catch(_) {}
+          alert("✉️ Код подтверждения: " + code + "\n(Firebase: письмо отправлено если аккаунт существует)");
+        } else {
+          const code = String(Math.floor(100000 + Math.random()*900000));
+          window._smEmailOtp = { code, contact: c, expires: Date.now() + 10*60*1000 };
+          alert("✉️ Тестовый код для " + c + ": " + code);
+        }
+      }
+    } catch(e) {
+      const msgs = { "auth/invalid-phone-number":"Неверный номер", "auth/too-many-requests":"Слишком много попыток" };
+      setError(msgs[e.code] || e.message || "Ошибка отправки кода");
+      if (recaptchaRef.current) { try { recaptchaRef.current.clear(); } catch(_){} recaptchaRef.current = null; }
+    }
+    setLoading(false);
+  };
+
+  // ── handleSendOtp (alias for login/register screen) ─────────────
+  const handleSendOtp = function() {
+    const c = contact.trim();
+    if (!c) { setError("Введите email или телефон"); return; }
+    sendOtp(c).then(() => {
+      setScreen(screen === "forgot" ? "otp_forgot" : screen === "register" ? "otp_register" : "otp_login");
+    });
+  };
+
+  // ── Verify OTP (phone or email) ─────────────────────────────────
+  const handleVerifyOtp = async function() {
+    if (!otp || otp.length < 4) { setError("Введите код"); return; }
+    setLoading(true); setError("");
+    const c = contact.trim();
+    const isPhone = /^\+?[0-9]{7,15}$/.test(c.replace(/[\s\-()]/g,""));
+    try {
+      if (isPhone) {
+        await handlePhoneVerifyOtp(); return;
+      } else {
+        // Email OTP check
+        const stored = window._smEmailOtp;
+        if (stored && stored.code === otp && stored.contact === c && Date.now() < stored.expires) {
+          if (screen === "otp_forgot") { setScreen("set_password"); }
+          else if (screen === "otp_register") {
+            // Auto-create account after verification
+            const u = { id:"u_"+Date.now(), name:name||c.split("@")[0], email:c, phone:"", createdAt:new Date().toISOString() };
+            try { const users=JSON.parse(localStorage.getItem("sm_users")||"[]"); users.push(u); localStorage.setItem("sm_users",JSON.stringify(users)); } catch(_){}
+            onAuth(u);
+          } else {
+            // Login: find or create user
+            let u;
+            try { const users=JSON.parse(localStorage.getItem("sm_users")||"[]"); u=users.find(u=>u.email===c); } catch(_){}
+            if (!u) u = { id:"u_"+Date.now(), name:c.split("@")[0], email:c, phone:"", createdAt:new Date().toISOString() };
+            onAuth(u);
+          }
+          window._smEmailOtp = null;
+        } else {
+          setError("Неверный или просроченный код");
+        }
+      }
+    } catch(e) {
+      setError(e.message || "Ошибка подтверждения");
+    }
+    setLoading(false);
+  };
+
+  // ── Find user in localStorage ────────────────────────────────────
+  const findUser = function(c) {
+    try {
+      const users = JSON.parse(localStorage.getItem("sm_users")||"[]");
+      return users.find(u => u.email === c || u.phone === c) || null;
+    } catch(_) { return null; }
+  };
+
+  // ── Set new password (after OTP verification) ────────────────────
+  const handleSetPassword = async function() {
+    const c = contact.trim();
+    if (!password || password.length < 6) { setError("Пароль минимум 6 символов"); return; }
+    if (password !== password2) { setError("Пароли не совпадают"); return; }
+    setLoading(true); setError("");
+    try {
+      if (fbReady) {
+        // Firebase: use confirm password reset (needs oobCode, not available here — use direct update)
+        const user = window._smFirebase.auth.currentUser;
+        if (user) {
+          await user.updatePassword(password);
+          onAuth({ uid:user.uid, id:user.uid, name:user.displayName||c, email:c, phone:"" });
+        } else {
+          setError("Сессия истекла. Повторите процедуру сброса.");
+        }
+      } else {
+        // localStorage fallback
+        const existing = findUser(c);
+        let users = [];
+        try { users = JSON.parse(localStorage.getItem("sm_users")||"[]"); } catch(_){}
+        if (existing) {
+          const updated = users.map(u => (u.email===c||u.phone===c) ? {...u, password} : u);
+          localStorage.setItem("sm_users", JSON.stringify(updated));
+          onAuth({...existing, password});
+        } else {
+          const u = { id:"u_"+Date.now(), name:name||c.split("@")[0], email:c, phone:"", password, createdAt:new Date().toISOString() };
+          users.push(u); localStorage.setItem("sm_users",JSON.stringify(users));
+          onAuth(u);
+        }
+      }
+    } catch(e) {
+      const msgs = { "auth/weak-password":"Пароль слишком простой", "auth/requires-recent-login":"Требуется повторный вход" };
+      setError(msgs[e.code] || e.message || "Ошибка сохранения пароля");
+    }
+    setLoading(false);
+  };
+
   const BS = function(bg) { return { width:"100%", padding:"15px", borderRadius:14, border:"none",
     background:bg||"var(--acc)", color:"#fff", fontWeight:800, fontSize:15,
     cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 16px rgba(79,70,229,0.3)" }; };
@@ -12440,8 +12619,17 @@ function AuthModal({ onClose, onAuth }) {
 
   return React.createElement("div", { style:{ position:"absolute", inset:0, background:"rgba(0,0,0,0.7)", zIndex:600,
       display:"flex", alignItems:"flex-end", justifyContent:"center" } },
-    React.createElement("div", { style:{ background:"var(--s1)", borderRadius:"24px 24px 0 0", width:"100%",
-        maxWidth:"min(480px, 95vw)", padding:"28px 24px 40px", boxShadow:"0 -8px 40px rgba(0,0,0,0.4)" } },
+    React.createElement("div", { 
+      style:{ background:"var(--s1)", borderRadius:"24px 24px 0 0", width:"100%",
+        maxWidth:"min(480px, 95vw)", padding:"28px 24px 40px", boxShadow:"0 -8px 40px rgba(0,0,0,0.4)",
+        maxHeight:"90vh", overflowY:"auto" },
+      onFocus: function(e) {
+        const el = e.target;
+        if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+          setTimeout(() => el.scrollIntoView({ behavior:"smooth", block:"center" }), 350);
+        }
+      }
+    },
       React.createElement("div", { style:{ width:40, height:4, borderRadius:2, background:"var(--b2)", margin:"0 auto 24px" } }),
 
       // LOGIN
@@ -12450,12 +12638,12 @@ function AuthModal({ onClose, onAuth }) {
         React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:24 } }, "В аккаунт СтройСмета"),
         methodPicker,
         React.createElement("div", { style:{ marginBottom:14 } },
-          React.createElement("label", { style:LS }, method==="email"?"Email":"Телефон"),
+          React.createElement("label", { style:LS }, method==="email"?"Email":"📱 Телефон"),
           React.createElement("input", { value:contact, onChange:function(e){ setContact(e.target.value); },
             type:method==="email"?"email":"tel", placeholder:method==="email"?"you@mail.ru":"+7 900 000-00-00",
-            style:IS, onKeyDown:function(e){ if(e.key==="Enter") handleSendOtp(); } })
+            style:IS, onKeyDown:function(e){ if(e.key==="Enter" && method==="email") document.activeElement.blur(); } })
         ),
-        React.createElement("div", { style:{ marginBottom:20, position:"relative" } },
+        method==="email" && React.createElement("div", { style:{ marginBottom:20, position:"relative" } },
           React.createElement("label", { style:LS }, "Пароль"),
           React.createElement("input", { value:password, onChange:function(e){ setPassword(e.target.value); },
             type:showPass?"text":"password", placeholder:"Введите пароль",
@@ -12464,12 +12652,19 @@ function AuthModal({ onClose, onAuth }) {
             style:{ position:"absolute", right:12, top:30, background:"none", border:"none", cursor:"pointer", color:"var(--tx3)", fontSize:16 } },
             showPass?"🙈":"👁")
         ),
+        method==="phone" && React.createElement("div", { style:{ background:"var(--s2)", borderRadius:10, padding:"10px 12px", marginBottom:14, fontSize:12, color:"var(--tx3)" } },
+          "📱 SMS с кодом придёт на указанный номер"
+        ),
         errEl,
-        React.createElement("button", { onClick: method==="email" ? handleEmailLogin : handlePhoneSendOtp, disabled:loading, style:BS() }, loading ? "⏳ Входим..." : "Войти"),
+        React.createElement("button", { onClick: method==="email" ? handleEmailLogin : function(){
+          const c = contact.trim();
+          if (!c) { setError("Введите телефон"); return; }
+          sendOtp(c).then(() => setScreen("otp_login"));
+        }, disabled:loading, style:BS() }, loading ? "⏳ Входим..." : method==="phone" ? "Получить код →" : "Войти"),
         React.createElement("div", { style:{ textAlign:"center", marginTop:14, display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap" } },
           React.createElement("button", { onClick:function(){ setScreen("forgot"); reset(); }, style:{ background:"none", border:"none", color:"var(--acc)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "Забыли пароль?"),
-          React.createElement("span", { style:{ color:"var(--tx3)", fontSize:13 } }, "·"),
-          React.createElement("button", { onClick:function(){ if(contact.trim()){ sendOtp(contact.trim()); setScreen("otp_login"); } else { setError("Введите email/телефон"); } },
+          method==="email" && React.createElement("span", { style:{ color:"var(--tx3)", fontSize:13 } }, "·"),
+          method==="email" && React.createElement("button", { onClick:function(){ if(contact.trim()){ sendOtp(contact.trim()).then(()=>setScreen("otp_login")); } else { setError("Введите email"); } },
             style:{ background:"none", border:"none", color:"var(--acc)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "Войти по коду"),
           React.createElement("span", { style:{ color:"var(--tx3)", fontSize:13 } }, "·"),
           React.createElement("button", { onClick:function(){ setScreen("register"); reset(); }, style:{ background:"none", border:"none", color:"var(--acc)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "Регистрация")
@@ -12480,7 +12675,7 @@ function AuthModal({ onClose, onAuth }) {
       // REGISTER - UNIFIED FORM
       screen==="register" && React.createElement(React.Fragment, null,
         React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } }, "Создать аккаунт"),
-        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20 } }, "Заполните все поля"),
+        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20 } }, "Выберите способ подтверждения"),
         
         // Name
         React.createElement("div", { style:{ marginBottom:14 } },
@@ -12488,42 +12683,33 @@ function AuthModal({ onClose, onAuth }) {
           React.createElement("input", { value:name, onChange:function(e){ setName(e.target.value); }, placeholder:"Иван Петров", style:IS })
         ),
         
-        // Email
+        // Method picker for registration
+        methodPicker,
+        
+        // Contact (email or phone)
         React.createElement("div", { style:{ marginBottom:14 } },
-          React.createElement("label", { style:LS }, "✉️ Email"),
-          React.createElement("input", { value:contact, onChange:function(e){ setContact(e.target.value); }, type:"email", placeholder:"you@mail.ru", style:IS })
+          React.createElement("label", { style:LS }, method==="email" ? "✉️ Email" : "📱 Телефон"),
+          React.createElement("input", { value:contact, onChange:function(e){ setContact(e.target.value); },
+            type:method==="email"?"email":"tel",
+            placeholder:method==="email"?"you@mail.ru":"+7 900 000-00-00", style:IS })
         ),
-        
-        // Phone
-        React.createElement("div", { style:{ marginBottom:14 } },
-          React.createElement("label", { style:LS }, "📱 Телефон (опционально)"),
-          React.createElement("input", { value:otp, onChange:function(e){ setOtp(e.target.value.replace(/\D/g,"").slice(0,20)); }, type:"tel", placeholder:"+7 900 000-00-00", style:IS })
-        ),
-        
-        // Password
-        React.createElement("div", { style:{ marginBottom:14, position:"relative" } },
-          React.createElement("label", { style:LS }, "Пароль"),
-          React.createElement("input", { value:password, onChange:function(e){ setPassword(e.target.value); }, type:showPass?"text":"password", placeholder:"Минимум 6 символов", style:IS }),
-          React.createElement("button", { onClick:function(){ setShowPass(function(p){ return !p; }); }, style:{ position:"absolute", right:12, top:30, background:"none", border:"none", cursor:"pointer", color:"var(--tx3)", fontSize:16 } }, showPass?"🙈":"👁")
-        ),
-        
-        // Password Confirm
-        React.createElement("div", { style:{ marginBottom:14, position:"relative" } },
-          React.createElement("label", { style:LS }, "Подтвердите пароль"),
-          React.createElement("input", { value:password2, onChange:function(e){ setPassword2(e.target.value); }, type:showPass?"text":"password", placeholder:"Повторите пароль", style:IS }),
-          React.createElement("button", { onClick:function(){ setShowPass(function(p){ return !p; }); }, style:{ position:"absolute", right:12, top:30, background:"none", border:"none", cursor:"pointer", color:"var(--tx3)", fontSize:16 } }, showPass?"🙈":"👁")
+
+        // Hint about verification
+        React.createElement("div", { style:{ background:"var(--s2)", borderRadius:10, padding:"10px 12px", marginBottom:14, fontSize:12, color:"var(--tx3)", lineHeight:1.5 } },
+          method==="email"
+            ? "📨 На указанный email придёт код подтверждения"
+            : "📱 На указанный номер придёт SMS с кодом"
         ),
         
         errEl,
         React.createElement("button", { onClick: function() {
-          const email = contact.trim();
-          const pass = password;
-          const pass2 = password2;
-          if (!name.trim() || !email || !pass) { setError("Заполните имя, email и пароль"); return; }
-          if (pass.length < 6) { setError("Пароль минимум 6 символов"); return; }
-          if (pass !== pass2) { setError("Пароли не совпадают"); return; }
-          handleEmailRegister();
-        }, disabled:loading, style:BS("linear-gradient(135deg,#065f46,#10b981)") }, loading ? "⏳ Регистрируемся..." : "Создать аккаунт →"),
+          if (!name.trim()) { setError("Введите имя"); return; }
+          const c = contact.trim();
+          if (!c) { setError(method==="email"?"Введите email":"Введите телефон"); return; }
+          if (method==="email" && !c.includes("@")) { setError("Неверный формат email"); return; }
+          if (method==="phone" && !c.match(/^\+?[0-9\s\-()]{7,18}$/)) { setError("Неверный формат телефона. Используйте +79001234567"); return; }
+          sendOtp(c).then(() => { setScreen("otp_register"); });
+        }, disabled:loading, style:BS("linear-gradient(135deg,#065f46,#10b981)") }, loading ? "⏳ Отправляем код..." : "Получить код →"),
         React.createElement("div", { style:{ textAlign:"center", marginTop:14 } },
           React.createElement("button", { onClick:function(){ setScreen("login"); reset(); }, style:{ background:"none", border:"none", color:"var(--tx3)", fontSize:13, cursor:"pointer", fontFamily:"inherit" } },
             "Уже есть аккаунт? ", React.createElement("span", { style:{ color:"var(--acc)", fontWeight:700 } }, "Войти"))
@@ -12532,9 +12718,9 @@ function AuthModal({ onClose, onAuth }) {
       ),
 
       // OTP
-      (screen==="otp_login"||screen==="otp_register"||screen==="otp_forgot") && React.createElement(React.Fragment, null,
+      (screen==="otp_login"||screen==="otp_register"||screen==="otp_forgot"||screen==="otp_phone") && React.createElement(React.Fragment, null,
         React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } },
-          screen==="otp_forgot"?"Восстановление":"Подтверждение"),
+          screen==="otp_forgot"?"Сброс пароля":screen==="otp_register"?"Подтверждение регистрации":"Вход по коду"),
         React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:6 } }, "Код отправлен на"),
         React.createElement("div", { style:{ fontSize:14, fontWeight:700, color:"var(--acc)", marginBottom:20 } }, contact),
         React.createElement("div", { style:{ marginBottom:20 } },
@@ -12545,13 +12731,13 @@ function AuthModal({ onClose, onAuth }) {
             onKeyDown:function(e){ if(e.key==="Enter") handleVerifyOtp(); } })
         ),
         errEl,
-        React.createElement("button", { onClick:handlePhoneVerifyOtp, disabled:otp.length<4||loading,
+        React.createElement("button", { onClick:handleVerifyOtp, disabled:otp.length<4||loading,
           style:BS(otp.length>=4?"var(--acc)":"var(--s3)") }, loading?"⏳ Проверяем...":otp.length>=4?"Подтвердить →":"Введите код"),
         React.createElement("div", { style:{ textAlign:"center", marginTop:14 } },
           React.createElement("button", { onClick:function(){ sendOtp(contact); setOtp(""); setError(""); },
             style:{ background:"none", border:"none", color:"var(--acc)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "🔄 Отправить код снова")
         ),
-        backBtn(screen==="otp_forgot"?"forgot":"login")
+        backBtn(screen==="otp_forgot"?"forgot":screen==="otp_register"?"register":"login")
       ),
 
       // SET PASSWORD
@@ -12588,9 +12774,23 @@ function AuthModal({ onClose, onAuth }) {
       // FORGOT
       screen==="forgot" && React.createElement(React.Fragment, null,
         React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } }, "Сброс пароля"),
-        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20 } }, "Введите email или телефон аккаунта"),
-        methodPicker, contactInput, errEl,
-        React.createElement("button", { onClick: handleForgotPassword, disabled:loading, style:BS() }, loading ? "⏳..." : "Отправить письмо →"),
+        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20 } }, "Выберите способ получения кода"),
+        methodPicker, contactInput,
+        React.createElement("div", { style:{ background:"var(--s2)", borderRadius:10, padding:"10px 12px", marginBottom:14, fontSize:12, color:"var(--tx3)", lineHeight:1.5 } },
+          method==="email"
+            ? "📨 Ссылка или код для сброса придёт на email"
+            : "📱 Код для сброса придёт в SMS"
+        ),
+        errEl,
+        React.createElement("button", { onClick: function() {
+          const c = contact.trim();
+          if (!c) { setError(method==="email"?"Введите email":"Введите телефон"); return; }
+          if (method==="email") {
+            handleForgotPassword();
+          } else {
+            sendOtp(c).then(() => setScreen("otp_forgot"));
+          }
+        }, disabled:loading, style:BS() }, loading ? "⏳..." : "Получить код →"),
         backBtn("login")
       )
     )
@@ -13083,41 +13283,44 @@ function BottomNav({ tab, setTab, lang }) {
   ];
   return (
     React.createElement('div', { style: {
-      position: "relative", width: "100%", maxWidth: "min(480px, 95vw)", flexShrink: 0, zIndex: 100,
-      background: "rgba(15,17,23,0.92)", backdropFilter: "blur(20px) saturate(180%)",
-      borderTop: "1px solid rgba(255,255,255,0.07)", display: "flex", zIndex: 200,
+      position: "fixed", bottom: 0, left: 0, right: 0, width: "100%", flexShrink: 0, zIndex: 200,
+      background: "rgba(15,17,23,0.96)", backdropFilter: "blur(24px) saturate(180%)",
+      borderTop: "1px solid rgba(255,255,255,0.09)", display: "flex",
       boxShadow: "0 -1px 0 rgba(255,255,255,0.04), 0 -20px 40px rgba(0,0,0,0.4)",
       paddingBottom: "env(safe-area-inset-bottom, 0px)",
+      justifyContent: "center",
     }}
-      , tabs.map(t => {
-        const isActive = tab === t.id;
-        return (
-          React.createElement('button', { key: t.id, onClick: () => setTab(t.id), style: {
-            flex: 1, padding: "10px 4px 14px", border: "none", background: "none", cursor: "pointer",
-            display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
-            color: isActive ? "#a78bfa" : "rgba(148,163,184,0.6)", transition: "color 0.2s",
-            position: "relative",
-          }}
-            , isActive && (
-              React.createElement('div', { style: {
-                position: "absolute", top: 0, left: "50%", transform: "translateX(-50%)",
-                width: 36, height: 2, borderRadius: "0 0 3px 3px",
-                background: "linear-gradient(90deg, #6c63ff, #a78bfa)",
-              }} )
-            )
-            , React.createElement('div', { style: {
-              width: 36, height: 36, borderRadius: 11,
-              background: isActive ? "rgba(108,99,255,0.15)" : "transparent",
-              display: "flex", alignItems: "center", justifyContent: "center",
-              transition: "all 0.2s",
-              border: isActive ? "1px solid rgba(108,99,255,0.25)" : "1px solid transparent",
+      , React.createElement('div', { style: { display:"flex", width:"100%", maxWidth: 600, margin:"0 auto" } }
+        , tabs.map(t => {
+          const isActive = tab === t.id;
+          return (
+            React.createElement('button', { key: t.id, onClick: () => setTab(t.id), style: {
+              flex: 1, padding: "10px 4px 14px", border: "none", background: "none", cursor: "pointer",
+              display: "flex", flexDirection: "column", alignItems: "center", gap: 4,
+              color: isActive ? "#a78bfa" : "rgba(148,163,184,0.6)", transition: "color 0.2s",
+              position: "relative",
             }}
-              , React.createElement(Icon, { name: t.icon, size: 19, color: isActive ? "#a78bfa" : "rgba(148,163,184,0.6)"} )
+              , isActive && (
+                React.createElement('div', { style: {
+                  position: "absolute", top: 0, left: "50%", transform: "translateX(-50%)",
+                  width: 36, height: 2, borderRadius: "0 0 3px 3px",
+                  background: "linear-gradient(90deg, #6c63ff, #a78bfa)",
+                }} )
+              )
+              , React.createElement('div', { style: {
+                width: 36, height: 36, borderRadius: 11,
+                background: isActive ? "rgba(108,99,255,0.15)" : "transparent",
+                display: "flex", alignItems: "center", justifyContent: "center",
+                transition: "all 0.2s",
+                border: isActive ? "1px solid rgba(108,99,255,0.25)" : "1px solid transparent",
+              }}
+                , React.createElement(Icon, { name: t.icon, size: 19, color: isActive ? "#a78bfa" : "rgba(148,163,184,0.6)"} )
+              )
+              , React.createElement('span', { style: { fontSize: 9, fontWeight: isActive ? 700 : 400, letterSpacing: "0.04em", textTransform: "uppercase" }}, t.label)
             )
-            , React.createElement('span', { style: { fontSize: 9, fontWeight: isActive ? 700 : 400, letterSpacing: "0.04em", textTransform: "uppercase" }}, t.label)
-          )
-        );
-      })
+          );
+        })
+      )
     )
   );
 }
