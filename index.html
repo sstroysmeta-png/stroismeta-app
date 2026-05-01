@@ -230,64 +230,7 @@ const initialData = {
       ],
     },
   ],
-  projects: [
-    {
-      id: "p1",
-      name: "Ремонт ванной комнаты",
-      address: "ул. Ленина, 42, кв. 15",
-      area: 8,
-      date: "2025-03-01",
-      totalAmount: 0,
-      progress: 35,
-      rooms: [],
-      mode: "estimate",
-      sections: [
-        {
-          id: "s1",
-          name: "Черновые работы",
-          collapsed: true,
-          _explicit: true,
-          items: [
-            { id: "i1", type: "work", name: "Демонтаж плитки", unit: "м²", qty: 8, price: 400, paid: 3200 },
-            { id: "i2", type: "material", name: "Цемент М500", unit: "мешок", qty: 10, price: 350, paid: 3500 },
-          ],
-        },
-        {
-          id: "s2",
-          name: "Сантехника",
-          collapsed: true,
-          _explicit: true,
-          items: [
-            { id: "i3", type: "work", name: "Монтаж смесителя", unit: "шт", qty: 2, price: 1200, paid: 0 },
-            { id: "i4", type: "material", name: "Смеситель Grohe", unit: "шт", qty: 1, price: 8500, paid: 8500 },
-          ],
-        },
-      ],
-    },
-    {
-      id: "p2",
-      name: "Кухня — полный ремонт",
-      address: "пр. Мира, 10",
-      area: 14,
-      date: "2025-02-20",
-      totalAmount: 0,
-      progress: 70,
-      rooms: [],
-      mode: "materials",
-      sections: [
-        {
-          id: "s3",
-          name: "Отделка",
-          collapsed: true,
-          _explicit: true,
-          items: [
-            { id: "i5", type: "work", name: "Поклейка обоев", unit: "м²", qty: 40, price: 250, paid: 10000 },
-            { id: "i6", type: "material", name: "Обои виниловые", unit: "рул.", qty: 8, price: 1200, paid: 9600 },
-          ],
-        },
-      ],
-    },
-  ],
+  projects: [],
 };
 
 // Maps room work stage id -> project section name
@@ -4005,7 +3948,7 @@ function AddRoomWorkModal({ room, priceBook, onClose, onAdd }) {
 
 // ---- Rooms List Screen (inside project) ----
 // ==================== ROOM CARD (collapsible areas) ====================
-function RoomCard({ room, projectId, dispatch, navigate, onEdit }) {
+function RoomCard({ room, projectId, dispatch, navigate, onEdit, onDelete }) {
   const [expanded, setExpanded] = useState(false);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState({});
@@ -4159,7 +4102,7 @@ function RoomCard({ room, projectId, dispatch, navigate, onEdit }) {
           , React.createElement('button', { onClick: e => { e.stopPropagation(); onEdit(); }, style: { background: "var(--s2)", border: "1px solid var(--b1)", borderRadius: 9, padding: "6px 9px", cursor: "pointer" }}
             , React.createElement(Icon, { name: "edit", size: 14, color: "var(--acc)"} )
           )
-          , React.createElement('button', { onClick: e => { e.stopPropagation(); setShowDeleteConfirm(true); },
+          , React.createElement('button', { onClick: e => { e.stopPropagation(); if (onDelete) onDelete(); else setShowDeleteConfirm(true); },
             style: { background: "rgba(239,68,68,0.08)", border: "1px solid rgba(239,68,68,0.15)", borderRadius: 9, padding: "6px 9px", cursor: "pointer" }}
             , React.createElement(Icon, { name: "trash", size: 14, color: "#ef4444"} )
           )
@@ -4662,6 +4605,7 @@ function RoomsScreen({ state, dispatch, projectId, navigate }) {
   const project = state.projects.find(p => p.id === projectId);
   const [showModal, setShowModal] = useState(false);
   const [editRoom, setEditRoom] = useState(null);
+  const [confirmDeleteRoom, setConfirmDeleteRoom] = useState(null); // room object to delete
   const priceBook = state.priceBook || {};
 
   if (!project) return null;
@@ -4746,7 +4690,8 @@ function RoomsScreen({ state, dispatch, projectId, navigate }) {
             projectId: projectId,
             dispatch: dispatch,
             navigate: navigate,
-            onEdit: () => { setEditRoom(room); setShowModal(true); }}
+            onEdit: () => { setEditRoom(room); setShowModal(true); },
+            onDelete: () => setConfirmDeleteRoom(room)}
           )
         ))
 
@@ -4768,6 +4713,17 @@ function RoomsScreen({ state, dispatch, projectId, navigate }) {
           priceBook: priceBook}
         )
       )
+      , React.createElement(ConfirmSheet, {
+          open: !!confirmDeleteRoom,
+          title: "Удалить помещение?",
+          subtitle: confirmDeleteRoom ? `«${confirmDeleteRoom.name}» и все работы в нём будут удалены` : "",
+          danger: true,
+          onCancel: () => setConfirmDeleteRoom(null),
+          onConfirm: () => {
+            if (confirmDeleteRoom) dispatch({ type: "DELETE_ROOM", pid: projectId, rid: confirmDeleteRoom.id });
+            setConfirmDeleteRoom(null);
+          }
+        })
     )
   );
 }
@@ -6528,113 +6484,145 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
   // -- HTML preview styles --
   // -- Preview HTML (matches М-Ремонт style) ------------------
   const previewCSS = `
-    @import url('https://fonts.googleapis.com/css2?family=PT+Sans:wght@400;700&family=PT+Sans+Caption:wght@400;700&display=swap');
-    @page { size: A4; margin: 14mm 12mm 12mm 14mm; }
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@700&display=swap');
+    @page { size: A4; margin: 16mm 14mm 14mm 16mm; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #fff; font-family: 'PT Sans', Arial, sans-serif; }
-    .sw { font-size: 9pt; color: #111; background: #fff; padding: 0; max-width: 210mm; margin: 0 auto; }
+    body { background: #f0f6ff; font-family: 'Inter', Arial, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .sw { font-size: 9pt; color: #1e3a5f; background: #fff; padding: 18px 20px 24px; max-width: 210mm; margin: 0 auto; border-radius: 0; }
 
     /* ── Header ── */
-    .sh { text-align: center; margin-bottom: 10px; }
-    .sh-company { font-size: 13pt; font-weight: 700; color: #0d2b55; letter-spacing: 0.02em; margin-bottom: 2px; }
-    .sh-contract { font-size: 8.5pt; color: #333; margin-bottom: 1px; }
-    .sh-address  { font-size: 8.5pt; color: #555; margin-bottom: 6px; }
-    .sh-title    { font-size: 11pt; font-weight: 700; color: #0d2b55; margin-bottom: 1px; }
-    .sh-sub      { font-size: 8.5pt; color: #555; margin-bottom: 8px; font-style: italic; }
-    .sh-line     { height: 2px; background: #2d6fad; margin: 5px 0; }
-    .sh-meta     { font-size: 8pt; color: #666; margin-bottom: 2px; }
+    .sh { text-align: center; margin-bottom: 14px; }
+    .sh-company {
+      font-family: 'Playfair Display', 'Inter', serif;
+      font-size: 15pt; font-weight: 700; color: #1a3a6e;
+      letter-spacing: 0.03em; margin-bottom: 3px;
+    }
+    .sh-line { height: 2.5px; background: linear-gradient(90deg, #4a90d9 0%, #7ab8f5 50%, #4a90d9 100%); margin: 6px 0; border-radius: 2px; }
+    .sh-meta     { font-size: 7.5pt; color: #6b8ab0; margin-bottom: 2px; letter-spacing: 0.02em; }
+    .sh-contract { font-size: 8.5pt; color: #2d5a9b; font-weight: 600; margin: 8px 0 2px; }
+    .sh-address  { font-size: 8pt; color: #7090b0; margin-bottom: 3px; }
+    .sh-title    { font-size: 12pt; font-weight: 700; color: #1a3a6e; margin: 6px 0 1px; }
+    .sh-sub      { font-size: 8pt; color: #6b8ab0; font-style: italic; margin-bottom: 14px; }
+
+    /* ── Table wrapper with rounded corners ── */
+    .st-wrap {
+      border-radius: 14px;
+      overflow: hidden;
+      border: 1.5px solid #cde0f7;
+      box-shadow: 0 2px 16px rgba(74,144,217,0.12);
+      margin-bottom: 0;
+    }
 
     /* ── Table ── */
     .st { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8.5pt; }
 
-    /* Header row */
+    .st thead tr th:first-child { border-radius: 0; }
     .st thead th {
-      background: #1e3f6e;
-      color: #fff;
-      font-size: 8pt;
+      background: linear-gradient(135deg, #2d5a9b 0%, #4a90d9 100%);
+      color: #ffffff;
+      font-size: 7.5pt;
       font-weight: 700;
-      padding: 6px 4px;
-      border: 1px solid #1a3560;
+      padding: 8px 5px;
+      border: none;
+      border-right: 1px solid rgba(255,255,255,0.15);
       text-align: center;
       vertical-align: middle;
-      line-height: 1.2;
+      line-height: 1.3;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
     }
-    .st thead th.left { text-align: left; padding-left: 6px; }
+    .st thead th:last-child { border-right: none; }
+    .st thead th.left { text-align: left; padding-left: 10px; }
 
-    /* Data cells */
     .st tbody td {
-      padding: 4px 4px;
-      border: 1px solid #b8cfe8;
+      padding: 5px 5px;
+      border-bottom: 1px solid #e8f0fa;
+      border-right: 1px solid #e8f0fa;
       font-size: 8.5pt;
       vertical-align: middle;
-      line-height: 1.3;
+      line-height: 1.35;
       word-break: break-word;
-      color: #111;
+      color: #1e3a5f;
     }
-    .st tbody tr.even td { background: #f4f8fd; }
+    .st tbody td:last-child { border-right: none; }
+    .st tbody tr:last-child td { border-bottom: none; }
+    .st tbody tr.even td { background: #f5f9ff; }
     .st tbody tr.odd  td { background: #ffffff; }
+    .st tbody tr:hover td { background: #eef5ff; }
 
-    /* Section / room header row */
+    /* Section header row — pastel blue */
     .st tbody tr.sr td {
-      background: #c5ddf4;
+      background: linear-gradient(90deg, #daeaf9 0%, #e8f3fd 100%);
       font-weight: 700;
       font-size: 8.8pt;
-      padding: 5px 6px;
-      border: 1px solid #7aadd6;
-      color: #0d2b55;
+      padding: 7px 10px;
+      border-top: 1.5px solid #b0d0f0;
+      border-bottom: 1px solid #b0d0f0;
+      border-right: none;
+      color: #1a3a6e;
+      letter-spacing: 0.01em;
     }
 
     /* Section subtotal row */
     .st tbody tr.st-total td {
-      background: #e8f4ff;
+      background: #eef5ff;
       font-weight: 700;
       font-size: 8.5pt;
-      border: 1px solid #7aadd6;
-      color: #0d2b55;
+      border-top: 1px solid #b0d0f0;
+      border-bottom: 1px solid #b0d0f0;
+      color: #2d5a9b;
+      font-style: italic;
     }
 
     /* Material row */
-    .st tbody tr.mat td { background: #fffdf2; }
+    .st tbody tr.mat td { background: #f9fbff; color: #4a7ab0; }
 
     /* Room total row */
     .st tbody tr.room-tot td {
-      background: #d6ecd6;
+      background: linear-gradient(90deg, #d0e8ff 0%, #e0f0ff 100%);
       font-weight: 700;
       font-size: 8.5pt;
-      border-top: 1.5px solid #5aa85a;
-      border-bottom: 1.5px solid #5aa85a;
-      color: #1a4d1a;
+      border-top: 1.5px solid #7ab0e0;
+      border-bottom: 1.5px solid #7ab0e0;
+      color: #1a3a6e;
     }
 
-    /* Column widths */
-    .col-num   { width: 26px; text-align: center !important; color: #555; }
-    .col-unit  { width: 46px; text-align: center !important; }
-    .col-qty   { width: 46px; text-align: center !important; }
-    .col-price { width: 62px; text-align: right !important; padding-right:5px !important; }
-    .col-sum   { width: 68px; text-align: right !important; padding-right:5px !important; font-weight: 700; }
-    .left      { text-align: left !important; padding-left: 6px !important; }
+    .col-num   { width: 24px; text-align: center !important; color: #8aa8c8; font-size: 7.5pt; }
+    .col-unit  { width: 44px; text-align: center !important; }
+    .col-qty   { width: 44px; text-align: center !important; }
+    .col-price { width: 62px; text-align: right !important; padding-right: 8px !important; }
+    .col-sum   { width: 68px; text-align: right !important; padding-right: 8px !important; font-weight: 700; color: #1a3a6e; }
+    .left      { text-align: left !important; padding-left: 10px !important; }
     .ctr       { text-align: center !important; }
-    .rgt       { text-align: right !important; padding-right: 5px !important; }
+    .rgt       { text-align: right !important; padding-right: 8px !important; }
 
     /* ── Footer totals ── */
-    .sf { margin-top: 8px; }
-    .sf-table { width: 100%; border-collapse: collapse; margin-bottom: 6px; }
-    .sf-table td { padding: 4px 6px; font-size: 9pt; border: 1px solid #b8cfe8; }
-    .sf-table tr.sf-grand td { background: #c5ddf4; font-weight: 700; font-size: 10pt; color: #0d2b55; }
-    .sf-words { font-size: 8pt; color: #333; margin: 8px 0 20px; line-height: 1.6; }
-    .sf-signs { display: flex; justify-content: space-between; margin-top: 24px; }
+    .sf { margin-top: 12px; }
+    .sf-table { width: auto; min-width: 280px; margin-left: auto; border-collapse: separate; border-spacing: 0; border-radius: 12px; overflow: hidden; border: 1.5px solid #cde0f7; box-shadow: 0 2px 10px rgba(74,144,217,0.1); margin-bottom: 8px; }
+    .sf-table td { padding: 6px 12px; font-size: 9pt; border-bottom: 1px solid #e8f0fa; }
+    .sf-table td:first-child { color: #4a6a9a; }
+    .sf-table td:last-child { text-align: right; font-weight: 700; color: #1a3a6e; }
+    .sf-table tr:last-child td { border-bottom: none; }
+    .sf-table tr.sf-grand td {
+      background: linear-gradient(135deg, #2d5a9b 0%, #4a90d9 100%);
+      color: #fff !important;
+      font-weight: 800;
+      font-size: 10.5pt;
+      padding: 8px 12px;
+    }
+    .sf-words { font-size: 7.5pt; color: #6b8ab0; margin: 10px 0 22px; line-height: 1.7; font-style: italic; }
+    .sf-signs { display: flex; justify-content: space-between; margin-top: 28px; }
     .sf-sign  { width: 46%; }
-    .sf-sign-title { font-weight: 700; font-size: 9pt; margin-bottom: 28px; color: #0d2b55; }
-    .sf-sign-line  { border-bottom: 1px solid #555; margin-bottom: 4px; }
-    .sf-sign-hint  { font-size: 7.5pt; color: #888; display: flex; justify-content: space-between; }
+    .sf-sign-title { font-weight: 700; font-size: 9pt; margin-bottom: 32px; color: #1a3a6e; }
+    .sf-sign-line  { border-bottom: 1.5px solid #b0c8e8; margin-bottom: 5px; }
+    .sf-sign-hint  { font-size: 7.5pt; color: #8aaccc; display: flex; justify-content: space-between; }
 
-    /* Logo area */
     .sh-logo { flex-shrink: 0; }
-    .sh-logo img { width:72px; height:72px; object-fit:contain; border:1px solid #cce; border-radius:6px; }
+    .sh-logo img { width: 72px; height: 72px; object-fit: contain; border: 1.5px solid #cde0f7; border-radius: 10px; }
 
     @media print {
+      body { background: #fff; }
       .sw { padding: 0; }
-      body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
     }
   `;
 
@@ -6799,6 +6787,7 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
     ${logoHtml}
   </div>
 
+  <div class="st-wrap">
   <table class="st">
     <thead>
       <tr>
@@ -6814,9 +6803,10 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
       ${rowsHtml}
     </tbody>
   </table>
+  </div>
 
   <div class="sf">
-    <table class="sf-table" style="margin-left:auto;width:auto;min-width:280px;">
+    <table class="sf-table">
       <tr><td style="min-width:180px">Итого по работам:</td><td class="rgt" style="min-width:90px;font-weight:700">${fmtD(workTotal)} ₽</td></tr>
       ${matTotal > 0 ? `<tr><td>Итого по материалам:</td><td class="rgt" style="font-weight:700">${fmtD(matTotal)} ₽</td></tr>` : ""}
       <tr class="sf-grand"><td><b>ИТОГО К ОПЛАТЕ:</b></td><td class="rgt"><b>${fmtD(total)} ₽</b></td></tr>
@@ -10176,7 +10166,7 @@ function CalcScreen({ state, dispatch, prevTab, setTab, lang }) {
               /* Room list */
               , React.createElement('div', { style: { marginBottom: 12 }}
                 , React.createElement('div', { style: { display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}
-                  , React.createElement('div', { style: { fontSize: 10, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.07em" }}, "Помещения")
+                  , React.createElement('div', { style: { fontSize: 10, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.07em" }}, "Помещения — отметьте нужные ☑️")
                   , pickerRooms.length > 0 && (
                     React.createElement('button', { onClick: () => {
                       const allSel = pickerRooms.every(r => pickerSelected[r.id]);
@@ -10196,20 +10186,42 @@ function CalcScreen({ state, dispatch, prevTab, setTab, lang }) {
                       const on = !!pickerSelected[room.id];
                       return (
                         React.createElement('button', { key: room.id, onClick: () => setPickerSelected(s => ({ ...s, [room.id]: !s[room.id] })),
-                          style: { display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderRadius: 11, border: `1.5px solid ${on ? "var(--green)" : "var(--b1)"}`, background: on ? "rgba(16,185,129,0.1)" : "var(--s2)", cursor: "pointer", fontFamily: "inherit", textAlign: "left", transition: "all 0.12s" }}
-                          , React.createElement('div', { style: { width: 20, height: 20, borderRadius: 6, background: on ? "var(--green)" : "var(--s3)", border: on ? "none" : "1.5px solid var(--b2)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
-                            , on && React.createElement(Icon, { name: "check", size: 11, color: "#fff"} )
+                          style: {
+                            display: "flex", alignItems: "center", gap: 10, padding: "12px 14px",
+                            borderRadius: 12, cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                            transition: "all 0.15s",
+                            border: on ? "2px solid #059669" : "2px solid #e2e8f0",
+                            background: on
+                              ? "linear-gradient(135deg,rgba(5,150,105,0.15),rgba(16,185,129,0.08))"
+                              : "var(--s1)",
+                            boxShadow: on ? "0 2px 12px rgba(5,150,105,0.25)" : "0 1px 4px rgba(0,0,0,0.06)",
+                          }}
+                          , React.createElement('div', { style: {
+                              width: 26, height: 26, borderRadius: 8, flexShrink: 0,
+                              background: on ? "#059669" : "#f1f5f9",
+                              border: on ? "none" : "2px solid #cbd5e1",
+                              display: "flex", alignItems: "center", justifyContent: "center",
+                              fontSize: 13,
+                            }}
+                            , on
+                              ? React.createElement(Icon, { name: "check", size: 13, color: "#fff"} )
+                              : React.createElement('span', { style:{ color:"#94a3b8", fontSize:12 }}, "□")
                           )
                           , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
-                            , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: "var(--tx)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}, room.name)
-                            , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", marginTop: 1 }}
+                            , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: on ? "#065f46" : "var(--tx)" }}, room.name)
+                            , React.createElement('div', { style: { fontSize: 10, color: on ? "#059669" : "var(--tx3)", marginTop: 1, fontWeight: on ? 600 : 400 }}
                               , room.length && room.width ? `${room.length}×${room.width} м` : ""
                               , room.height ? `, h=${room.height} м` : ""
                             )
                           )
-                          , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 }}
-                            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 800, color: on ? "var(--green)" : "var(--tx2)" }}, area.toFixed(2))
-                            , React.createElement('div', { style: { fontSize: 9, color: "var(--tx3)" }}, "м²")
+                          , React.createElement('div', { style: {
+                              textAlign: "right", flexShrink: 0,
+                              background: on ? "rgba(5,150,105,0.12)" : "#f8fafc",
+                              borderRadius: 8, padding: "4px 8px",
+                              border: on ? "1px solid rgba(5,150,105,0.25)" : "1px solid #e2e8f0",
+                            }}
+                            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 900, color: on ? "#059669" : "#475569" }}, area.toFixed(2))
+                            , React.createElement('div', { style: { fontSize: 9, color: on ? "#059669" : "var(--tx3)", fontWeight: 700 }}, "м²")
                           )
                         )
                       );
