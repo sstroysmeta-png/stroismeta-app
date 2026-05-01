@@ -6370,9 +6370,6 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
     return rows;
   };
 
-  const buildRows = () => exportGroupBy === "rooms" ? buildRowsByRooms() : buildRowsBySections();
-  const rows = buildRows();
-
   const buildPreviewHTML = () => {
     const cl = (t) => "</" + t + ">";
 
@@ -6491,7 +6488,6 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
 </body></html>`;
   };
   const previewHTML = buildPreviewHTML();
-    const previewHTML = buildPreviewHTML();
 
   // ── Helper: share or download a file ──────────────────────────────
   const shareOrDownload = async (blob, filename, mimeType) => {
