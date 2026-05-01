@@ -782,7 +782,7 @@ function appReducer(state, action) {
         ...state,
         projects: state.projects.map(p =>
           p.id === action.pid
-            ? { ...p, sections: p.sections.map(s => s.id === action.sid ? { ...s, name: action.name } : s) }
+            ? { ...p, sections: (p.sections||[]).map(s => s.id === action.sid ? { ...s, name: action.name } : s) }
             : p
         ),
       };
@@ -792,7 +792,7 @@ function appReducer(state, action) {
         ...state,
         projects: state.projects.map(p =>
           p.id === action.pid
-            ? { ...p, sections: p.sections.map(s => s.id === action.sid ? { ...s, collapsed: !s.collapsed } : s) }
+            ? { ...p, sections: (p.sections||[]).map(s => s.id === action.sid ? { ...s, collapsed: !s.collapsed } : s) }
             : p
         ),
       };
@@ -817,7 +817,7 @@ function appReducer(state, action) {
         ...state,
         projects: state.projects.map(p =>
           p.id === action.pid
-            ? { ...p, sections: [...p.sections, { id: action.sid || uid(), name: action.name, collapsed: false, _explicit: true, _stageId: action.stageId || null, items }] }
+            ? { ...p, sections: [...(p.sections||[]), { id: action.sid || uid(), name: action.name, collapsed: false, _explicit: true, _stageId: action.stageId || null, items }] }
             : p
         ),
       };
@@ -828,7 +828,7 @@ function appReducer(state, action) {
         projects: state.projects.map(p => {
           if (p.id !== action.pid) return p;
           // Find the section being deleted
-          const sec = p.sections.find(s => s.id === action.sid);
+          const sec = (p.sections||[]).find(s => s.id === action.sid);
           // Collect work names that were synced FROM rooms (via _roomWorkId)
           const syncedWorkIds = new Set((_optionalChain([sec, 'optionalAccess', _2 => _2.items]) || []).filter(i => i._roomWorkId).map(i => i._roomWorkId));
           // Also collect names of manual work items to remove from rooms
@@ -838,7 +838,7 @@ function appReducer(state, action) {
             ...room,
             works: (room.works || []).filter(w => !syncedWorkIds.has(w.id) && !workNames.has(w.name)),
           }));
-          const updatedSections = p.sections.filter(s => s.id !== action.sid);
+          const updatedSections = (p.sections||[]).filter(s => s.id !== action.sid);
           return syncRoomsToSections({ ...p, rooms: updatedRooms, sections: updatedSections });
         }),
       };
@@ -849,9 +849,9 @@ function appReducer(state, action) {
         projects: state.projects.map(p =>
           p.id === action.pid
             ? {
-              ...p, sections: p.sections.map(s =>
+              ...p, sections: (p.sections||[]).map(s =>
                 s.id === action.sid
-                  ? { ...s, items: s.items.filter(i => i.id !== action.iid) }
+                  ? { ...s, items: (s.items||[]).filter(i => i.id !== action.iid) }
                   : s
               )
             }
@@ -866,9 +866,9 @@ function appReducer(state, action) {
         projects: state.projects.map(p => {
           if (p.id !== action.pid) return p;
           return {
-            ...p, sections: p.sections.map(s => {
+            ...p, sections: (p.sections||[]).map(s => {
               if (s.id !== action.sid) return s;
-              const items = [...s.items];
+              const items = [...(s.items||[])];
               const [moved] = items.splice(action.fromIdx, 1);
               items.splice(action.toIdx, 0, moved);
               return { ...s, items };
@@ -906,9 +906,9 @@ function appReducer(state, action) {
         projects: state.projects.map(p =>
           p.id === action.pid
             ? {
-              ...p, sections: p.sections.map(s =>
+              ...p, sections: (p.sections||[]).map(s =>
                 s.id === action.sid
-                  ? { ...s, items: [...s.items, action.item] }
+                  ? { ...s, items: [...(s.items||[]), action.item] }
                   : s
               )
             }
@@ -926,9 +926,9 @@ function appReducer(state, action) {
         projects: state.projects.map(p =>
           p.id === action.pid
             ? {
-              ...p, sections: p.sections.map(s =>
+              ...p, sections: (p.sections||[]).map(s =>
                 s.id === action.sid
-                  ? { ...s, items: s.items.map(i => i.id === action.item.id ? action.item : i) }
+                  ? { ...s, items: (s.items||[]).map(i => i.id === action.item.id ? action.item : i) }
                   : s
               )
             }
@@ -1007,9 +1007,9 @@ function appReducer(state, action) {
         projects: state.projects.map(p =>
           p.id === action.pid
             ? {
-              ...p, sections: p.sections.map(s =>
+              ...p, sections: (p.sections||[]).map(s =>
                 s.id === action.sid
-                  ? { ...s, items: [...s.items, ...action.items] }
+                  ? { ...s, items: [...(s.items||[]), ...action.items] }
                   : s
               )
             }
@@ -1513,11 +1513,11 @@ function ProjectsScreen({ state, dispatch, navigate, theme, lang }) {
         , projects.map(p => {
           // estimate mode: show only work items; materials mode: show all or only material items
           const workSections = isEst
-            ? p.sections.map(s => ({ ...s, items: s.items.filter(i => i.type === "work") }))
-            : p.sections;
-          const matSections = p.sections.map(s => ({ ...s, items: s.items.filter(i => i.type === "material") }));
+            ? (p.sections||[]).map(s => ({ ...s, items: (s.items||[]).filter(i => i.type === "work") }))
+            : (p.sections||[]);
+          const matSections = (p.sections||[]).map(s => ({ ...s, items: (s.items||[]).filter(i => i.type === "material") }));
 
-          const displayTotal = isEst ? calcTotal(workSections) : calcTotal(p.sections);
+          const displayTotal = isEst ? calcTotal(workSections) : calcTotal(p.sections||[]);
           const matTotal = calcTotal(matSections);
           const workTotal = calcTotal(workSections);
           const isSwipe = swipeId === p.id;
@@ -1626,7 +1626,7 @@ function ProjectsScreen({ state, dispatch, navigate, theme, lang }) {
                     , isSwipe ? "Отмена" : "⟵ Удалить"
                   )
                   , React.createElement('div', { style: { marginLeft: "auto", background: isEst ? "#eff6ff" : "#f0fdfa", borderRadius: 8, padding: "4px 10px", fontSize: 11, color: isEst ? "#3b82f6" : "#0f766e", fontWeight: 600 }}
-                    , p.sections.length, " разд."
+                    , (p.sections||[]).length, " разд."
                   )
                 )
               )
@@ -3222,6 +3222,13 @@ function RoomDetailScreen({ state, dispatch, projectId, roomId, navigate }) {
   const [addingToStage, setAddingToStage] = useState(null);
   const [editWork, setEditWork] = useState(null);
   const [showAddSheet, setShowAddSheet] = useState(false); // bottom sheet to pick stage
+  const [confirmDeleteWid, setConfirmDeleteWid] = useState(null);
+  const confirmDeleteWork = () => {
+    if (confirmDeleteWid) {
+      dispatch({ type: "UPDATE_ROOM", pid: projectId, room: { ...room, works: works.filter(w => w.id !== confirmDeleteWid) } });
+      setConfirmDeleteWid(null);
+    }
+  };
 
   if (!room) return React.createElement('div', { style: { padding: 20, color: "var(--tx)" }}, "Помещение не найдено"  );
 
@@ -3372,7 +3379,7 @@ function RoomDetailScreen({ state, dispatch, projectId, roomId, navigate }) {
                             style: { background: "var(--acc3)", border: "none", borderRadius: 6, padding: "3px 7px", cursor: "pointer" }}
                             , React.createElement(Icon, { name: "edit", size: 12, color: "var(--acc2)"} )
                           )
-                          , React.createElement('button', { onClick: () => handleDeleteWork(work.id),
+                          , React.createElement('button', { onClick: () => setConfirmDeleteWid(work.id),
                             style: { background: "rgba(239,68,68,0.1)", border: "none", borderRadius: 6, padding: "3px 7px", cursor: "pointer" }}
                             , React.createElement(Icon, { name: "trash", size: 12, color: "#ef4444"} )
                           )
@@ -4217,18 +4224,17 @@ function RoomMeasureModal({ open, onClose, onRoomCreated }) {
     const refCm = parseFloat(refValue) || 0;
     const refM  = (refCm / 100).toFixed(2);
 
-    const systemPrompt = `Ты — профессиональный замерщик помещений с 20 годами опыта. Тебе показывают фото комнаты.
-Твоя задача: определить РЕАЛЬНЫЕ размеры помещения в метрах.
+    const systemPrompt = `Ты — профессиональный замерщик помещений. Определяй размеры по фото комнаты.
 
-МЕТОД РАБОТЫ:
-1. Найди все видимые геометрические ориентиры: стыки стен/пола/потолка, дверные/оконные проёмы, плитка, мебель
-2. Используй опорный объект как масштаб (если указан)  
-3. Оцени пропорции помещения — это главный инструмент
-4. Стандарты: дверной проём = 80-90 см шириной, 200-210 см высотой; окно = 120-150 см шириной; стандартная плитка = 30/40/60 см; высота потолков в жилых = 2.5-3.0 м
+АЛГОРИТМ:
+1. Найди ориентиры масштаба: дверь (стандарт 80-90×200 см), окно (100-150 см шир.), плитка (30/40/60 см), мебель (диван ~200 см, шкаф ~200×60 см, кровать ~140-200×200 см, кухня ~60 см гл.)
+2. Используй перспективу: чем дальше — тем меньше выглядит объект
+3. Если указан опорный размер — используй его как главный масштаб
+4. Оцени пропорции длины к ширине по форме пола
+5. Высота потолков: стандарт 2.5 м, современные дома 2.7-3.0 м, хрущёвки 2.5 м
 
-ВАЖНО: Всегда возвращай реальный JSON с числами, даже если точность средняя.
-Если фото слишком размытое или вообще не комната — пиши confidence:"low" но всё равно оценивай.
-Никогда не отказывайся от оценки.`;
+ВСЕГДА возвращай JSON с реальными числами. confidence:"low" = плохое фото, но всё равно оценивай.
+Никогда не отказывайся от ответа.`;
 
     const userText = refType === "manual"
       ? `Оцени размеры этой комнаты по видимым пропорциям и объектам в кадре.
@@ -4718,47 +4724,58 @@ function PlanRecognitionModal({ open, onClose, onRoomsDetected }) {
       setProgress(p => p < 88 ? p + Math.random() * 8 : p);
     }, 500);
 
-    const systemPrompt = `Ты — профессиональный архитектор и эксперт по строительным чертежам с 20 годами опыта.
-Тебе дают изображение: фото, скан или чертёж плана квартиры/дома/офиса.
+    const systemPrompt = `Ты — система компьютерного зрения и архитектурный эксперт. Анализируй изображение плана.
 
-ТВОЯ ЗАДАЧА: распознать ВСЕ помещения и их размеры, вернуть JSON.
+ТИП ВХОДНЫХ ДАННЫХ (определи сам):
+- Архитектурный чертёж (линии, штриховка, размерные линии)
+- Скан/фото бумажного плана
+- Цифровой план из приложения (ПИК, ЦИАН, Домклик и т.д.)
+- Набросок от руки
+- Любое изображение с планировкой
 
-АЛГОРИТМ РАСПОЗНАВАНИЯ:
-1. НАЙДИ ВСЕ ПОМЕЩЕНИЯ на плане:
-   - Смотри на замкнутые контуры (прямоугольники, многоугольники)
-   - Ищи текстовые подписи: "Кухня", "Кухня-гостиная", "Спальня", "Санузел", "С/У", "Коридор", "Хол", "Балкон", "Лоджия", "Гардероб", "Кладовая", "Прихожая"
-   - Если подписей нет — называй по функции (Комната 1, Комната 2...)
+ШАГ 1 — ОБНАРУЖЕНИЕ ПОМЕЩЕНИЙ:
+Найди все замкнутые контуры на изображении. Каждый контур = помещение.
+Типичные названия (ищи текст внутри контуров или рядом):
+Кухня / КУХ / К / Kitchen
+Гостиная / Зал / Комната / Living / ГЗ
+Спальня / СП / Bedroom / СП1 / СП2
+Санузел / С/У / Ванная / WC / Туалет / Сан.узел
+Коридор / КОР / Прихожая / Холл / Hall
+Балкон / БАЛ / Лоджия / ЛОД
+Кладовая / КЛ / Гардероб / ГАР
+Если подписей нет — назови: Комната 1, Комната 2, Кухня, Коридор, Санузел
 
-2. ОПРЕДЕЛИ РАЗМЕРЫ (приоритет):
-   a) Читай числа прямо с чертежа: "3200", "3.20", "3,20 м", "320 см" — всё переводи в метры
-   b) Если числа есть только снаружи (общая длина) — распредели пропорционально
-   c) Если чертёж без размеров — оцени по пропорциям относительно всего плана (типичная квартира 40-120 м²)
-   d) Размеры в мм: 3200 → 3.20 м; в см: 320 → 3.20 м; в м: 3.20 → 3.20 м
+ШАГ 2 — ИЗВЛЕЧЕНИЕ РАЗМЕРОВ:
+Сканируй ВСЕ числа на изображении:
+• Числа у размерных линий (←3200→ или |3.20|)
+• Числа внутри помещений (площадь: "12.5" или "12.5 м²")  
+• Числа на осях здания
+• Формат мм→м: 3200→3.20, 4500→4.50, 1800→1.80
+• Формат см→м: 320→3.20, 180→1.80
+• Уже в метрах: 3.20, 4.5, 2.8
+Если есть площадь S и одна сторона a → вторая сторона = S/a
+Если только площадь S → считай квадратную комнату: сторона = √S
 
-3. СТАНДАРТНЫЕ РАЗМЕРЫ для оценки:
-   - Однокомнатная кухня: 2.5-3.5 × 2.0-3.0 м
-   - Гостиная/зал: 4.0-6.0 × 3.5-4.5 м
-   - Спальня: 3.0-4.5 × 3.0-4.0 м  
-   - Санузел совмещённый: 1.7-2.5 × 1.4-2.0 м
-   - Туалет: 0.9-1.5 × 1.2-1.8 м
-   - Коридор/прихожая: 1.0-2.0 × 2.0-5.0 м
-   - Балкон/лоджия: 1.0-1.5 × 2.5-4.0 м
+ШАГ 3 — ОЦЕНКА ПРИ ОТСУТСТВИИ ДАННЫХ:
+Используй пропорции плана + стандарты жилья:
+• 1-комн. кв: ~35-45 м², 2-комн: 50-65 м², 3-комн: 70-90 м²
+• Кухня: 8-15 м² → длина 3-4 м × ширина 2.5-3.5 м
+• Гостиная: 15-25 м² → 4-5 м × 3.5-5 м
+• Спальня: 10-18 м² → 3-4.5 м × 3-4 м
+• Санузел совм.: 4-7 м² → 1.8-2.5 м × 2-3 м
+• Туалет: 1.5-3 м² → 0.9-1.2 м × 1.6-2 м
+• Коридор: 4-12 м² → 1-2 м × 4-8 м
 
-4. ДОПОЛНИТЕЛЬНО для каждой комнаты:
-   - doors: количество дверных проёмов (обычно 1, для прихожей 2-3)
-   - windows: количество окон (0 для коридора/санузла, 1-2 для комнат)
+ШАГ 4 — ДВЕРИ И ОКНА:
+• doors: считай дверные проёмы (разрыв в стене с дугой или прямоугольником)
+• windows: считай оконные проёмы (разрыв в наружной стене, обычно шире)
+• Если не видно: doors=1 для любой комнаты, windows=1 для жилых, windows=0 для санузла/коридора
 
-ФОРМАТ ОТВЕТА — ТОЛЬКО ЭТОТ JSON, никакого другого текста:
-{"rooms":[
-  {"name":"Гостиная","length":4.5,"width":3.8,"doors":1,"windows":2,"area_note":"15.4 м² — читал с плана"},
-  {"name":"Кухня","length":3.2,"width":2.6,"doors":1,"windows":1,"area_note":"оценка"},
-  {"name":"Спальня","length":3.5,"width":3.0,"doors":1,"windows":1,"area_note":"10.5 м²"},
-  {"name":"Санузел","length":2.1,"width":1.5,"doors":1,"windows":0,"area_note":"оценка"}
-]}
+ФОРМАТ ОТВЕТА — СТРОГО ТОЛЬКО JSON, без markdown, без текста до или после:
+{"total_area":75.5,"rooms":[{"name":"Гостиная","length":4.8,"width":3.6,"area_m2":17.3,"doors":1,"windows":2,"confidence":"high"},{"name":"Спальня","length":3.5,"width":3.2,"area_m2":11.2,"doors":1,"windows":1,"confidence":"high"},{"name":"Кухня","length":3.8,"width":2.8,"area_m2":10.6,"doors":1,"windows":1,"confidence":"medium"},{"name":"Санузел","length":2.2,"width":1.6,"area_m2":3.5,"doors":1,"windows":0,"confidence":"medium"},{"name":"Коридор","length":4.0,"width":1.2,"area_m2":4.8,"doors":2,"windows":0,"confidence":"low"}]}
 
-ВАЖНО: Возвращай ВСЕ помещения которые видишь, даже балкон и кладовку.
-Даже если план размытый или нечёткий — делай наилучшую оценку.
-НИКОГДА не возвращай пустой список rooms и не возвращай error — всегда пробуй распознать.`;
+confidence: "high"=размеры с плана, "medium"=оценка по пропорциям, "low"=грубая оценка
+ОБЯЗАТЕЛЬНО: возвращай ВСЕ помещения. Никогда не возвращай пустой массив rooms.`;
 
     const doRequest = async (attempt) => {
       try {
@@ -4823,34 +4840,58 @@ function PlanRecognitionModal({ open, onClose, onRoomsDetected }) {
       setProgress(95);
 
       // Handle both {rooms:[]} and {error:...} formats
-      if (!parsed.rooms || parsed.rooms.length === 0) {
-        // Try to handle if model returned flat object with one room
+      // Normalize response — handle both formats
+      if (!parsed.rooms || !Array.isArray(parsed.rooms) || parsed.rooms.length === 0) {
+        // Try flat single-room object
         if (parsed.length && parsed.width) {
           parsed.rooms = [{ name: "Помещение", length: parsed.length, width: parsed.width }];
+        } else if (parsed.name && (parsed.length || parsed.area_m2)) {
+          parsed.rooms = [parsed];
         } else {
-          throw new Error("Помещения не найдены на плане. Убедитесь что изображение — план квартиры с видимыми контурами комнат.");
+          // Last resort: parse any numeric pairs we can find
+          throw new Error("Помещения не найдены. Убедитесь что это план квартиры — изображение должно содержать контуры комнат.");
         }
       }
 
       const h = parseFloat(ceilingH) || 2.7;
       const detectedRooms = parsed.rooms.map((r, idx) => {
-        const l = Math.max(0.5, parseFloat(r.length) || 3);
-        const w = Math.max(0.5, parseFloat(r.width)  || 3);
+        // If we have area_m2 but not both sides — compute square room
+        let l, w;
+        if (r.length && r.width) {
+          l = Math.max(0.5, parseFloat(r.length));
+          w = Math.max(0.5, parseFloat(r.width));
+        } else if (r.area_m2) {
+          const s = parseFloat(r.area_m2);
+          l = +Math.sqrt(s).toFixed(2);
+          w = +Math.sqrt(s).toFixed(2);
+          // If one dim given, derive other
+          if (r.length) { l = parseFloat(r.length); w = +(s/l).toFixed(2); }
+          else if (r.width) { w = parseFloat(r.width); l = +(s/w).toFixed(2); }
+        } else {
+          l = 3; w = 3;
+        }
+        l = Math.max(0.5, l);
+        w = Math.max(0.5, w);
+
+        const isUtility = r.name && /коридор|прихожая|санузел|туалет|с\/у|с.у|wc|кладовая|гардероб/i.test(r.name);
         const doors   = Math.max(0, parseInt(r.doors)   || 1);
-        const windows = Math.max(0, parseInt(r.windows) || (r.name && r.name.match(/коридор|прихожая|санузел|туалет|с\/у/i) ? 0 : 1));
+        const windows = Math.max(0, parseInt(r.windows) || (isUtility ? 0 : 1));
         const floor     = +(l * w).toFixed(2);
         const perimeter = +(2*(l+w)).toFixed(2);
         const wallsTotal= +(perimeter * h).toFixed(2);
         const deductions= +(doors * (0.9*2.05) + windows * (1.2*1.4)).toFixed(2);
         const wallsNet  = +Math.max(0, wallsTotal - deductions).toFixed(2);
+        const conf      = r.confidence || "medium";
         return {
           id: uid(),
           name: r.name || ("Помещение " + (idx+1)),
           shapeType: "standard",
           length: l, width: w, height: h,
           doors, windows,
-          floor, ceiling: floor, perimeter,
-          wallsTotal, wallsNet, deductions,
+          floor: r.area_m2 ? +parseFloat(r.area_m2).toFixed(2) : floor,
+          ceiling: r.area_m2 ? +parseFloat(r.area_m2).toFixed(2) : floor,
+          perimeter, wallsTotal, wallsNet, deductions,
+          _confidence: conf,
           works: [],
         };
       });
@@ -8123,6 +8164,68 @@ function AddMaterialsModal({ open, onClose, section, project, dispatch, projectI
 }
 
 
+
+// ==================== PROJECT EDIT FORM ====================
+function ProjectEditForm({ project, dispatch, onClose }) {
+  const [name, setName]     = useState(project.name || "");
+  const [address, setAddress] = useState(project.address || "");
+  const [area, setArea]     = useState(project.area ? String(project.area) : "");
+  const [client, setClient] = useState(project.client || "");
+  const [note, setNote]     = useState(project.note || "");
+  const [err, setErr]       = useState("");
+
+  const IS = { width:"100%", padding:"10px 12px", borderRadius:10,
+    border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)",
+    fontSize:14, fontFamily:"inherit", outline:"none", boxSizing:"border-box",
+    marginBottom:10 };
+  const LS = { fontSize:11, fontWeight:700, color:"var(--tx3)",
+    textTransform:"uppercase", letterSpacing:"0.05em",
+    display:"block", marginBottom:4 };
+
+  const save = () => {
+    if (!name.trim()) { setErr("Введите название проекта"); return; }
+    dispatch({ type: "UPDATE_PROJECT", project: {
+      ...project,
+      name: name.trim(),
+      address: address.trim(),
+      area: parseFloat(area) || 0,
+      client: client.trim(),
+      note: note.trim(),
+    }});
+    onClose();
+  };
+
+  return React.createElement('div', {}
+    , err ? React.createElement('div', { style:{ background:"rgba(239,68,68,0.08)", color:"var(--red)", fontSize:12, fontWeight:700, padding:"8px 10px", borderRadius:8, marginBottom:10 }}, "⚠️ " + err) : null
+
+    , React.createElement('label', { style:LS }, "Название проекта *")
+    , React.createElement('input', { value:name, onChange:e=>{ setName(e.target.value); setErr(""); }, placeholder:"Ремонт квартиры", style:IS, autoFocus:true })
+
+    , React.createElement('label', { style:LS }, "Адрес объекта")
+    , React.createElement('input', { value:address, onChange:e=>setAddress(e.target.value), placeholder:"ул. Ленина, 42, кв. 15", style:IS })
+
+    , React.createElement('div', { style:{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:2} }
+      , React.createElement('div', {}
+        , React.createElement('label', { style:LS }, "Площадь (м²)")
+        , React.createElement('input', { type:"number", min:"0", value:area, onChange:e=>setArea(e.target.value), placeholder:"80", style:{...IS, textAlign:"center"} })
+      )
+      , React.createElement('div', {}
+        , React.createElement('label', { style:LS }, "Заказчик")
+        , React.createElement('input', { value:client, onChange:e=>setClient(e.target.value), placeholder:"ФИО или организация", style:IS })
+      )
+    )
+
+    , React.createElement('label', { style:LS }, "Примечание")
+    , React.createElement('textarea', { value:note, onChange:e=>setNote(e.target.value), placeholder:"Доп. информация о проекте...", rows:2,
+        style:{...IS, resize:"vertical", fontSize:13} })
+
+    , React.createElement('div', { style:{display:"flex", gap:8, marginTop:4} }
+      , React.createElement('button', { onClick:onClose, style:{ flex:1, padding:"12px", borderRadius:11, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx2)", fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Отмена")
+      , React.createElement('button', { onClick:save, style:{ flex:2, padding:"12px", borderRadius:11, border:"none", background:"linear-gradient(135deg,var(--acc),var(--acc2))", color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 3px 12px rgba(79,70,229,0.3)" }}, "💾 Сохранить")
+    )
+  );
+}
+
 function ProjectScreen({ state, dispatch, projectId, navigate, mode: navMode, profile, authUser, setShowAuth }) {
   const projectRaw = state.projects.find(p => p.id === projectId);
   const project = projectRaw ? { ...projectRaw, sections: projectRaw.sections || [], rooms: projectRaw.rooms || [] } : null;
@@ -8130,6 +8233,7 @@ function ProjectScreen({ state, dispatch, projectId, navigate, mode: navMode, pr
   const mode = navMode || _optionalChain([project, 'optionalAccess', _126 => _126.mode]) || "estimate"; // "estimate" | "materials"
   const isEst = mode === "estimate";
 
+    const [showProjectEdit, setShowProjectEdit] = useState(false);
   const [showAddSection, setShowAddSection] = useState(false);
   const [editingSectionContent, setEditingSectionContent] = useState(null); // section obj | null
   const [editingRoomWork, setEditingRoomWork] = useState(null);
@@ -8235,14 +8339,14 @@ function ProjectScreen({ state, dispatch, projectId, navigate, mode: navMode, pr
 
         /* Project name + badge */
         , React.createElement('div', { style: { display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 3 }}
-          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 17, fontWeight: 900, color: "#fff", flex: 1, lineHeight: 1.2 }}, project.name)
+          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 17, fontWeight: 900, color: "#fff", flex: 1, lineHeight: 1.2, cursor:"pointer" }, onClick: () => setShowProjectEdit(true), title:"Нажмите для редактирования" }, project.name, React.createElement('span',{style:{fontSize:11,marginLeft:6,opacity:0.5}},"✏️"))
           , React.createElement('div', { style: {
             fontSize: 9, padding: "3px 8px", borderRadius: 6, fontWeight: 800, letterSpacing: "0.07em",
             background: "rgba(255,255,255,0.2)", color: "#fff", border: "1px solid rgba(255,255,255,0.35)",
             whiteSpace: "nowrap", marginTop: 2, backdropFilter: "blur(4px)",
           }}, isEst ? "📋 СМЕТА" : "📦 МАТЕРИАЛЫ")
         )
-        , project.address ? React.createElement('div', { style: { fontSize: 11, color: "rgba(255,255,255,0.7)", marginBottom: 18 }}, project.address) : React.createElement('div', { style: { marginBottom: 18 }} )
+        , React.createElement('div', { style: { fontSize: 11, color: "rgba(255,255,255,0.7)", marginBottom: 18, cursor:"pointer" }, onClick: () => setShowProjectEdit(true)}, project.address || React.createElement('span',{style:{opacity:0.5}},'+ адрес / площадь'))
 
         /* -- Action tiles -- */
         , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}
@@ -9168,6 +9272,9 @@ function WorkGroupEditModal({ open, onClose, onSave, initial, priceBook, dispatc
       , React.createElement('div', { style: { display: "flex", gap: 10, marginTop: 14 }}
         , React.createElement(Btn, { onClick: onClose, variant: "secondary", full: true}, "Отмена")
         , React.createElement(Btn, { onClick: handleSave, full: true, disabled: !name || items.length === 0}, "Сохранить группу" )
+      , showProjectEdit && React.createElement(Modal, { open: showProjectEdit, onClose: () => setShowProjectEdit(false), title: "✏️ Редактировать проект" }
+        , React.createElement(ProjectEditForm, { project: project, dispatch: dispatch, onClose: () => setShowProjectEdit(false) })
+      )
       )
     )
   );
