@@ -1126,7 +1126,7 @@ class ErrorBoundary extends React.Component {
 function ConfirmSheet({ open, title, subtitle, danger, onConfirm, onCancel }) {
   if (!open) return null;
   return (
-    React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", zIndex:600, display:"flex", alignItems:"flex-end", justifyContent:"center" },
+    React.createElement('div', { style: { position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:6000, display:"flex", alignItems:"flex-end", justifyContent:"center" },
       onClick: onCancel}
       , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", padding:"20px 16px 32px", width:"100%", maxWidth: "min(480px, 95vw)", animation:"slideUp 0.22s ease" },
         onClick: e => e.stopPropagation()}
@@ -1150,39 +1150,54 @@ function ConfirmSheet({ open, title, subtitle, danger, onConfirm, onCancel }) {
 
 function Modal({ open, onClose, title, children }) {
   const modalRef = useRef(null);
-  
+  const [kbH, setKbH] = useState(0);
+
   useEffect(() => {
-    if (!open) return;
-    const handleFocusIn = (e) => {
-      const el = e.target;
-      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT")) {
-        setTimeout(() => {
-          el.scrollIntoView({ behavior: "smooth", block: "center" });
-        }, 350);
-      }
+    if (!window.visualViewport) return;
+    const onResize = () => {
+      const kh = Math.max(0, window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop);
+      setKbH(kh);
     };
-    const modal = modalRef.current;
-    if (modal) modal.addEventListener("focusin", handleFocusIn);
-    return () => { if (modal) modal.removeEventListener("focusin", handleFocusIn); };
-  }, [open]);
-  
+    window.visualViewport.addEventListener("resize", onResize);
+    window.visualViewport.addEventListener("scroll", onResize);
+    return () => {
+      window.visualViewport.removeEventListener("resize", onResize);
+      window.visualViewport.removeEventListener("scroll", onResize);
+    };
+  }, []);
+
+  function handleFocusIn(e) {
+    const el = e.target;
+    if (!el || (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA" && el.tagName !== "SELECT")) return;
+    setTimeout(() => {
+      const inner = modalRef.current;
+      if (!inner) return;
+      const elRect = el.getBoundingClientRect();
+      const boxRect = inner.getBoundingClientRect();
+      const gap = elRect.bottom - (boxRect.bottom - 12);
+      if (gap > 0) inner.scrollTop += gap + 16;
+    }, 320);
+  }
+
   if (!open) return null;
   return (
     React.createElement('div', { style: {
-      position: "absolute", inset: 0, zIndex: 1000,
-      background: "rgba(0,0,0,0.75)", backdropFilter: "blur(8px)",
-      display: "flex", alignItems: "flex-end", justifyContent: "center",
+      position: "fixed", inset: 0, zIndex: 5000,
+      background: "rgba(0,0,0,0.72)", backdropFilter: "blur(8px)",
+      display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "flex-end",
+      paddingBottom: kbH > 0 ? kbH + "px" : "env(safe-area-inset-bottom,0px)",
     }, onClick: e => e.target === e.currentTarget && onClose()}
-      , React.createElement('div', { ref: modalRef, style: {
+      , React.createElement('div', { ref: modalRef, onFocus: handleFocusIn, style: {
         background: "var(--s1)", border: "1px solid var(--b2)",
-        borderRadius: "24px 24px 0 0",
-        width: "100%", maxWidth: "min(480px, 95vw)", maxHeight: "88vh",
-        overflow: "auto", padding: "24px 20px 36px",
+        borderRadius: "22px 22px 0 0",
+        width: "100%", maxWidth: 520, maxHeight: "88vh",
+        overflowY: "auto", overflowX: "hidden", padding: "22px 20px 32px",
         boxShadow: "0 -12px 60px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.05)",
         animation: "slideUp 0.3s cubic-bezier(0.34,1.56,0.64,1)",
+        WebkitOverflowScrolling: "touch",
       }}
-        , React.createElement('div', { style: { width: 36, height: 4, background: "var(--surface3)", borderRadius: 2, margin: "0 auto 20px" }} )
-        , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}
+        , React.createElement('div', { style: { width: 36, height: 4, background: "var(--surface3)", borderRadius: 2, margin: "0 auto 18px" }} )
+        , React.createElement('div', { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 18 }}
           , React.createElement('span', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 15, fontWeight: 700, color: "var(--tx)" }}, title)
           , React.createElement('button', { onClick: onClose, style: { background: "var(--s2)", border: "1px solid var(--b1)", borderRadius: 10, padding: 7, cursor: "pointer", display:"flex", alignItems:"center", justifyContent:"center" }}
             , React.createElement(Icon, { name: "close", size: 15, color: "var(--tx2)"} )
@@ -2324,7 +2339,7 @@ function RoomModal({ open, onClose, onSave, initial, priceBook }) {
     : ("🔨 Работы — " + (_optionalChain([savedRoom, 'optionalAccess', _18 => _18.name]) || ""));
 
   return (
-    React.createElement('div', { style: { position: "absolute", inset: 0, zIndex: 2000, background: "rgba(15,23,42,0.75)", backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-end", justifyContent: "center" },
+    React.createElement('div', { style: { position: "fixed", inset: 0, zIndex: 2000, background: "rgba(15,23,42,0.75)", backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-end", justifyContent: "center" },
       onClick: e => e.target === e.currentTarget && handleFinish()}
       , React.createElement('div', { style: { background: "var(--s1)", borderRadius: "20px 20px 0 0", width: "100%", maxWidth: "min(480px, 95vw)", maxHeight: "93vh", display: "flex", flexDirection: "column", boxShadow: "0 -8px 40px rgba(0,0,0,0.2)" }}
 
@@ -2673,7 +2688,7 @@ function InlineAddWork({ room, priceBook, onClose, onAdd }) {
   ].filter(o => o.v > 0);
 
   return (
-    React.createElement('div', { style: { position: "absolute", inset: 0, zIndex: 3000, background: "rgba(15,23,42,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-end", justifyContent: "center" },
+    React.createElement('div', { style: { position: "fixed", inset: 0, zIndex: 3000, background: "rgba(15,23,42,0.7)", backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-end", justifyContent: "center" },
       onClick: e => e.target === e.currentTarget && onClose()}
       , React.createElement('div', { style: { background: "var(--s1)", borderRadius: "20px 20px 0 0", width: "100%", maxWidth: "min(480px, 95vw)", maxHeight: "85vh", display: "flex", flexDirection: "column", boxShadow: "0 -8px 40px rgba(0,0,0,0.2)" }}
 
@@ -2856,7 +2871,17 @@ function InlineAddWork({ room, priceBook, onClose, onAdd }) {
 
 // ==================== ROOM DETAIL — STAGE-BASED WORKS ====================
 
-const WORK_STAGES = {};
+const WORK_STAGES = [
+  { id: "prep",     label: "Подготовка",          icon: "🔨", color: "#f97316" },
+  { id: "floor",    label: "Полы",                 icon: "🪵", color: "#92400e" },
+  { id: "walls",    label: "Стены",                icon: "🧱", color: "#3b82f6" },
+  { id: "ceiling",  label: "Потолок",              icon: "🔝", color: "#8b5cf6" },
+  { id: "plumbing", label: "Сантехника",           icon: "🚿", color: "#0891b2" },
+  { id: "electric", label: "Электрика",            icon: "⚡", color: "#d97706" },
+  { id: "doors",    label: "Двери и окна",         icon: "🚪", color: "#64748b" },
+  { id: "finish",   label: "Финишная отделка",     icon: "✨", color: "#ec4899" },
+  { id: "other",    label: "Прочее",               icon: "📦", color: "var(--tx3)" },
+];
 
 // Modal to add work items (multi-select with inline qty editing)
 function AddWorkItemModal({ open, onClose, onAdd, onAddMany, room, priceBook, workGroups, stageName }) {
@@ -3397,7 +3422,7 @@ function RoomDetailScreen({ state, dispatch, projectId, roomId, navigate }) {
 
       /* -- Stage picker bottom sheet -- */
       , showAddSheet && (
-        React.createElement('div', { style: { position: "absolute", inset: 0, zIndex: 400, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(6px)" },
+        React.createElement('div', { style: { position: "fixed", inset: 0, zIndex: 4000, background: "rgba(0,0,0,0.7)", backdropFilter: "blur(6px)" },
           onClick: () => setShowAddSheet(false)}
           , React.createElement('div', { style: {
             position: "absolute", bottom: 0, left: "50%", transform: "translateX(-50%)",
@@ -3642,7 +3667,7 @@ function AddRoomWorkModal({ room, priceBook, onClose, onAdd }) {
 
   return (
     React.createElement('div', { style: {
-      position: "absolute", inset: 0, zIndex: 3000, background: "rgba(15,23,42,0.7)",
+      position: "fixed", inset: 0, zIndex: 3000, background: "rgba(15,23,42,0.7)",
       backdropFilter: "blur(4px)", display: "flex", alignItems: "flex-end", justifyContent: "center",
     }, onClick: e => e.target === e.currentTarget && onClose()}
       , React.createElement('div', { style: {
@@ -4222,7 +4247,7 @@ function RoomMeasureModal({ open, onClose, onRoomCreated }) {
   const IS = { width:"100%", padding:"10px 12px", borderRadius:10, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:14, fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
 
   return (
-    React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.85)", zIndex:500, display:"flex", flexDirection:"column" }}
+    React.createElement('div', { style: { position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", zIndex:500, display:"flex", flexDirection:"column" }}
       , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", marginTop:"auto", maxHeight:"92vh", display:"flex", flexDirection:"column", overflow:"hidden" }}
         /* Handle */
         , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"10px auto 0" }} )
@@ -6552,7 +6577,7 @@ ${cl("div")}`;
   const IS = { width:"100%", padding:"8px 10px", borderRadius:8, border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)", fontSize:12, fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
 
   return (
-    React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.85)", zIndex:500, display:"flex", flexDirection:"column" }}
+    React.createElement('div', { style: { position:"fixed", inset:0, background:"rgba(0,0,0,0.85)", zIndex:500, display:"flex", flexDirection:"column" }}
       , React.createElement('div', { style: { background:"var(--s1)", flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}
 
         /* Header bar */
@@ -6896,7 +6921,7 @@ function RoomEstimateCard({ room, roomIcon, roomTotal, matTotal, stageGroups, di
 
       /* Edit room modal */
       , showEditRoom && (
-        React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", zIndex:500, display:"flex", alignItems:"flex-end", justifyContent:"center" }, onClick: () => setShowEditRoom(false)}
+        React.createElement('div', { style: { position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:5500, display:"flex", alignItems:"flex-end", justifyContent:"center" }, onClick: () => setShowEditRoom(false)}
           , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", padding:"16px", width:"100%", maxWidth: "min(480px, 95vw)" }, onClick: e => e.stopPropagation()}
             , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"0 auto 14px" }} )
             , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:800, color:"var(--tx)", marginBottom:14 }}, "✏️ Редактировать помещение"  )
@@ -6941,7 +6966,7 @@ function RoomEstimateCard({ room, roomIcon, roomTotal, matTotal, stageGroups, di
 
       /* Delete confirm */
       , confirmDelete && (
-        React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", zIndex:500, display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+        React.createElement('div', { style: { position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:5500, display:"flex", alignItems:"flex-end", justifyContent:"center" }}
           , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", padding:"20px 16px 32px", width:"100%", maxWidth: "min(480px, 95vw)" }}
             , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"0 auto 16px" }} )
             , React.createElement('div', { style: { fontSize:18, textAlign:"center", marginBottom:8 }}, "🗑️")
@@ -12287,515 +12312,438 @@ function HelpModal({ open, onClose }) {
 
 
 function AuthModal({ onClose, onAuth }) {
-  const [screen, setScreen] = useState("login");
-  const [method, setMethod] = useState("email");
+  const [screen, setScreen] = useState("login");   // login | register | otp_login | otp_register | otp_forgot | forgot | forgot_sent | set_password
+  const [method, setMethod] = useState("email");   // email | phone
   const [contact, setContact] = useState("");
   const [password, setPassword] = useState("");
   const [password2, setPassword2] = useState("");
-  const [otp, setOtp] = useState("");
+  const [otpVal, setOtpVal] = useState("");
   const [name, setName] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
+  const [kbHeight, setKbHeight] = useState(0);     // keyboard height in px
+  const innerRef = useRef(null);
   const confirmResultRef = useRef(null);
   const recaptchaRef = useRef(null);
-  const recaptchaContainerId = "sm-recaptcha-" + Math.random().toString(36).slice(2,7);
+  const recaptchaId = useRef("sm-rc-" + Math.random().toString(36).slice(2, 7));
 
-  // Check if Firebase is configured
   const fbReady = typeof window !== "undefined" && window._smFirebase && window._smFirebase.auth;
 
-  const reset = function() { setError(""); setOtp(""); setPassword(""); setPassword2(""); setLoading(false); };
+  // ── Track virtual keyboard height via visualViewport ─────────────
+  useEffect(function() {
+    if (!window.visualViewport) return;
+    function onResize() {
+      const kh = Math.max(0, window.innerHeight - window.visualViewport.height - window.visualViewport.offsetTop);
+      setKbHeight(kh);
+    }
+    window.visualViewport.addEventListener("resize", onResize);
+    window.visualViewport.addEventListener("scroll", onResize);
+    return function() {
+      window.visualViewport.removeEventListener("resize", onResize);
+      window.visualViewport.removeEventListener("scroll", onResize);
+    };
+  }, []);
 
-  // ── EMAIL: Register ──────────────────────────────────────────────
-  const handleEmailRegister = async function() {
-    const c = contact.trim();
-    if (!c || !password) { setError("Заполните все поля"); return; }
-    if (password.length < 6) { setError("Пароль минимум 6 символов"); return; }
-    if (password !== password2) { setError("Пароли не совпадают"); return; }
+  // ── Scroll focused input into view inside the modal ───────────────
+  function handleFocus(e) {
+    var el = e.target;
+    if (!el || (el.tagName !== "INPUT" && el.tagName !== "TEXTAREA")) return;
+    setTimeout(function() {
+      var inner = innerRef.current;
+      if (!inner) { el.scrollIntoView({ behavior: "smooth", block: "center" }); return; }
+      var elRect = el.getBoundingClientRect();
+      var boxRect = inner.getBoundingClientRect();
+      var gap = elRect.bottom - (boxRect.bottom - 16);
+      if (gap > 0) inner.scrollTop += gap + 16;
+    }, 320);
+  }
+
+  const reset = function() { setError(""); setOtpVal(""); setPassword(""); setPassword2(""); setLoading(false); };
+  const go = function(scr) { reset(); setScreen(scr); };
+
+  // ── isPhone helper ────────────────────────────────────────────────
+  const isPhone = function(c) { return /^\+?[0-9\s\-()]{7,18}$/.test(c); };
+
+  // ── Send OTP (email or phone) ─────────────────────────────────────
+  const sendOtp = async function(c) {
+    c = (c || contact).trim();
     setLoading(true); setError("");
     try {
-      if (fbReady) {
-        const cred = await window._smFirebase.auth.createUserWithEmailAndPassword(c, password);
-        if (name.trim()) await cred.user.updateProfile({ displayName: name.trim() });
-        const u = { uid: cred.user.uid, id: cred.user.uid, name: name.trim() || c.split("@")[0], email: c, phone: "" };
-        onAuth(u);
+      if (isPhone(c)) {
+        if (fbReady) {
+          if (!recaptchaRef.current) {
+            recaptchaRef.current = new window._smFirebase.RecaptchaVerifier(recaptchaId.current, {
+              size: "invisible", callback: function() {}
+            }, window._smFirebase.authInstance);
+          }
+          var res = await window._smFirebase.auth.signInWithPhoneNumber(c, recaptchaRef.current);
+          confirmResultRef.current = res;
+        } else {
+          var code = String(Math.floor(100000 + Math.random() * 900000));
+          window._smFakeOtp = { code: code, contact: c, expires: Date.now() + 600000 };
+          alert("📱 Тестовый SMS-код: " + code);
+        }
       } else {
-        // Fallback: localStorage (no Firebase)
-        const users = JSON.parse(localStorage.getItem("sm_users")||"[]");
-        if (users.find(u => u.email === c)) { setError("Этот email уже зарегистрирован"); setLoading(false); return; }
-        const u = { id:"u_"+Date.now(), name:name||c.split("@")[0], email:c, phone:"", password, createdAt:new Date().toISOString() };
-        users.push(u); localStorage.setItem("sm_users", JSON.stringify(users));
-        onAuth(u);
+        var code = String(Math.floor(100000 + Math.random() * 900000));
+        window._smEmailOtp = { code: code, contact: c, expires: Date.now() + 600000 };
+        if (fbReady) {
+          try { await window._smFirebase.auth.sendPasswordResetEmail(c); } catch(_) {}
+          alert("✉️ Код подтверждения: " + code + "\n(Письмо также отправлено, если аккаунт существует)");
+        } else {
+          alert("✉️ Тестовый код: " + code);
+        }
       }
-    } catch(e) {
-      const msgs = { "auth/email-already-in-use":"Этот email уже зарегистрирован", "auth/invalid-email":"Неверный формат email", "auth/weak-password":"Пароль слишком простой" };
-      setError(msgs[e.code] || e.message || "Ошибка регистрации");
       setLoading(false);
+      return true;
+    } catch(e) {
+      var msgs = { "auth/invalid-phone-number": "Неверный формат номера", "auth/too-many-requests": "Слишком много попыток" };
+      setError(msgs[e.code] || e.message || "Ошибка отправки кода");
+      if (recaptchaRef.current) { try { recaptchaRef.current.clear(); } catch(_) {} recaptchaRef.current = null; }
+      setLoading(false);
+      return false;
     }
   };
 
-  // ── EMAIL: Login ─────────────────────────────────────────────────
-  const handleEmailLogin = async function() {
-    const c = contact.trim();
+  // ── Verify OTP ────────────────────────────────────────────────────
+  const verifyOtp = async function() {
+    if (!otpVal || otpVal.length < 4) { setError("Введите код"); return; }
+    setLoading(true); setError("");
+    var c = contact.trim();
+    try {
+      if (isPhone(c)) {
+        if (fbReady && confirmResultRef.current) {
+          var cred = await confirmResultRef.current.confirm(otpVal);
+          var u = { uid: cred.user.uid, id: cred.user.uid, name: name || c, email: "", phone: c };
+          onAuth(u); return;
+        } else {
+          var stored = window._smFakeOtp;
+          if (stored && stored.code === otpVal && stored.contact === c && Date.now() < stored.expires) {
+            var users = JSON.parse(localStorage.getItem("sm_users") || "[]");
+            var u = users.find(function(x) { return x.phone === c; });
+            if (!u) { u = { id:"u_"+Date.now(), name:name||c, email:"", phone:c, createdAt:new Date().toISOString() }; users.push(u); localStorage.setItem("sm_users", JSON.stringify(users)); }
+            onAuth(u); return;
+          } else { setError("Неверный код"); setLoading(false); return; }
+        }
+      } else {
+        var stored = window._smEmailOtp;
+        if (stored && stored.code === otpVal && stored.contact === c && Date.now() < stored.expires) {
+          window._smEmailOtp = null;
+          if (screen === "otp_forgot") { setLoading(false); go("set_password"); return; }
+          if (screen === "otp_register") {
+            var users = JSON.parse(localStorage.getItem("sm_users") || "[]");
+            var existing = users.find(function(x) { return x.email === c; });
+            if (existing) { onAuth(existing); return; }
+            var u = { id:"u_"+Date.now(), name:name||c.split("@")[0], email:c, phone:"", createdAt:new Date().toISOString() };
+            users.push(u); localStorage.setItem("sm_users", JSON.stringify(users));
+            onAuth(u); return;
+          }
+          // otp_login
+          var users = JSON.parse(localStorage.getItem("sm_users") || "[]");
+          var u = users.find(function(x) { return x.email === c; });
+          if (!u) { u = { id:"u_"+Date.now(), name:c.split("@")[0], email:c, phone:"", createdAt:new Date().toISOString() }; users.push(u); localStorage.setItem("sm_users", JSON.stringify(users)); }
+          onAuth(u); return;
+        } else { setError("Неверный или просроченный код"); }
+      }
+    } catch(e) {
+      var msgs = { "auth/invalid-verification-code":"Неверный код", "auth/code-expired":"Код истёк, запросите новый" };
+      setError(msgs[e.code] || e.message || "Ошибка подтверждения");
+    }
+    setLoading(false);
+  };
+
+  // ── Email login ───────────────────────────────────────────────────
+  const emailLogin = async function() {
+    var c = contact.trim();
     if (!c || !password) { setError("Введите email и пароль"); return; }
     setLoading(true); setError("");
     try {
       if (fbReady) {
-        const cred = await window._smFirebase.auth.signInWithEmailAndPassword(c, password);
-        const u = { uid: cred.user.uid, id: cred.user.uid, name: cred.user.displayName || c.split("@")[0], email: c, phone: "" };
-        onAuth(u);
+        var cred = await window._smFirebase.auth.signInWithEmailAndPassword(c, password);
+        onAuth({ uid:cred.user.uid, id:cred.user.uid, name:cred.user.displayName||c.split("@")[0], email:c, phone:"" });
       } else {
-        const users = JSON.parse(localStorage.getItem("sm_users")||"[]");
-        const u = users.find(u => u.email === c);
+        var users = JSON.parse(localStorage.getItem("sm_users")||"[]");
+        var u = users.find(function(x){ return x.email===c; });
         if (!u) { setError("Пользователь не найден"); setLoading(false); return; }
         if (u.password !== password) { setError("Неверный пароль"); setLoading(false); return; }
         onAuth(u);
       }
     } catch(e) {
-      const msgs = { "auth/user-not-found":"Пользователь не найден", "auth/wrong-password":"Неверный пароль", "auth/invalid-email":"Неверный email", "auth/invalid-credential":"Неверный email или пароль" };
-      setError(msgs[e.code] || "Ошибка входа");
-      setLoading(false);
+      var msgs = { "auth/user-not-found":"Пользователь не найден","auth/wrong-password":"Неверный пароль","auth/invalid-credential":"Неверный email или пароль","auth/invalid-email":"Неверный email" };
+      setError(msgs[e.code] || "Ошибка входа"); setLoading(false);
     }
   };
 
-  // ── EMAIL: Forgot password ────────────────────────────────────────
-  const handleForgotPassword = async function() {
-    const c = contact.trim();
+  // ── Set password (after OTP recovery) ────────────────────────────
+  const setNewPassword = async function() {
+    if (!password || password.length < 6) { setError("Пароль минимум 6 символов"); return; }
+    if (password !== password2) { setError("Пароли не совпадают"); return; }
+    var c = contact.trim();
+    setLoading(true); setError("");
+    try {
+      if (fbReady) {
+        var user = window._smFirebase.auth.currentUser;
+        if (user) { await user.updatePassword(password); onAuth({ uid:user.uid, id:user.uid, name:user.displayName||c, email:c, phone:"" }); }
+        else { setError("Сессия истекла. Повторите сброс пароля."); }
+      } else {
+        var users = [];
+        try { users = JSON.parse(localStorage.getItem("sm_users")||"[]"); } catch(_) {}
+        var idx = users.findIndex(function(x){ return x.email===c||x.phone===c; });
+        var u;
+        if (idx >= 0) { users[idx] = { ...users[idx], password: password }; u = users[idx]; }
+        else { u = { id:"u_"+Date.now(), name:name||c.split("@")[0], email:c, phone:"", password:password, createdAt:new Date().toISOString() }; users.push(u); }
+        localStorage.setItem("sm_users", JSON.stringify(users));
+        onAuth(u);
+      }
+    } catch(e) {
+      setError(e.message || "Ошибка сохранения пароля"); setLoading(false);
+    }
+  };
+
+  // ── Forgot (email link) ───────────────────────────────────────────
+  const sendForgotEmail = async function() {
+    var c = contact.trim();
     if (!c) { setError("Введите email"); return; }
     setLoading(true); setError("");
     try {
-      if (fbReady) {
-        await window._smFirebase.auth.sendPasswordResetEmail(c);
-        setScreen("forgot_sent");
-      } else {
-        setError("Firebase не подключён. Восстановление через email недоступно.");
-      }
+      if (fbReady) { await window._smFirebase.auth.sendPasswordResetEmail(c); go("forgot_sent"); }
+      else { setError("Firebase не подключён"); }
     } catch(e) {
-      const msgs = { "auth/user-not-found":"Email не найден", "auth/invalid-email":"Неверный email" };
-      setError(msgs[e.code] || "Ошибка отправки письма");
+      var msgs = { "auth/user-not-found":"Email не найден","auth/invalid-email":"Неверный email" };
+      setError(msgs[e.code] || "Ошибка отправки");
     }
     setLoading(false);
   };
 
-  // ── PHONE: Send SMS OTP ──────────────────────────────────────────
-  const handlePhoneSendOtp = async function() {
-    const phone = contact.trim();
-    if (!phone.match(/^\+?[0-9]{7,15}$/)) { setError("Введите номер телефона с кодом страны, например +79001234567"); return; }
-    setLoading(true); setError("");
-    try {
-      if (fbReady) {
-        // Create invisible reCAPTCHA
-        if (!recaptchaRef.current) {
-          recaptchaRef.current = new window._smFirebase.RecaptchaVerifier(recaptchaContainerId, {
-            size: "invisible",
-            callback: function() {}
-          }, window._smFirebase.authInstance);
-        }
-        const result = await window._smFirebase.auth.signInWithPhoneNumber(phone, recaptchaRef.current);
-        confirmResultRef.current = result;
-        setScreen("otp_phone");
-      } else {
-        // Fallback: fake OTP via alert
-        const code = String(Math.floor(100000 + Math.random() * 900000));
-        window._smFakeOtp = code;
-        alert("⚠️ Firebase не подключён. Тестовый код: " + code);
-        setScreen("otp_phone");
-      }
-    } catch(e) {
-      const msgs = { "auth/invalid-phone-number":"Неверный формат номера. Используйте +79001234567", "auth/too-many-requests":"Слишком много попыток. Попробуйте позже" };
-      setError(msgs[e.code] || e.message || "Ошибка отправки SMS");
-      if (recaptchaRef.current) { try { recaptchaRef.current.clear(); } catch(_){} recaptchaRef.current = null; }
-    }
-    setLoading(false);
-  };
-
-  // ── PHONE: Verify OTP ────────────────────────────────────────────
-  const handlePhoneVerifyOtp = async function() {
-    if (!otp || otp.length < 4) { setError("Введите код из SMS"); return; }
-    setLoading(true); setError("");
-    try {
-      if (fbReady && confirmResultRef.current) {
-        const cred = await confirmResultRef.current.confirm(otp);
-        const u = { uid: cred.user.uid, id: cred.user.uid, name: name || contact, email: "", phone: contact };
-        onAuth(u);
-      } else {
-        // Fallback: check fake OTP
-        if (otp === window._smFakeOtp) {
-          const users = JSON.parse(localStorage.getItem("sm_users")||"[]");
-          let u = users.find(u => u.phone === contact);
-          if (!u) {
-            u = { id:"u_"+Date.now(), name:name||contact, email:"", phone:contact, createdAt:new Date().toISOString() };
-            users.push(u); localStorage.setItem("sm_users", JSON.stringify(users));
-          }
-          onAuth(u);
-        } else {
-          setError("Неверный код");
-        }
-      }
-    } catch(e) {
-      const msgs = { "auth/invalid-verification-code":"Неверный код", "auth/code-expired":"Код истёк. Запросите новый" };
-      setError(msgs[e.code] || "Ошибка подтверждения");
-    }
-    setLoading(false);
-  };
-
-  // ── Unified: Login with password (email or phone) ─────────────────
-  const handleLoginWithPassword = async function() {
-    const c = contact.trim();
-    if (!c || !password) { setError("Введите " + (method==="email"?"email":"телефон") + " и пароль"); return; }
-    if (method === "email") { await handleEmailLogin(); }
-    else { await handlePhoneSendOtp(); }
-  };
-
-  // ── Unified: Send OTP (email or phone) ──────────────────────────
-  const sendOtp = async function(contactVal) {
-    const c = (contactVal || contact).trim();
-    const isPhone = /^\+?[0-9]{7,15}$/.test(c.replace(/[\s\-()]/g,""));
-    setLoading(true); setError("");
-    try {
-      if (isPhone) {
-        if (fbReady) {
-          if (!recaptchaRef.current) {
-            recaptchaRef.current = new window._smFirebase.RecaptchaVerifier(recaptchaContainerId, {
-              size:"invisible", callback:function(){}
-            }, window._smFirebase.authInstance);
-          }
-          const result = await window._smFirebase.auth.signInWithPhoneNumber(c, recaptchaRef.current);
-          confirmResultRef.current = result;
-        } else {
-          const code = String(Math.floor(100000 + Math.random()*900000));
-          window._smFakeOtp = code;
-          alert("📱 Тестовый SMS-код: " + code);
-        }
-      } else {
-        // Email OTP via Firebase custom action / fallback
-        if (fbReady) {
-          // Generate and store a temporary code
-          const code = String(Math.floor(100000 + Math.random()*900000));
-          window._smEmailOtp = { code, contact: c, expires: Date.now() + 10*60*1000 };
-          // Try to send via actionCodeSettings (works if auth is set up for email link)
-          try {
-            await window._smFirebase.auth.sendPasswordResetEmail(c);
-            // For code-based flow, store in memory for fallback
-          } catch(_) {}
-          alert("✉️ Код подтверждения: " + code + "\n(Firebase: письмо отправлено если аккаунт существует)");
-        } else {
-          const code = String(Math.floor(100000 + Math.random()*900000));
-          window._smEmailOtp = { code, contact: c, expires: Date.now() + 10*60*1000 };
-          alert("✉️ Тестовый код для " + c + ": " + code);
-        }
-      }
-    } catch(e) {
-      const msgs = { "auth/invalid-phone-number":"Неверный номер", "auth/too-many-requests":"Слишком много попыток" };
-      setError(msgs[e.code] || e.message || "Ошибка отправки кода");
-      if (recaptchaRef.current) { try { recaptchaRef.current.clear(); } catch(_){} recaptchaRef.current = null; }
-    }
-    setLoading(false);
-  };
-
-  // ── handleSendOtp (alias for login/register screen) ─────────────
-  const handleSendOtp = function() {
-    const c = contact.trim();
-    if (!c) { setError("Введите email или телефон"); return; }
-    sendOtp(c).then(() => {
-      setScreen(screen === "forgot" ? "otp_forgot" : screen === "register" ? "otp_register" : "otp_login");
-    });
-  };
-
-  // ── Verify OTP (phone or email) ─────────────────────────────────
-  const handleVerifyOtp = async function() {
-    if (!otp || otp.length < 4) { setError("Введите код"); return; }
-    setLoading(true); setError("");
-    const c = contact.trim();
-    const isPhone = /^\+?[0-9]{7,15}$/.test(c.replace(/[\s\-()]/g,""));
-    try {
-      if (isPhone) {
-        await handlePhoneVerifyOtp(); return;
-      } else {
-        // Email OTP check
-        const stored = window._smEmailOtp;
-        if (stored && stored.code === otp && stored.contact === c && Date.now() < stored.expires) {
-          if (screen === "otp_forgot") { setScreen("set_password"); }
-          else if (screen === "otp_register") {
-            // Auto-create account after verification
-            const u = { id:"u_"+Date.now(), name:name||c.split("@")[0], email:c, phone:"", createdAt:new Date().toISOString() };
-            try { const users=JSON.parse(localStorage.getItem("sm_users")||"[]"); users.push(u); localStorage.setItem("sm_users",JSON.stringify(users)); } catch(_){}
-            onAuth(u);
-          } else {
-            // Login: find or create user
-            let u;
-            try { const users=JSON.parse(localStorage.getItem("sm_users")||"[]"); u=users.find(u=>u.email===c); } catch(_){}
-            if (!u) u = { id:"u_"+Date.now(), name:c.split("@")[0], email:c, phone:"", createdAt:new Date().toISOString() };
-            onAuth(u);
-          }
-          window._smEmailOtp = null;
-        } else {
-          setError("Неверный или просроченный код");
-        }
-      }
-    } catch(e) {
-      setError(e.message || "Ошибка подтверждения");
-    }
-    setLoading(false);
-  };
-
-  // ── Find user in localStorage ────────────────────────────────────
-  const findUser = function(c) {
-    try {
-      const users = JSON.parse(localStorage.getItem("sm_users")||"[]");
-      return users.find(u => u.email === c || u.phone === c) || null;
-    } catch(_) { return null; }
-  };
-
-  // ── Set new password (after OTP verification) ────────────────────
-  const handleSetPassword = async function() {
-    const c = contact.trim();
-    if (!password || password.length < 6) { setError("Пароль минимум 6 символов"); return; }
-    if (password !== password2) { setError("Пароли не совпадают"); return; }
-    setLoading(true); setError("");
-    try {
-      if (fbReady) {
-        // Firebase: use confirm password reset (needs oobCode, not available here — use direct update)
-        const user = window._smFirebase.auth.currentUser;
-        if (user) {
-          await user.updatePassword(password);
-          onAuth({ uid:user.uid, id:user.uid, name:user.displayName||c, email:c, phone:"" });
-        } else {
-          setError("Сессия истекла. Повторите процедуру сброса.");
-        }
-      } else {
-        // localStorage fallback
-        const existing = findUser(c);
-        let users = [];
-        try { users = JSON.parse(localStorage.getItem("sm_users")||"[]"); } catch(_){}
-        if (existing) {
-          const updated = users.map(u => (u.email===c||u.phone===c) ? {...u, password} : u);
-          localStorage.setItem("sm_users", JSON.stringify(updated));
-          onAuth({...existing, password});
-        } else {
-          const u = { id:"u_"+Date.now(), name:name||c.split("@")[0], email:c, phone:"", password, createdAt:new Date().toISOString() };
-          users.push(u); localStorage.setItem("sm_users",JSON.stringify(users));
-          onAuth(u);
-        }
-      }
-    } catch(e) {
-      const msgs = { "auth/weak-password":"Пароль слишком простой", "auth/requires-recent-login":"Требуется повторный вход" };
-      setError(msgs[e.code] || e.message || "Ошибка сохранения пароля");
-    }
-    setLoading(false);
-  };
-
-  const BS = function(bg) { return { width:"100%", padding:"15px", borderRadius:14, border:"none",
-    background:bg||"var(--acc)", color:"#fff", fontWeight:800, fontSize:15,
-    cursor:"pointer", fontFamily:"inherit", boxShadow:"0 4px 16px rgba(79,70,229,0.3)" }; };
-  const IS = { width:"100%", padding:"14px 16px", borderRadius:12, border:"1.5px solid var(--b1)",
-    background:"var(--s2)", color:"var(--tx)", fontSize:15, fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
-  const LS = { fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase",
+  // ── Shared styles ─────────────────────────────────────────────────
+  var IS = { width:"100%", padding:"13px 14px", borderRadius:12, border:"1.5px solid var(--b1)",
+    background:"var(--s2)", color:"var(--tx)", fontSize:15, fontFamily:"inherit", outline:"none",
+    boxSizing:"border-box", WebkitAppearance:"none" };
+  var LS = { fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase",
     letterSpacing:"0.06em", marginBottom:5, display:"block" };
-  const backBtn = function(scr) { return React.createElement("button", { onClick:function(){ setScreen(scr); reset(); },
-    style:{ width:"100%", marginTop:12, padding:"12px", borderRadius:12, border:"1.5px solid var(--b1)",
-      background:"transparent", color:"var(--tx3)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "← Назад"); };
-  const skipBtn = React.createElement("button", { onClick:onClose,
-    style:{ width:"100%", marginTop:12, padding:"12px", borderRadius:12, border:"1.5px solid var(--b1)",
+  var BS = function(bg) { return { width:"100%", padding:"14px", borderRadius:13, border:"none",
+    background: bg || "var(--acc)", color:"#fff", fontWeight:800, fontSize:15,
+    cursor: loading ? "not-allowed" : "pointer", fontFamily:"inherit",
+    boxShadow:"0 4px 16px rgba(79,70,229,0.25)", opacity: loading ? 0.75 : 1 }; };
+
+  var errEl = error ? React.createElement("div", { style:{ color:"var(--red)", fontSize:12, marginBottom:10, fontWeight:600, padding:"8px 10px", background:"rgba(239,68,68,0.08)", borderRadius:8 } }, "⚠️ " + error) : null;
+
+  var backBtn = function(scr) {
+    return React.createElement("button", { onClick: function() { go(scr); },
+      style:{ width:"100%", marginTop:8, padding:"11px", borderRadius:12, border:"1.5px solid var(--b1)",
+        background:"transparent", color:"var(--tx3)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "← Назад");
+  };
+  var skipBtn = React.createElement("button", { onClick: onClose,
+    style:{ width:"100%", marginTop:8, padding:"11px", borderRadius:12, border:"1.5px solid var(--b1)",
       background:"transparent", color:"var(--tx3)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } },
     "Продолжить без входа");
-  const errEl = error ? React.createElement("div", { style:{ color:"var(--red)", fontSize:12, marginBottom:12, fontWeight:600 } }, "⚠️ "+error) : null;
-  const methodPicker = React.createElement("div", { style:{ display:"flex", gap:8, marginBottom:14 } },
+
+  var methodPicker = React.createElement("div", { style:{ display:"flex", gap:8, marginBottom:12 } },
     [["email","✉️ Email"],["phone","📱 Телефон"]].map(function(pair) {
-      const id=pair[0], lbl=pair[1];
+      var id = pair[0], lbl = pair[1];
       return React.createElement("button", { key:id, onClick:function(){ setMethod(id); setContact(""); setError(""); },
-        style:{ flex:1, padding:"10px", borderRadius:10,
+        style:{ flex:1, padding:"9px 8px", borderRadius:10,
           border:"2px solid "+(method===id?"var(--acc)":"var(--b1)"),
           background:method===id?"var(--acc3)":"var(--s2)", color:method===id?"var(--acc)":"var(--tx3)",
-          fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" } }, lbl);
+          fontWeight:700, fontSize:13, cursor:"pointer", fontFamily:"inherit" } }, lbl);
     })
   );
-  const contactInput = React.createElement("div", { style:{ marginBottom:16 } },
-    React.createElement("label", { style:LS }, method==="email"?"Email":"Телефон"),
-    React.createElement("input", { value:contact, onChange:function(e){ setContact(e.target.value); },
+
+  var contactField = React.createElement("div", { style:{ marginBottom:12 } },
+    React.createElement("label", { style:LS }, method==="email" ? "Email" : "Телефон"),
+    React.createElement("input", { value:contact, onChange:function(e){ setContact(e.target.value); setError(""); },
       type:method==="email"?"email":"tel", placeholder:method==="email"?"you@mail.ru":"+7 900 000-00-00",
-      style:IS, onKeyDown:function(e){ if(e.key==="Enter") handleSendOtp(); } })
+      autoComplete:method==="email"?"email":"tel", style:IS })
   );
 
-  return React.createElement("div", { style:{ position:"absolute", inset:0, background:"rgba(0,0,0,0.7)", zIndex:600,
-      display:"flex", alignItems:"flex-end", justifyContent:"center" } },
-    React.createElement("div", { 
-      style:{ background:"var(--s1)", borderRadius:"24px 24px 0 0", width:"100%",
-        maxWidth:"min(480px, 95vw)", padding:"28px 24px 40px", boxShadow:"0 -8px 40px rgba(0,0,0,0.4)",
-        maxHeight:"90vh", overflowY:"auto" },
-      onFocus: function(e) {
-        const el = e.target;
-        if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
-          setTimeout(() => el.scrollIntoView({ behavior:"smooth", block:"center" }), 350);
+  // ── OTP input screen (shared) ─────────────────────────────────────
+  var otpScreen = React.createElement(React.Fragment, null,
+    React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:17, fontWeight:900, color:"var(--tx)", marginBottom:4 } },
+      screen==="otp_forgot" ? "Сброс пароля" : screen==="otp_register" ? "Подтвердите аккаунт" : "Код подтверждения"),
+    React.createElement("div", { style:{ fontSize:12, color:"var(--tx3)", marginBottom:4 } }, "Код отправлен на"),
+    React.createElement("div", { style:{ fontSize:14, fontWeight:700, color:"var(--acc)", marginBottom:14 } }, contact),
+    React.createElement("div", { style:{ marginBottom:14 } },
+      React.createElement("label", { style:LS }, "Введите 6-значный код"),
+      React.createElement("input", { value:otpVal,
+        onChange:function(e){ setOtpVal(e.target.value.replace(/\D/g,"").slice(0,6)); setError(""); },
+        placeholder:"000000", maxLength:6, inputMode:"numeric",
+        style:Object.assign({},IS,{ fontSize:26, fontWeight:900, letterSpacing:"0.3em", textAlign:"center", padding:"12px" }),
+        onKeyDown:function(e){ if(e.key==="Enter") verifyOtp(); } })
+    ),
+    errEl,
+    React.createElement("button", { onClick:verifyOtp,
+      disabled: otpVal.length < 4 || loading,
+      style:BS(otpVal.length >= 4 ? "var(--acc)" : "var(--s3)") },
+      loading ? "⏳ Проверяем..." : otpVal.length >= 4 ? "Подтвердить →" : "Введите код"),
+    React.createElement("div", { style:{ textAlign:"center", marginTop:10 } },
+      React.createElement("button", { onClick:function(){ sendOtp(contact); setOtpVal(""); setError(""); },
+        style:{ background:"none", border:"none", color:"var(--acc)", fontSize:12, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } },
+        "🔄 Отправить код повторно")
+    ),
+    backBtn(screen==="otp_forgot" ? "forgot" : screen==="otp_register" ? "register" : "login")
+  );
+
+  // ── Content per screen ────────────────────────────────────────────
+  var content;
+
+  if (screen === "login") {
+    content = React.createElement(React.Fragment, null,
+      React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:4 } }, "Войти"),
+      React.createElement("div", { style:{ fontSize:12, color:"var(--tx3)", marginBottom:14 } }, "В аккаунт СтройСмета"),
+      methodPicker,
+      contactField,
+      method==="email" && React.createElement("div", { style:{ marginBottom:12, position:"relative" } },
+        React.createElement("label", { style:LS }, "Пароль"),
+        React.createElement("input", { value:password, onChange:function(e){ setPassword(e.target.value); setError(""); },
+          type:showPass?"text":"password", placeholder:"Введите пароль",
+          autoComplete:"current-password", style:IS,
+          onKeyDown:function(e){ if(e.key==="Enter") emailLogin(); } }),
+        React.createElement("button", { onClick:function(){ setShowPass(function(p){ return !p; }); },
+          style:{ position:"absolute", right:12, top:28, background:"none", border:"none", cursor:"pointer", color:"var(--tx3)", fontSize:16 } },
+          showPass?"🙈":"👁")
+      ),
+      method==="phone" && React.createElement("div", { style:{ background:"var(--s2)", borderRadius:9, padding:"8px 12px", marginBottom:12, fontSize:12, color:"var(--tx3)" } },
+        "📱 SMS-код придёт на указанный номер"
+      ),
+      errEl,
+      React.createElement("button", { onClick: method==="email" ? emailLogin : async function(){
+        var c = contact.trim();
+        if (!c) { setError("Введите телефон"); return; }
+        var ok = await sendOtp(c);
+        if (ok) go("otp_login");
+      }, disabled:loading, style:BS() }, loading ? "⏳..." : method==="phone" ? "Получить SMS-код →" : "Войти"),
+      React.createElement("div", { style:{ display:"flex", flexWrap:"wrap", justifyContent:"center", gap:"4px 10px", marginTop:12 } },
+        React.createElement("button", { onClick:function(){ go("forgot"); }, style:{ background:"none", border:"none", color:"var(--acc)", fontSize:12, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "Забыли пароль?"),
+        method==="email" && React.createElement(React.Fragment, null,
+          React.createElement("span", { style:{ color:"var(--tx3)", fontSize:12 } }, "·"),
+          React.createElement("button", { onClick: async function(){
+            var c = contact.trim();
+            if (!c) { setError("Введите email для входа по коду"); return; }
+            var ok = await sendOtp(c);
+            if (ok) go("otp_login");
+          }, style:{ background:"none", border:"none", color:"var(--acc)", fontSize:12, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "Войти по коду")
+        ),
+        React.createElement("span", { style:{ color:"var(--tx3)", fontSize:12 } }, "·"),
+        React.createElement("button", { onClick:function(){ go("register"); }, style:{ background:"none", border:"none", color:"var(--acc)", fontSize:12, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "Регистрация")
+      ),
+      skipBtn
+    );
+  } else if (screen === "register") {
+    content = React.createElement(React.Fragment, null,
+      React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:4 } }, "Создать аккаунт"),
+      React.createElement("div", { style:{ fontSize:12, color:"var(--tx3)", marginBottom:14 } }, "Код придёт на email или телефон"),
+      React.createElement("div", { style:{ marginBottom:12 } },
+        React.createElement("label", { style:LS }, "Ваше имя"),
+        React.createElement("input", { value:name, onChange:function(e){ setName(e.target.value); setError(""); },
+          placeholder:"Иван Петров", autoComplete:"name", style:IS })
+      ),
+      methodPicker,
+      contactField,
+      React.createElement("div", { style:{ background:"rgba(108,99,255,0.07)", border:"1px solid rgba(108,99,255,0.15)", borderRadius:9, padding:"8px 12px", marginBottom:12, fontSize:12, color:"var(--tx2)" } },
+        method==="email" ? "📨 Код подтверждения придёт на email" : "📱 SMS-код придёт на телефон"
+      ),
+      errEl,
+      React.createElement("button", { onClick: async function() {
+        if (!name.trim()) { setError("Введите ваше имя"); return; }
+        var c = contact.trim();
+        if (!c) { setError(method==="email"?"Введите email":"Введите телефон"); return; }
+        if (method==="email" && !c.includes("@")) { setError("Неверный формат email"); return; }
+        if (method==="phone" && !isPhone(c)) { setError("Неверный формат телефона (+79001234567)"); return; }
+        var ok = await sendOtp(c);
+        if (ok) go("otp_register");
+      }, disabled:loading, style:BS("linear-gradient(135deg,#065f46,#10b981)") },
+        loading ? "⏳ Отправляем код..." : "Получить код →"),
+      React.createElement("div", { style:{ textAlign:"center", marginTop:10 } },
+        React.createElement("button", { onClick:function(){ go("login"); }, style:{ background:"none", border:"none", color:"var(--tx3)", fontSize:12, cursor:"pointer", fontFamily:"inherit" } },
+          "Уже есть аккаунт? ", React.createElement("span", { style:{ color:"var(--acc)", fontWeight:700 } }, "Войти"))
+      ),
+      skipBtn
+    );
+  } else if (screen === "otp_login" || screen === "otp_register" || screen === "otp_forgot" || screen === "otp_phone") {
+    content = otpScreen;
+  } else if (screen === "set_password") {
+    content = React.createElement(React.Fragment, null,
+      React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:4 } }, "Новый пароль"),
+      React.createElement("div", { style:{ fontSize:12, color:"var(--tx3)", marginBottom:14 } }, "Придумайте надёжный пароль"),
+      React.createElement("div", { style:{ marginBottom:12, position:"relative" } },
+        React.createElement("label", { style:LS }, "Пароль"),
+        React.createElement("input", { value:password, onChange:function(e){ setPassword(e.target.value); setError(""); },
+          type:showPass?"text":"password", placeholder:"Минимум 6 символов",
+          autoComplete:"new-password", style:IS }),
+        React.createElement("button", { onClick:function(){ setShowPass(function(p){ return !p; }); },
+          style:{ position:"absolute", right:12, top:28, background:"none", border:"none", cursor:"pointer", color:"var(--tx3)", fontSize:16 } },
+          showPass?"🙈":"👁")
+      ),
+      React.createElement("div", { style:{ marginBottom:12 } },
+        React.createElement("label", { style:LS }, "Повторите пароль"),
+        React.createElement("input", { value:password2, onChange:function(e){ setPassword2(e.target.value); setError(""); },
+          type:showPass?"text":"password", placeholder:"Повторите пароль",
+          autoComplete:"new-password", style:IS,
+          onKeyDown:function(e){ if(e.key==="Enter") setNewPassword(); } })
+      ),
+      password.length > 0 && React.createElement("div", { style:{ display:"flex", gap:4, marginBottom:10 } },
+        [["6+", password.length>=6],["A-Z", /[A-ZА-Я]/.test(password)],["0-9", /\d/.test(password)]].map(function(pair, i) {
+          return React.createElement("span", { key:i, style:{ fontSize:10, padding:"2px 8px", borderRadius:5,
+            background:pair[1]?"rgba(16,185,129,0.15)":"var(--s3)",
+            color:pair[1]?"var(--green)":"var(--tx3)", fontWeight:700 } }, pair[0]+" "+(pair[1]?"✓":"·"));
+        })
+      ),
+      errEl,
+      React.createElement("button", { onClick:setNewPassword, disabled:loading, style:BS() }, loading?"⏳...":"Сохранить пароль"),
+      backBtn("forgot")
+    );
+  } else if (screen === "forgot") {
+    content = React.createElement(React.Fragment, null,
+      React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:4 } }, "Сброс пароля"),
+      React.createElement("div", { style:{ fontSize:12, color:"var(--tx3)", marginBottom:14 } }, "Получите код на email или телефон"),
+      methodPicker,
+      contactField,
+      errEl,
+      React.createElement("button", { onClick: async function() {
+        var c = contact.trim();
+        if (!c) { setError(method==="email"?"Введите email":"Введите телефон"); return; }
+        if (method==="email") { await sendForgotEmail(); }
+        else {
+          var ok = await sendOtp(c);
+          if (ok) go("otp_forgot");
         }
-      }
-    },
-      React.createElement("div", { style:{ width:40, height:4, borderRadius:2, background:"var(--b2)", margin:"0 auto 24px" } }),
-
-      // LOGIN
-      screen==="login" && React.createElement(React.Fragment, null,
-        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:20, fontWeight:900, color:"var(--tx)", marginBottom:6 } }, "Войти"),
-        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:24 } }, "В аккаунт СтройСмета"),
-        methodPicker,
-        React.createElement("div", { style:{ marginBottom:14 } },
-          React.createElement("label", { style:LS }, method==="email"?"Email":"📱 Телефон"),
-          React.createElement("input", { value:contact, onChange:function(e){ setContact(e.target.value); },
-            type:method==="email"?"email":"tel", placeholder:method==="email"?"you@mail.ru":"+7 900 000-00-00",
-            style:IS, onKeyDown:function(e){ if(e.key==="Enter" && method==="email") document.activeElement.blur(); } })
+      }, disabled:loading, style:BS() }, loading?"⏳...":"Получить код →"),
+      backBtn("login")
+    );
+  } else if (screen === "forgot_sent") {
+    content = React.createElement(React.Fragment, null,
+      React.createElement("div", { style:{ textAlign:"center", padding:"16px 0" } },
+        React.createElement("div", { style:{ fontSize:48, marginBottom:12 } }, "📬"),
+        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:17, fontWeight:900, color:"var(--tx)", marginBottom:8 } }, "Письмо отправлено"),
+        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20, lineHeight:1.6 } },
+          "Проверьте почту ", React.createElement("b", { style:{ color:"var(--acc)" } }, contact), " и перейдите по ссылке для сброса пароля."
         ),
-        method==="email" && React.createElement("div", { style:{ marginBottom:20, position:"relative" } },
-          React.createElement("label", { style:LS }, "Пароль"),
-          React.createElement("input", { value:password, onChange:function(e){ setPassword(e.target.value); },
-            type:showPass?"text":"password", placeholder:"Введите пароль",
-            style:IS, onKeyDown:function(e){ if(e.key==="Enter") handleLoginWithPassword(); } }),
-          React.createElement("button", { onClick:function(){ setShowPass(function(p){ return !p; }); },
-            style:{ position:"absolute", right:12, top:30, background:"none", border:"none", cursor:"pointer", color:"var(--tx3)", fontSize:16 } },
-            showPass?"🙈":"👁")
-        ),
-        method==="phone" && React.createElement("div", { style:{ background:"var(--s2)", borderRadius:10, padding:"10px 12px", marginBottom:14, fontSize:12, color:"var(--tx3)" } },
-          "📱 SMS с кодом придёт на указанный номер"
-        ),
-        errEl,
-        React.createElement("button", { onClick: method==="email" ? handleEmailLogin : function(){
-          const c = contact.trim();
-          if (!c) { setError("Введите телефон"); return; }
-          sendOtp(c).then(() => setScreen("otp_login"));
-        }, disabled:loading, style:BS() }, loading ? "⏳ Входим..." : method==="phone" ? "Получить код →" : "Войти"),
-        React.createElement("div", { style:{ textAlign:"center", marginTop:14, display:"flex", gap:8, justifyContent:"center", flexWrap:"wrap" } },
-          React.createElement("button", { onClick:function(){ setScreen("forgot"); reset(); }, style:{ background:"none", border:"none", color:"var(--acc)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "Забыли пароль?"),
-          method==="email" && React.createElement("span", { style:{ color:"var(--tx3)", fontSize:13 } }, "·"),
-          method==="email" && React.createElement("button", { onClick:function(){ if(contact.trim()){ sendOtp(contact.trim()).then(()=>setScreen("otp_login")); } else { setError("Введите email"); } },
-            style:{ background:"none", border:"none", color:"var(--acc)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "Войти по коду"),
-          React.createElement("span", { style:{ color:"var(--tx3)", fontSize:13 } }, "·"),
-          React.createElement("button", { onClick:function(){ setScreen("register"); reset(); }, style:{ background:"none", border:"none", color:"var(--acc)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "Регистрация")
-        ),
-        skipBtn
-      ),
-
-      // REGISTER - UNIFIED FORM
-      screen==="register" && React.createElement(React.Fragment, null,
-        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } }, "Создать аккаунт"),
-        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20 } }, "Выберите способ подтверждения"),
-        
-        // Name
-        React.createElement("div", { style:{ marginBottom:14 } },
-          React.createElement("label", { style:LS }, "Ваше имя"),
-          React.createElement("input", { value:name, onChange:function(e){ setName(e.target.value); }, placeholder:"Иван Петров", style:IS })
-        ),
-        
-        // Method picker for registration
-        methodPicker,
-        
-        // Contact (email or phone)
-        React.createElement("div", { style:{ marginBottom:14 } },
-          React.createElement("label", { style:LS }, method==="email" ? "✉️ Email" : "📱 Телефон"),
-          React.createElement("input", { value:contact, onChange:function(e){ setContact(e.target.value); },
-            type:method==="email"?"email":"tel",
-            placeholder:method==="email"?"you@mail.ru":"+7 900 000-00-00", style:IS })
-        ),
-
-        // Hint about verification
-        React.createElement("div", { style:{ background:"var(--s2)", borderRadius:10, padding:"10px 12px", marginBottom:14, fontSize:12, color:"var(--tx3)", lineHeight:1.5 } },
-          method==="email"
-            ? "📨 На указанный email придёт код подтверждения"
-            : "📱 На указанный номер придёт SMS с кодом"
-        ),
-        
-        errEl,
-        React.createElement("button", { onClick: function() {
-          if (!name.trim()) { setError("Введите имя"); return; }
-          const c = contact.trim();
-          if (!c) { setError(method==="email"?"Введите email":"Введите телефон"); return; }
-          if (method==="email" && !c.includes("@")) { setError("Неверный формат email"); return; }
-          if (method==="phone" && !c.match(/^\+?[0-9\s\-()]{7,18}$/)) { setError("Неверный формат телефона. Используйте +79001234567"); return; }
-          sendOtp(c).then(() => { setScreen("otp_register"); });
-        }, disabled:loading, style:BS("linear-gradient(135deg,#065f46,#10b981)") }, loading ? "⏳ Отправляем код..." : "Получить код →"),
-        React.createElement("div", { style:{ textAlign:"center", marginTop:14 } },
-          React.createElement("button", { onClick:function(){ setScreen("login"); reset(); }, style:{ background:"none", border:"none", color:"var(--tx3)", fontSize:13, cursor:"pointer", fontFamily:"inherit" } },
-            "Уже есть аккаунт? ", React.createElement("span", { style:{ color:"var(--acc)", fontWeight:700 } }, "Войти"))
-        ),
-        skipBtn
-      ),
-
-      // OTP
-      (screen==="otp_login"||screen==="otp_register"||screen==="otp_forgot"||screen==="otp_phone") && React.createElement(React.Fragment, null,
-        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } },
-          screen==="otp_forgot"?"Сброс пароля":screen==="otp_register"?"Подтверждение регистрации":"Вход по коду"),
-        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:6 } }, "Код отправлен на"),
-        React.createElement("div", { style:{ fontSize:14, fontWeight:700, color:"var(--acc)", marginBottom:20 } }, contact),
-        React.createElement("div", { style:{ marginBottom:20 } },
-          React.createElement("label", { style:LS }, "Код из SMS / письма"),
-          React.createElement("input", { value:otp, onChange:function(e){ setOtp(e.target.value.replace(/\D/g,"").slice(0,6)); },
-            placeholder:"000000", maxLength:6,
-            style:Object.assign({},IS,{ fontSize:28, fontWeight:900, letterSpacing:"0.35em", textAlign:"center" }),
-            onKeyDown:function(e){ if(e.key==="Enter") handleVerifyOtp(); } })
-        ),
-        errEl,
-        React.createElement("button", { onClick:handleVerifyOtp, disabled:otp.length<4||loading,
-          style:BS(otp.length>=4?"var(--acc)":"var(--s3)") }, loading?"⏳ Проверяем...":otp.length>=4?"Подтвердить →":"Введите код"),
-        React.createElement("div", { style:{ textAlign:"center", marginTop:14 } },
-          React.createElement("button", { onClick:function(){ sendOtp(contact); setOtp(""); setError(""); },
-            style:{ background:"none", border:"none", color:"var(--acc)", fontSize:13, cursor:"pointer", fontFamily:"inherit", fontWeight:600 } }, "🔄 Отправить код снова")
-        ),
-        backBtn(screen==="otp_forgot"?"forgot":screen==="otp_register"?"register":"login")
-      ),
-
-      // SET PASSWORD
-      screen==="set_password" && React.createElement(React.Fragment, null,
-        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } },
-          findUser(contact)?"Новый пароль":"Создайте пароль"),
-        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20 } }, "Для аккаунта "+contact),
-        React.createElement("div", { style:{ marginBottom:14, position:"relative" } },
-          React.createElement("label", { style:LS }, "Пароль"),
-          React.createElement("input", { value:password, onChange:function(e){ setPassword(e.target.value); },
-            type:showPass?"text":"password", placeholder:"Минимум 6 символов", style:IS }),
-          React.createElement("button", { onClick:function(){ setShowPass(function(p){ return !p; }); },
-            style:{ position:"absolute",right:12,top:30,background:"none",border:"none",cursor:"pointer",color:"var(--tx3)",fontSize:16 } }, showPass?"🙈":"👁")
-        ),
-        React.createElement("div", { style:{ marginBottom:8 } },
-          React.createElement("label", { style:LS }, "Повторите пароль"),
-          React.createElement("input", { value:password2, onChange:function(e){ setPassword2(e.target.value); },
-            type:showPass?"text":"password", placeholder:"Повторите пароль",
-            style:IS, onKeyDown:function(e){ if(e.key==="Enter") handleSetPassword(); } })
-        ),
-        password.length>0 && React.createElement("div", { style:{ display:"flex", gap:4, marginBottom:12, marginTop:6 } },
-          ["6+","A-Z","0-9","!@#"].map(function(req,i) {
-            const ok = i===0?password.length>=6:i===1?/[A-ZА-Я]/.test(password):i===2?/\d/.test(password):/[!@#$%^&*]/.test(password);
-            return React.createElement("span", { key:i, style:{ fontSize:10, padding:"2px 8px", borderRadius:5,
-              background:ok?"rgba(16,185,129,0.15)":"var(--s3)", color:ok?"var(--green)":"var(--tx3)", fontWeight:700 } },
-              req+" "+(ok?"✓":"·"));
-          })
-        ),
-        errEl,
-        React.createElement("button", { onClick:handleSetPassword, style:BS() },
-          findUser(contact)?"Сохранить пароль":"Создать аккаунт")
-      ),
-
-      // FORGOT
-      screen==="forgot" && React.createElement(React.Fragment, null,
-        React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:18, fontWeight:900, color:"var(--tx)", marginBottom:6 } }, "Сброс пароля"),
-        React.createElement("div", { style:{ fontSize:13, color:"var(--tx3)", marginBottom:20 } }, "Выберите способ получения кода"),
-        methodPicker, contactInput,
-        React.createElement("div", { style:{ background:"var(--s2)", borderRadius:10, padding:"10px 12px", marginBottom:14, fontSize:12, color:"var(--tx3)", lineHeight:1.5 } },
-          method==="email"
-            ? "📨 Ссылка или код для сброса придёт на email"
-            : "📱 Код для сброса придёт в SMS"
-        ),
-        errEl,
-        React.createElement("button", { onClick: function() {
-          const c = contact.trim();
-          if (!c) { setError(method==="email"?"Введите email":"Введите телефон"); return; }
-          if (method==="email") {
-            handleForgotPassword();
-          } else {
-            sendOtp(c).then(() => setScreen("otp_forgot"));
-          }
-        }, disabled:loading, style:BS() }, loading ? "⏳..." : "Получить код →"),
-        backBtn("login")
+        React.createElement("button", { onClick:function(){ go("login"); }, style:BS() }, "Войти")
       )
+    );
+  }
+
+  // ── Modal layout ──────────────────────────────────────────────────
+  return React.createElement("div", {
+    style:{ position:"fixed", inset:0, background:"rgba(0,0,0,0.65)", zIndex:9000,
+      display:"flex", flexDirection:"column", justifyContent:"flex-end", alignItems:"center",
+      paddingBottom: kbHeight > 0 ? kbHeight + "px" : "env(safe-area-inset-bottom,0px)" }
+    },
+    React.createElement("div", {
+      ref: innerRef,
+      onFocus: handleFocus,
+      style:{ background:"var(--s1)", borderRadius:"20px 20px 0 0", width:"100%",
+        maxWidth: 520, maxHeight:"88vh", overflowY:"auto", overflowX:"hidden",
+        padding:"20px 20px 32px", boxShadow:"0 -8px 40px rgba(0,0,0,0.45)",
+        WebkitOverflowScrolling:"touch" }
+    },
+      React.createElement("div", { style:{ width:36, height:4, borderRadius:2, background:"var(--b2)", margin:"0 auto 18px" } }),
+      content,
+      React.createElement("div", { id: recaptchaId.current, style:{ position:"absolute", bottom:0, left:0, opacity:0, pointerEvents:"none" } })
     )
   );
 }
+
 
 // -- ChangePasswordModal — from AccountScreen ------------------
 function ChangePasswordModal({ open, onClose, authUser, saveAuth }) {
