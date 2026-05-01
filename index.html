@@ -2884,6 +2884,150 @@ const WORK_STAGES = [
 ];
 
 // Modal to add work items (multi-select with inline qty editing)
+// ==================== MULTI-GROUP SELECTOR ====================
+function MultiGroupSelector({ workGroups, room, onAddMany, onAdd }) {
+  const [selected, setSelected] = React.useState({});   // groupId -> bool
+  const [added, setAdded]       = React.useState({});   // groupId -> bool (dimmed)
+  const [adding, setAdding]     = React.useState(false);
+
+  const toggleGroup = (id) => {
+    if (added[id]) return; // already added — can't reselect
+    setSelected(s => ({ ...s, [id]: !s[id] }));
+  };
+
+  const selectedCount = Object.values(selected).filter(Boolean).length;
+
+  const handleAddSelected = () => {
+    if (selectedCount === 0) return;
+    setAdding(true);
+    const allWorks = [];
+    workGroups.forEach(group => {
+      if (!selected[group.id]) return;
+      (group.items || []).forEach(item => {
+        const autoQ = resolveAutoQty(item, room, group._stageId || "other");
+        allWorks.push({ id: uid(), name: item.name, unit: item.unit, price: item.price,
+          qty: autoQ || item.qty, type: "work" });
+      });
+    });
+    if (onAddMany) onAddMany(allWorks);
+    else allWorks.forEach(w => onAdd && onAdd(w));
+
+    // Mark added groups as dimmed
+    const newAdded = { ...added };
+    Object.keys(selected).forEach(id => { if (selected[id]) newAdded[id] = true; });
+    setAdded(newAdded);
+    setSelected({});
+    setAdding(false);
+  };
+
+  if (!workGroups || workGroups.length === 0) {
+    return React.createElement('div', { style:{ textAlign:"center", padding:"24px 0", color:"#94a3b8", fontSize:12 } },
+      "Группы работ не созданы. Создайте их в Справочник → Группы работ.");
+  }
+
+  return React.createElement('div', {}
+    // Hint
+    , React.createElement('div', { style:{ fontSize:11, color:"var(--tx3)", marginBottom:10, lineHeight:1.5,
+        background:"var(--s2)", borderRadius:8, padding:"7px 10px" } },
+      "Выберите одну или несколько групп и нажмите «Добавить»"
+    )
+
+    // Group cards
+    , workGroups.map(group => {
+      const isSelected = !!selected[group.id];
+      const isAdded    = !!added[group.id];
+      const totalForRoom = (group.items||[]).reduce((s, item) => {
+        const autoQ = resolveAutoQty(item, room, group._stageId || "other");
+        return s + (autoQ || item.qty) * item.price;
+      }, 0);
+
+      return React.createElement('div', {
+        key: group.id,
+        onClick: () => toggleGroup(group.id),
+        style: {
+          border: isAdded  ? "2px solid #e2e8f0"
+                : isSelected ? `2px solid ${group.color}`
+                : `2px solid ${group.color}22`,
+          borderRadius: 12,
+          marginBottom: 10,
+          overflow: "hidden",
+          cursor: isAdded ? "default" : "pointer",
+          opacity: isAdded ? 0.45 : 1,
+          filter: isAdded ? "grayscale(100%)" : "none",
+          transition: "all 0.2s",
+          background: isSelected ? `${group.color}10` : "var(--s1)",
+          boxShadow: isSelected ? `0 0 0 3px ${group.color}33` : "none",
+          position: "relative",
+        }
+      }
+        // Checkbox badge
+        , React.createElement('div', { style:{
+            position:"absolute", top:10, right:12, width:22, height:22,
+            borderRadius:"50%",
+            background: isAdded ? "#22c55e" : isSelected ? group.color : "var(--s2)",
+            border: isAdded ? "2px solid #22c55e" : isSelected ? `2px solid ${group.color}` : "1.5px solid var(--b1)",
+            display:"flex", alignItems:"center", justifyContent:"center",
+            fontSize:12, transition:"all 0.2s",
+          } }
+          , isAdded ? "✓" : isSelected ? "✓" : ""
+        )
+
+        // Header
+        , React.createElement('div', { style:{ background:`${group.color}12`, padding:"10px 44px 10px 14px", display:"flex", alignItems:"center", gap:10 } }
+          , React.createElement('span', { style:{ fontSize:20 } }, group.icon)
+          , React.createElement('div', { style:{ flex:1 } }
+            , React.createElement('div', { style:{ fontSize:13, fontWeight:800, color:"var(--tx)" } }, group.name,
+              isAdded ? React.createElement('span', { style:{ marginLeft:6, fontSize:10, color:"#22c55e", fontWeight:700 } }, " ✓ Добавлено") : null
+            )
+            , React.createElement('div', { style:{ fontSize:11, color:"var(--tx3)" } },
+              group.items.length, " работ",
+              room && totalForRoom > 0 ? React.createElement('span', { style:{ color:"var(--acc2)", marginLeft:6, fontWeight:700 } }, " · ", fmt(totalForRoom)) : null
+            )
+          )
+        )
+
+        // Items preview (collapsed list)
+        , React.createElement('div', { style:{ padding:"6px 14px 8px", borderTop:`1px solid ${group.color}11` } }
+          , (group.items || []).slice(0, 3).map((item, i) => {
+            const autoQ = resolveAutoQty(item, room, group._stageId || "other");
+            return React.createElement('div', { key: item.id, style:{ display:"flex", gap:6, padding:"3px 0", fontSize:11, color:"var(--tx3)" } }
+              , React.createElement('span', { style:{ color:group.color, flexShrink:0 } }, "·")
+              , React.createElement('span', { style:{ flex:1 } }, item.name)
+              , autoQ > 0
+                ? React.createElement('span', { style:{ fontWeight:700, color:"var(--green)", whiteSpace:"nowrap" } }, autoQ.toFixed(1), " ", item.unit)
+                : React.createElement('span', { style:{ color:"var(--tx3)", whiteSpace:"nowrap" } }, item.qty, " ", item.unit)
+            );
+          })
+          , group.items.length > 3 && React.createElement('div', { style:{ fontSize:10, color:"var(--tx3)", marginTop:2 } },
+            "+ ещё ", group.items.length - 3, " работ"
+          )
+        )
+      );
+    })
+
+    // Floating add button
+    , selectedCount > 0 && React.createElement('div', {
+        style:{ position:"sticky", bottom:0, padding:"10px 0 2px", background:"var(--s1)",
+          borderTop:"1px solid var(--b1)", marginTop:8 }
+      }
+      , React.createElement('button', {
+          onClick: e => { e.stopPropagation(); handleAddSelected(); },
+          disabled: adding,
+          style:{ width:"100%", padding:"13px", borderRadius:12, border:"none",
+            background:"linear-gradient(135deg,#059669,#10b981)",
+            color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer",
+            fontFamily:"inherit", boxShadow:"0 4px 16px rgba(16,185,129,0.4)",
+            display:"flex", alignItems:"center", justifyContent:"center", gap:8 }
+        }
+        , React.createElement('span', { style:{ fontSize:18 } }, "⚡")
+        , "Добавить ", selectedCount, " групп", selectedCount === 1 ? "у" : selectedCount < 5 ? "ы" : ""
+        , " в смету"
+      )
+    )
+  );
+}
+
+
 function AddWorkItemModal({ open, onClose, onAdd, onAddMany, room, priceBook, workGroups, stageName }) {
   const [tab, setTab] = useState("prices"); // "prices" | "custom" | "groups"
   const [search, setSearch] = useState("");
@@ -3158,53 +3302,12 @@ function AddWorkItemModal({ open, onClose, onAdd, onAddMany, room, priceBook, wo
 
             )
           )
-          , (workGroups||[]).map(group => {
-            const groupTotal = group.items.reduce((s,i)=>s+i.qty*i.price,0);
-            return (
-              React.createElement('div', { key: group.id, style: { border:`2px solid ${group.color}22`, borderRadius:12, marginBottom:10, overflow:"hidden" }}
-                , React.createElement('div', { style: { background:`${group.color}12`, padding:"10px 14px", display:"flex", alignItems:"center", gap:10 }}
-                  , React.createElement('span', { style: { fontSize:20 }}, group.icon)
-                  , React.createElement('div', { style: { flex:1 }}
-                    , React.createElement('div', { style: { fontSize:13, fontWeight:800, color:"var(--tx)" }}, group.name)
-                    , React.createElement('div', { style: { fontSize:11, color:"var(--tx3)" }}, group.items.length, " работ" )
-                  )
-                  , React.createElement('button', { onClick: () => {
-                    group.items.forEach(item => {
-                      const autoQ = resolveAutoQty(item, room, group._stageId || "other");
-                      onAdd({id:uid(),name:item.name,unit:item.unit,price:item.price,qty:autoQ||item.qty,type:"work"});
-                    });
-                  }, style: { background:group.color, color:"#fff", border:"none", borderRadius:8, padding:"6px 12px", fontSize:12, fontWeight:800, cursor:"pointer", fontFamily:"inherit", whiteSpace:"nowrap" }}, "⚡ Добавить"
-
-                  )
-                )
-                , React.createElement('div', { style: { padding:"8px 14px 10px" }}
-                  , group.items.map((item,i) => {
-                    const autoQ = resolveAutoQty(item, room, group._stageId || "other");
-                    const cost = autoQ * item.price;
-                    return (
-                      React.createElement('div', { key: item.id, style: { display:"flex", alignItems:"center", gap:6, padding:"5px 0", borderBottom: i<group.items.length-1?"1px solid var(--b1)":"none" }}
-                        , React.createElement('div', { style: { width:5, height:5, borderRadius:"50%", background:group.color, flexShrink:0 }} )
-                        , React.createElement('div', { style: { flex:1, fontSize:12, color:"var(--tx2)", fontWeight:600 }}, item.name)
-                        , React.createElement('span', { style: { fontSize:10, fontWeight:700, color:"var(--green)", background:"rgba(16,185,129,0.12)", borderRadius:4, padding:"1px 5px", whiteSpace:"nowrap" }}, "📐 "
-                           , autoQ>0?autoQ.toFixed(2):item.qty, " " , item.unit
-                        )
-                        , React.createElement('div', { style: { fontSize:11, fontWeight:700, color:"var(--acc2)", minWidth:56, textAlign:"right", fontFamily:"'Unbounded',sans-serif" }}, fmt(autoQ>0?cost:item.qty*item.price))
-                      )
-                    );
-                  })
-                  /* Group total for this room */
-                  , room && (
-                    React.createElement('div', { style: { display:"flex", justifyContent:"space-between", alignItems:"center", marginTop:6, paddingTop:6, borderTop:`1px solid ${group.color}33` }}
-                      , React.createElement('span', { style: { fontSize:10, color:"var(--tx3)", fontWeight:700 }}, "Итого по помещению:"  )
-                      , React.createElement('span', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:12, fontWeight:800, color:"var(--tx)" }}
-                        , fmt(group.items.reduce((s,item) => s + resolveAutoQty(item, room, group._stageId || "other") * item.price, 0))
-                      )
-                    )
-                  )
-                )
-              )
-            );
-          })
+          , React.createElement(MultiGroupSelector, {
+              workGroups: workGroups||[],
+              room: room,
+              onAddMany: onAddMany,
+              onAdd: onAdd,
+            })
         )
       )
     )
@@ -4159,6 +4262,18 @@ function RoomCard({ room, projectId, dispatch, navigate, onEdit }) {
       )
 
     )
+    /* ── Delete confirmation dialog ── */
+    , React.createElement(ConfirmSheet, {
+        open: showDeleteConfirm,
+        title: "Удалить помещение?",
+        subtitle: `«${room.name}» и все работы в нём будут удалены`,
+        danger: true,
+        onCancel: () => setShowDeleteConfirm(false),
+        onConfirm: () => {
+          dispatch({ type: "DELETE_ROOM", pid: projectId, rid: room.id });
+          setShowDeleteConfirm(false);
+        }
+      })
   );
 }
 
@@ -4237,14 +4352,16 @@ function RoomMeasureModal({ open, onClose, onRoomCreated }) {
 Никогда не отказывайся от ответа.`;
 
     const userText = refType === "manual"
-      ? `Оцени размеры этой комнаты по видимым пропорциям и объектам в кадре.
-Верни ТОЛЬКО JSON (без пояснений):
-{"length":X.X,"width":X.X,"height":X.X,"doors":N,"windows":N,"confidence":"high|medium|low","notes":"краткое пояснение"}`
+      ? `Analyze this room photo and estimate dimensions. Use ALL visible clues: furniture size (sofa ~200cm, bed 140-200cm, kitchen counter depth 60cm), door frames (80-90cm wide, 200cm tall), windows, floor tiles if visible.
+Return ONLY valid JSON, no other text:
+{"length":X.X,"width":X.X,"height":X.X,"doors":N,"windows":N,"confidence":"high|medium|low","notes":"brief explanation"}`
 
-      : `Опорный объект в кадре: ${opt.label} = ${refCm} см (${refM} м).
-Используй этот масштаб для определения реальных размеров комнаты.
-Верни ТОЛЬКО JSON (без пояснений):
-{"length":X.X,"width":X.X,"height":X.X,"doors":N,"windows":N,"confidence":"high|medium|low","notes":"краткое пояснение"}`;
+      : `Reference object in photo: ${opt.label} = ${refCm} cm (${refM} m). Use this as your primary scale ruler.
+Measure the room dimensions using this reference + perspective geometry.
+Return ONLY valid JSON, no other text:
+{"length":X.X,"width":X.X,"height":X.X,"doors":N,"windows":N,"confidence":"high|medium|low","notes":"brief explanation"}
+
+RULES: ALWAYS return valid JSON. NEVER refuse. If photo is blurry use confidence:low but still estimate.`;
 
     const doRequest = async (attempt) => {
       const tick = setInterval(() => setProgress(p => Math.min(p + 5, 88)), 600);
@@ -4724,58 +4841,66 @@ function PlanRecognitionModal({ open, onClose, onRoomsDetected }) {
       setProgress(p => p < 88 ? p + Math.random() * 8 : p);
     }, 500);
 
-    const systemPrompt = `Ты — система компьютерного зрения и архитектурный эксперт. Анализируй изображение плана.
+    const systemPrompt = `You are an expert architectural plan analyzer with 30 years of experience. Your job is to extract room data from ANY image — even blurry, hand-drawn, low-quality, or partial floor plans.
 
-ТИП ВХОДНЫХ ДАННЫХ (определи сам):
-- Архитектурный чертёж (линии, штриховка, размерные линии)
-- Скан/фото бумажного плана
-- Цифровой план из приложения (ПИК, ЦИАН, Домклик и т.д.)
-- Набросок от руки
-- Любое изображение с планировкой
+CRITICAL RULES:
+1. ALWAYS return valid JSON with rooms array — NEVER say you cannot analyze
+2. If image is unclear, make your BEST ESTIMATE using architectural knowledge
+3. Even a rough sketch or a photo of a whiteboard with rooms drawn counts as a plan
+4. If you see ANY rectangles, boxes, or enclosed shapes — those are rooms
 
-ШАГ 1 — ОБНАРУЖЕНИЕ ПОМЕЩЕНИЙ:
-Найди все замкнутые контуры на изображении. Каждый контур = помещение.
-Типичные названия (ищи текст внутри контуров или рядом):
-Кухня / КУХ / К / Kitchen
-Гостиная / Зал / Комната / Living / ГЗ
-Спальня / СП / Bedroom / СП1 / СП2
-Санузел / С/У / Ванная / WC / Туалет / Сан.узел
-Коридор / КОР / Прихожая / Холл / Hall
-Балкон / БАЛ / Лоджия / ЛОД
-Кладовая / КЛ / Гардероб / ГАР
-Если подписей нет — назови: Комната 1, Комната 2, Кухня, Коридор, Санузел
+STEP 1 - FIND ALL ROOMS:
+Look for ANY enclosed shapes (rectangles, polygons, irregular shapes).
+Room labels to look for (Russian/English/abbreviations):
+- Living room: Гостиная, Зал, Комната, Жилая, ГЗ, Living, L
+- Kitchen: Кухня, Кух, К, Kitchen, K, КГ (кухня-гостиная)
+- Bedroom: Спальня, СП, СП1, СП2, Bedroom, B
+- Bathroom: Санузел, С/У, Ванная, Туалет, WC, Сан.узел, БТ
+- Corridor: Коридор, КОР, Прихожая, Холл, Хол, Hall, H
+- Balcony: Балкон, БАЛ, Лоджия, ЛОД, Balcony
+- Storage: Кладовая, КЛ, Гардероб, ГАР, Storage
+If NO labels visible — name rooms logically: Гостиная, Кухня, Спальня, Санузел, Коридор
 
-ШАГ 2 — ИЗВЛЕЧЕНИЕ РАЗМЕРОВ:
-Сканируй ВСЕ числа на изображении:
-• Числа у размерных линий (←3200→ или |3.20|)
-• Числа внутри помещений (площадь: "12.5" или "12.5 м²")  
-• Числа на осях здания
-• Формат мм→м: 3200→3.20, 4500→4.50, 1800→1.80
-• Формат см→м: 320→3.20, 180→1.80
-• Уже в метрах: 3.20, 4.5, 2.8
-Если есть площадь S и одна сторона a → вторая сторона = S/a
-Если только площадь S → считай квадратную комнату: сторона = √S
+STEP 2 - EXTRACT DIMENSIONS:
+Priority order for measurements:
+a) DIMENSION LINES: Numbers between arrows/ticks (e.g., ←3200→, |3.20|, 3,20, 3200мм)
+   - If 4-digit number: divide by 1000 (3200 → 3.20 m)
+   - If 3-digit >100: divide by 100 (320 → 3.20 m)  
+   - If decimal with dot/comma: already in meters (3.20 m)
+b) AREA LABELS: Numbers with м², sq.m, кв.м inside rooms
+   - Compute sides: if area=12.5 and one side=3.5 → other=12.5/3.5=3.57
+   - If only area: estimate square room → side=√area
+c) AXIS GRIDS: Dimensions between structural axes (usually in mm)
+d) PROPORTIONAL ESTIMATE: If no numbers, estimate from relative sizes
+   - Whole plan width maps to typical apartment dimensions
 
-ШАГ 3 — ОЦЕНКА ПРИ ОТСУТСТВИИ ДАННЫХ:
-Используй пропорции плана + стандарты жилья:
-• 1-комн. кв: ~35-45 м², 2-комн: 50-65 м², 3-комн: 70-90 м²
-• Кухня: 8-15 м² → длина 3-4 м × ширина 2.5-3.5 м
-• Гостиная: 15-25 м² → 4-5 м × 3.5-5 м
-• Спальня: 10-18 м² → 3-4.5 м × 3-4 м
-• Санузел совм.: 4-7 м² → 1.8-2.5 м × 2-3 м
-• Туалет: 1.5-3 м² → 0.9-1.2 м × 1.6-2 м
-• Коридор: 4-12 м² → 1-2 м × 4-8 м
+STEP 3 - SMART DEFAULTS (use when uncertain):
+Russian residential standards:
+- Studio/1-room: 25-45 m² total
+- 2-room: 45-65 m² total  
+- 3-room: 65-90 m² total
+- Kitchen: L=2.5-4.5m × W=2.0-3.5m (area 6-15 m²)
+- Living room: L=4.0-6.0m × W=3.5-5.0m (area 15-28 m²)
+- Master bedroom: L=3.5-5.0m × W=3.0-4.0m (area 12-20 m²)
+- Small bedroom: L=2.8-4.0m × W=2.5-3.5m (area 8-13 m²)
+- Combined bathroom: L=1.8-2.8m × W=1.5-2.2m (area 3-6 m²)
+- Toilet separate: L=0.9-1.3m × W=1.5-2.0m (area 1.5-3 m²)
+- Corridor/hall: L=3.0-8.0m × W=0.9-2.0m (area 4-12 m²)
+- Balcony: L=2.5-4.5m × W=0.9-1.5m (area 2-6 m²)
 
-ШАГ 4 — ДВЕРИ И ОКНА:
-• doors: считай дверные проёмы (разрыв в стене с дугой или прямоугольником)
-• windows: считай оконные проёмы (разрыв в наружной стене, обычно шире)
-• Если не видно: doors=1 для любой комнаты, windows=1 для жилых, windows=0 для санузла/коридора
+STEP 4 - COUNT OPENINGS:
+- doors: openings with arcs/swings or simple gaps in walls (default: 1 per room)
+- windows: openings in exterior walls, usually marked differently (default: 1 for living rooms/bedrooms, 0 for corridor/bathroom)
 
-ФОРМАТ ОТВЕТА — СТРОГО ТОЛЬКО JSON, без markdown, без текста до или после:
-{"total_area":75.5,"rooms":[{"name":"Гостиная","length":4.8,"width":3.6,"area_m2":17.3,"doors":1,"windows":2,"confidence":"high"},{"name":"Спальня","length":3.5,"width":3.2,"area_m2":11.2,"doors":1,"windows":1,"confidence":"high"},{"name":"Кухня","length":3.8,"width":2.8,"area_m2":10.6,"doors":1,"windows":1,"confidence":"medium"},{"name":"Санузел","length":2.2,"width":1.6,"area_m2":3.5,"doors":1,"windows":0,"confidence":"medium"},{"name":"Коридор","length":4.0,"width":1.2,"area_m2":4.8,"doors":2,"windows":0,"confidence":"low"}]}
+OUTPUT FORMAT — ONLY PURE JSON, no markdown, no explanation text:
+{"total_area":72.4,"confidence_overall":"medium","rooms":[{"name":"Гостиная","length":4.5,"width":3.8,"area_m2":17.1,"doors":1,"windows":2,"confidence":"high"},{"name":"Кухня","length":3.2,"width":2.8,"area_m2":8.96,"doors":1,"windows":1,"confidence":"medium"},{"name":"Спальня 1","length":3.8,"width":3.2,"area_m2":12.16,"doors":1,"windows":1,"confidence":"medium"},{"name":"Санузел","length":2.0,"width":1.6,"area_m2":3.2,"doors":1,"windows":0,"confidence":"low"},{"name":"Коридор","length":3.5,"width":1.2,"area_m2":4.2,"doors":2,"windows":0,"confidence":"low"}]}
 
-confidence: "high"=размеры с плана, "medium"=оценка по пропорциям, "low"=грубая оценка
-ОБЯЗАТЕЛЬНО: возвращай ВСЕ помещения. Никогда не возвращай пустой массив rooms.`;
+ABSOLUTE RULES:
+- ALWAYS output JSON with at least one room
+- NEVER output {"error": ...} or refuse to analyze
+- NEVER output explanatory text before or after JSON
+- If image is completely unreadable white/black — output 1 generic room as estimate
+- confidence values: "high"=from plan numbers, "medium"=proportional estimate, "low"=rough guess`;
 
     const doRequest = async (attempt) => {
       try {
@@ -4790,7 +4915,7 @@ confidence: "high"=размеры с плана, "medium"=оценка по пр
               role: "user",
               content: [
                 { type: "image", source: { type: "base64", media_type: mediaType, data: imageB64 } },
-                { type: "text", text: "Распознай все помещения на этом плане. Верни ТОЛЬКО JSON с rooms[]." }
+                { type: "text", text: "Analyze this floor plan image carefully. Extract ALL rooms with their dimensions. Return ONLY the JSON object, nothing else." }
               ]
             }]
           })
@@ -5724,43 +5849,24 @@ function AddSectionPanel({ project, onAdd, onCancel, state, dispatch, projectId,
 
         /* Groups tab */
         , worksTab === "group" && (
-          React.createElement('div', { style: { display: "flex", flexDirection: "column", gap: 8 }}
-            , workGroups.length === 0
-              ? React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)", textAlign: "center", padding: "16px 0" }}, "Нет групп работ"  )
-              : workGroups.map(group => {
-                  const allOn = group.items.every(it => !!selectedWorks[it.name]);
-                  return (
-                    React.createElement('div', { key: group.id, style: { display: "flex", gap: 5, alignItems: "stretch" }}
-                      , React.createElement('div', { onClick: () => {
-                        if (allOn) {
-                          setSelectedWorks(s => { const n = { ...s }; group.items.forEach(it => delete n[it.name]); return n; });
-                        } else {
-                          setSelectedWorks(s => {
-                            const n = { ...s };
-                            group.items.forEach(it => { n[it.name] = { name: it.name, unit: it.unit || "м²", price: it.price, qty: it.qty || 1 }; });
-                            return n;
-                          });
-                        }
-                      },
-                        style: { flex: 1, display: "flex", alignItems: "center", gap: 10, padding: "9px 12px", borderRadius: 10, cursor: "pointer", background: allOn ? "var(--acc3)" : "var(--s2)", border: `1.5px solid ${allOn ? "rgba(124,111,255,0.3)" : "var(--b1)"}` }}
-                        , React.createElement('div', { style: { width: 19, height: 19, borderRadius: 5, background: allOn ? "var(--acc)" : "var(--s3)", border: allOn ? "none" : "1.5px solid var(--b2)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}
-                          , allOn && React.createElement(Icon, { name: "check", size: 11, color: "#fff"} )
-                        )
-                        , React.createElement('span', { style: { fontSize: 18 }}, group.icon)
-                        , React.createElement('div', { style: { flex: 1 }}
-                          , React.createElement('div', { style: { fontSize: 12, fontWeight: 700, color: "var(--tx)" }}, group.name)
-                          , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)" }}, group.items.length, " работ" )
-                        )
-                      )
-                      , React.createElement('button', { onClick: () => setInlineEditGroup(group),
-                        style: { padding: "0 10px", borderRadius: 10, border: "1px solid var(--b1)", background: "var(--s2)", cursor: "pointer", color: "var(--gold)", fontSize: 14 },
-                        title: "Редактировать группу" }, "✏️"
-
-                      )
-                    )
-                  );
-                })
-            
+          React.createElement('div', {}
+            , React.createElement(MultiGroupSelector, {
+                workGroups: workGroups || [],
+                room: null,
+                onAddMany: function(works) {
+                  works.forEach(function(w) {
+                    setSelectedWorks(function(s) {
+                      return { ...s, [w.name]: { name: w.name, unit: w.unit || "м²", price: w.price, qty: w.qty || 1 } };
+                    });
+                  });
+                  setWorksTab("book");
+                },
+                onAdd: function(w) {
+                  setSelectedWorks(function(s) {
+                    return { ...s, [w.name]: { name: w.name, unit: w.unit || "м²", price: w.price, qty: w.qty || 1 } };
+                  });
+                },
+              })
           )
         )
 
@@ -8167,20 +8273,19 @@ function AddMaterialsModal({ open, onClose, section, project, dispatch, projectI
 
 // ==================== PROJECT EDIT FORM ====================
 function ProjectEditForm({ project, dispatch, onClose }) {
-  const [name, setName]     = useState(project.name || "");
+  const [name, setName]       = useState(project.name || "");
   const [address, setAddress] = useState(project.address || "");
-  const [area, setArea]     = useState(project.area ? String(project.area) : "");
-  const [client, setClient] = useState(project.client || "");
-  const [note, setNote]     = useState(project.note || "");
-  const [err, setErr]       = useState("");
+  const [area, setArea]       = useState(project.area ? String(project.area) : "");
+  const [client, setClient]   = useState(project.client || "");
+  const [note, setNote]       = useState(project.note || "");
+  const [err, setErr]         = useState("");
 
-  const IS = { width:"100%", padding:"10px 12px", borderRadius:10,
+  const IS = { width:"100%", padding:"11px 13px", borderRadius:11,
     border:"1.5px solid var(--b1)", background:"var(--s2)", color:"var(--tx)",
-    fontSize:14, fontFamily:"inherit", outline:"none", boxSizing:"border-box",
-    marginBottom:10 };
+    fontSize:14, fontFamily:"inherit", outline:"none", boxSizing:"border-box" };
   const LS = { fontSize:11, fontWeight:700, color:"var(--tx3)",
-    textTransform:"uppercase", letterSpacing:"0.05em",
-    display:"block", marginBottom:4 };
+    textTransform:"uppercase", letterSpacing:"0.06em",
+    display:"block", marginBottom:5, marginTop:12 };
 
   const save = () => {
     if (!name.trim()) { setErr("Введите название проекта"); return; }
@@ -8196,32 +8301,45 @@ function ProjectEditForm({ project, dispatch, onClose }) {
   };
 
   return React.createElement('div', {}
-    , err ? React.createElement('div', { style:{ background:"rgba(239,68,68,0.08)", color:"var(--red)", fontSize:12, fontWeight:700, padding:"8px 10px", borderRadius:8, marginBottom:10 }}, "⚠️ " + err) : null
+    , err ? React.createElement('div', { style:{ background:"rgba(239,68,68,0.08)", color:"var(--red)",
+        fontSize:12, fontWeight:700, padding:"8px 10px", borderRadius:8, marginBottom:10 } }, "⚠️ " + err) : null
 
-    , React.createElement('label', { style:LS }, "Название проекта *")
-    , React.createElement('input', { value:name, onChange:e=>{ setName(e.target.value); setErr(""); }, placeholder:"Ремонт квартиры", style:IS, autoFocus:true })
+    , React.createElement('label', { style:{...LS, marginTop:0 } }, "✏️ Название проекта *")
+    , React.createElement('input', { value:name, onChange:e=>{ setName(e.target.value); setErr(""); },
+        placeholder:"Ремонт квартиры", style:IS, autoFocus:true,
+        onKeyDown: e => e.key === "Enter" && save() })
 
-    , React.createElement('label', { style:LS }, "Адрес объекта")
-    , React.createElement('input', { value:address, onChange:e=>setAddress(e.target.value), placeholder:"ул. Ленина, 42, кв. 15", style:IS })
+    , React.createElement('label', { style:LS }, "📍 Адрес объекта")
+    , React.createElement('input', { value:address, onChange:e=>setAddress(e.target.value),
+        placeholder:"ул. Ленина, 42, кв. 15", style:IS })
 
-    , React.createElement('div', { style:{display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:2} }
+    , React.createElement('div', { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:10 } }
       , React.createElement('div', {}
-        , React.createElement('label', { style:LS }, "Площадь (м²)")
-        , React.createElement('input', { type:"number", min:"0", value:area, onChange:e=>setArea(e.target.value), placeholder:"80", style:{...IS, textAlign:"center"} })
+        , React.createElement('label', { style:LS }, "📐 Площадь (м²)")
+        , React.createElement('input', { type:"number", min:"0", value:area,
+            onChange:e=>setArea(e.target.value), placeholder:"80",
+            style:{...IS, textAlign:"center"} })
       )
       , React.createElement('div', {}
-        , React.createElement('label', { style:LS }, "Заказчик")
-        , React.createElement('input', { value:client, onChange:e=>setClient(e.target.value), placeholder:"ФИО или организация", style:IS })
+        , React.createElement('label', { style:LS }, "👤 Заказчик")
+        , React.createElement('input', { value:client, onChange:e=>setClient(e.target.value),
+            placeholder:"ФИО или компания", style:IS })
       )
     )
 
-    , React.createElement('label', { style:LS }, "Примечание")
-    , React.createElement('textarea', { value:note, onChange:e=>setNote(e.target.value), placeholder:"Доп. информация о проекте...", rows:2,
-        style:{...IS, resize:"vertical", fontSize:13} })
+    , React.createElement('label', { style:LS }, "📝 Примечание")
+    , React.createElement('textarea', { value:note, onChange:e=>setNote(e.target.value),
+        placeholder:"Дополнительная информация...", rows:2,
+        style:{...IS, resize:"vertical", fontSize:13, marginBottom:0 } })
 
-    , React.createElement('div', { style:{display:"flex", gap:8, marginTop:4} }
-      , React.createElement('button', { onClick:onClose, style:{ flex:1, padding:"12px", borderRadius:11, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx2)", fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:"inherit" }}, "Отмена")
-      , React.createElement('button', { onClick:save, style:{ flex:2, padding:"12px", borderRadius:11, border:"none", background:"linear-gradient(135deg,var(--acc),var(--acc2))", color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit", boxShadow:"0 3px 12px rgba(79,70,229,0.3)" }}, "💾 Сохранить")
+    , React.createElement('div', { style:{ display:"flex", gap:8, marginTop:16 } }
+      , React.createElement('button', { onClick:onClose, style:{ flex:1, padding:"12px", borderRadius:11,
+          border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx2)",
+          fontWeight:600, fontSize:13, cursor:"pointer", fontFamily:"inherit" } }, "Отмена")
+      , React.createElement('button', { onClick:save, style:{ flex:2, padding:"12px", borderRadius:11,
+          border:"none", background:"linear-gradient(135deg,var(--acc),var(--acc2))",
+          color:"#fff", fontWeight:800, fontSize:13, cursor:"pointer", fontFamily:"inherit",
+          boxShadow:"0 3px 12px rgba(79,70,229,0.3)" } }, "💾 Сохранить изменения")
     )
   );
 }
@@ -8337,16 +8455,39 @@ function ProjectScreen({ state, dispatch, projectId, navigate, mode: navMode, pr
           , React.createElement('span', { style: { color: "#fff", fontSize: 12, fontWeight: 700 }}, "Проекты")
         )
 
-        /* Project name + badge */
+        /* Project name + edit button */
         , React.createElement('div', { style: { display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 3 }}
-          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 17, fontWeight: 900, color: "#fff", flex: 1, lineHeight: 1.2, cursor:"pointer" }, onClick: () => setShowProjectEdit(true), title:"Нажмите для редактирования" }, project.name, React.createElement('span',{style:{fontSize:11,marginLeft:6,opacity:0.5}},"✏️"))
-          , React.createElement('div', { style: {
-            fontSize: 9, padding: "3px 8px", borderRadius: 6, fontWeight: 800, letterSpacing: "0.07em",
-            background: "rgba(255,255,255,0.2)", color: "#fff", border: "1px solid rgba(255,255,255,0.35)",
-            whiteSpace: "nowrap", marginTop: 2, backdropFilter: "blur(4px)",
-          }}, isEst ? "📋 СМЕТА" : "📦 МАТЕРИАЛЫ")
+          , React.createElement('div', { style: { flex: 1 }}
+            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 17, fontWeight: 900, color: "#fff", lineHeight: 1.25, marginBottom: 2 } }, project.name)
+            , React.createElement('div', { style: { fontSize: 11, color: "rgba(255,255,255,0.65)", lineHeight: 1.4 } },
+              project.address || ""
+              , project.address && project.area ? " · " : ""
+              , project.area ? project.area + " м²" : ""
+              , !project.address && !project.area ? React.createElement('span', { style:{ opacity:0.5 } }, "нет адреса") : null
+            )
+          )
+          , React.createElement('div', { style:{ display:"flex", gap:6, alignItems:"center", marginTop:2 } }
+            , React.createElement('div', { style: {
+                fontSize: 9, padding: "3px 8px", borderRadius: 6, fontWeight: 800, letterSpacing: "0.07em",
+                background: "rgba(255,255,255,0.2)", color: "#fff", border: "1px solid rgba(255,255,255,0.35)",
+                whiteSpace: "nowrap", backdropFilter: "blur(4px)",
+              }}, isEst ? "📋 СМЕТА" : "📦 МАТЕРИАЛЫ")
+            , React.createElement('button', {
+                onClick: () => setShowProjectEdit(true),
+                title: "Редактировать проект",
+                style: {
+                  width: 34, height: 34, borderRadius: 10,
+                  background: "rgba(255,255,255,0.18)",
+                  border: "1.5px solid rgba(255,255,255,0.35)",
+                  backdropFilter: "blur(8px)",
+                  cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center",
+                  flexShrink: 0, transition: "background 0.15s",
+                }
+              }
+              , React.createElement('span', { style:{ fontSize:15 } }, "✏️")
+            )
+          )
         )
-        , React.createElement('div', { style: { fontSize: 11, color: "rgba(255,255,255,0.7)", marginBottom: 18, cursor:"pointer" }, onClick: () => setShowProjectEdit(true)}, project.address || React.createElement('span',{style:{opacity:0.5}},'+ адрес / площадь'))
 
         /* -- Action tiles -- */
         , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8, marginBottom: 10 }}
@@ -8978,7 +9119,7 @@ function ProjectScreen({ state, dispatch, projectId, navigate, mode: navMode, pr
       , confirmDeleteSid && (() => {
         const sec = (project.sections || []).find(s => s.id === confirmDeleteSid);
         return (
-          React.createElement('div', { style: { position:"absolute", inset:0, background:"rgba(0,0,0,0.7)", zIndex:600, display:"flex", alignItems:"flex-end", justifyContent:"center" }}
+          React.createElement('div', { style: { position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:6000, display:"flex", alignItems:"flex-end", justifyContent:"center" }}
             , React.createElement('div', { style: { background:"var(--s1)", borderRadius:"20px 20px 0 0", padding:"20px 16px 32px", width:"100%", maxWidth: "min(480px, 95vw)", boxShadow:"0 -8px 40px rgba(0,0,0,0.5)" }}
               , React.createElement('div', { style: { width:36, height:4, background:"var(--b2)", borderRadius:2, margin:"0 auto 16px" }} )
               , React.createElement('div', { style: { fontSize:18, marginBottom:8, textAlign:"center" }}, "🗑️")
@@ -8998,6 +9139,18 @@ function ProjectScreen({ state, dispatch, projectId, navigate, mode: navMode, pr
           )
         );
       })()
+      /* ─── Project Edit Modal ─── */
+      , showProjectEdit && React.createElement(Modal, {
+          open: showProjectEdit,
+          onClose: () => setShowProjectEdit(false),
+          title: "✏️ Редактировать проект"
+        }
+        , React.createElement(ProjectEditForm, {
+            project: project,
+            dispatch: dispatch,
+            onClose: () => setShowProjectEdit(false)
+          })
+      )
     )
   );
 }
@@ -9272,9 +9425,6 @@ function WorkGroupEditModal({ open, onClose, onSave, initial, priceBook, dispatc
       , React.createElement('div', { style: { display: "flex", gap: 10, marginTop: 14 }}
         , React.createElement(Btn, { onClick: onClose, variant: "secondary", full: true}, "Отмена")
         , React.createElement(Btn, { onClick: handleSave, full: true, disabled: !name || items.length === 0}, "Сохранить группу" )
-      , showProjectEdit && React.createElement(Modal, { open: showProjectEdit, onClose: () => setShowProjectEdit(false), title: "✏️ Редактировать проект" }
-        , React.createElement(ProjectEditForm, { project: project, dispatch: dispatch, onClose: () => setShowProjectEdit(false) })
-      )
       )
     )
   );
@@ -10140,6 +10290,33 @@ function CatalogScreen({ state, dispatch, navigate, prevTab, setTab, lang }) {
   const [catSwipe, setCatSwipe] = useState(null); // {id, dx}
   const [activeTab, setActiveTab]     = useState("catalog"); // "catalog" | "groups"
   const [matGroupModal, setMatGroupModal] = useState(null); // group being added
+  // ── Material basket (multi-select across sections) ──
+  const [matBasket, setMatBasket] = useState({}); // id -> {mat, qty}
+  const [showMatBasket, setShowMatBasket] = useState(false);
+  const [basketPid, setBasketPid] = useState(() => _optionalChain([state, 'access', _mb1 => _mb1.projects, 'access', _mb2 => _mb2[0], 'optionalAccess', _mb3 => _mb3.id]) || "");
+  const [basketSid, setBasketSid] = useState("");
+
+  const toggleBasket = (mat) => {
+    setMatBasket(prev => {
+      const key = mat.id || mat.name;
+      if (prev[key]) { const n = {...prev}; delete n[key]; return n; }
+      return { ...prev, [key]: { mat, qty: 1 } };
+    });
+  };
+  const basketCount = Object.keys(matBasket).length;
+
+  const addBasketToEstimate = () => {
+    if (!basketPid || !basketSid) return;
+    Object.values(matBasket).forEach(({ mat, qty }) => {
+      dispatch({ type: "ADD_ITEM", pid: basketPid, sid: basketSid, item: {
+        id: uid(), name: mat.name, unit: mat.unit || "шт",
+        qty: qty || 1, price: mat.price || 0, type: "material", paid: 0,
+      }});
+    });
+    setMatBasket({});
+    setShowMatBasket(false);
+    alert("✅ Материалы добавлены в смету!");
+  };
   const [mgTargetPid, setMgTargetPid] = useState(_optionalChain([state, 'access', _183 => _183.projects, 'access', _184 => _184[0], 'optionalAccess', _185 => _185.id]) || "");
   const [mgTargetSid, setMgTargetSid] = useState("");
   const [mgArea, setMgArea]           = useState("");
@@ -10367,7 +10544,24 @@ function CatalogScreen({ state, dispatch, navigate, prevTab, setTab, lang }) {
                           , React.createElement('span', { style: { fontSize:9, color:"var(--tx3)", fontWeight:500, display:"block" }}, "✏️ цена" )
                         )
                       )
-                      , React.createElement('button', { onClick: () => openAdd(item), style: { background:"rgba(124,111,255,0.12)", border:"none", borderRadius:7, padding:"4px 9px", fontSize:10, color:"var(--acc2)", fontWeight:700, cursor:"pointer", marginTop:3, fontFamily:"inherit" }}, "+ В смету"  )
+                      , React.createElement('div', { style: { display:"flex", gap:4, marginTop:3, alignItems:"center" } }
+                        , React.createElement('button', { onClick: () => toggleBasket(item),
+                            style: {
+                              padding:"4px 9px", fontSize:10, fontWeight:700, cursor:"pointer",
+                              fontFamily:"inherit", borderRadius:7, border:"none",
+                              background: matBasket[item.id||item.name]
+                                ? "rgba(16,185,129,0.2)" : "rgba(124,111,255,0.12)",
+                              color: matBasket[item.id||item.name] ? "var(--green)" : "var(--acc2)",
+                            }},
+                          matBasket[item.id||item.name] ? "✓ Выбран" : "+ Выбрать"
+                        )
+                        , React.createElement('button', { onClick: () => openAdd(item),
+                            style: { padding:"4px 7px", fontSize:10, color:"var(--tx3)", cursor:"pointer",
+                              fontFamily:"inherit", borderRadius:7, border:"1px solid var(--b1)",
+                              background:"var(--s2)", fontWeight:700 }},
+                          "↗"
+                        )
+                      )
                     )
                   )
                   , !selectMode && (
@@ -10387,7 +10581,126 @@ function CatalogScreen({ state, dispatch, navigate, prevTab, setTab, lang }) {
       /* Hint: long-press or right-click to select */
       , activeTab === "catalog" && !selectMode && (
         React.createElement('div', { style: { textAlign:"center", padding:"4px 0 8px", fontSize:10, color:"var(--tx3)" }}, "Долгое нажатие или ПКМ — выбрать несколько"
+        )
+      )
 
+      /* ── Floating basket bar ── */
+      , basketCount > 0 && activeTab === "catalog" && (
+        React.createElement('div', { style: {
+            position:"fixed", bottom:68, left:"50%", transform:"translateX(-50%)",
+            width:"calc(100% - 32px)", maxWidth:440, zIndex:8000,
+            background:"linear-gradient(135deg,#059669,#10b981)",
+            borderRadius:16, padding:"12px 16px",
+            boxShadow:"0 8px 30px rgba(5,150,105,0.45)",
+            display:"flex", alignItems:"center", gap:10,
+          }}
+          , React.createElement('div', { style:{ flex:1 } }
+            , React.createElement('div', { style:{ fontSize:12, fontWeight:800, color:"#fff" } },
+              "🛒 Выбрано: ", basketCount, " материалов"
+            )
+            , React.createElement('div', { style:{ fontSize:10, color:"rgba(255,255,255,0.75)" } },
+              "Нажмите «Добавить» чтобы добавить в смету"
+            )
+          )
+          , React.createElement('button', {
+              onClick: () => setShowMatBasket(true),
+              style: { padding:"8px 14px", borderRadius:10, border:"none",
+                background:"rgba(255,255,255,0.25)", color:"#fff",
+                fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit",
+                backdropFilter:"blur(8px)", whiteSpace:"nowrap" }
+            }, "Добавить →"
+          )
+          , React.createElement('button', {
+              onClick: () => setMatBasket({}),
+              style: { width:28, height:28, borderRadius:8, border:"none",
+                background:"rgba(255,255,255,0.15)", color:"#fff",
+                fontWeight:900, fontSize:14, cursor:"pointer",
+                display:"flex", alignItems:"center", justifyContent:"center" }
+            }, "✕"
+          )
+        )
+      )
+
+      /* ── Basket Modal ── */
+      , showMatBasket && (
+        React.createElement('div', { style:{
+            position:"fixed", inset:0, background:"rgba(0,0,0,0.7)", zIndex:9500,
+            display:"flex", flexDirection:"column", justifyContent:"flex-end", alignItems:"center",
+          }}
+          , React.createElement('div', { style:{
+              background:"var(--s1)", borderRadius:"20px 20px 0 0",
+              width:"100%", maxWidth:520, maxHeight:"85vh", overflowY:"auto",
+              padding:"20px 20px 32px",
+              boxShadow:"0 -8px 40px rgba(0,0,0,0.45)",
+            }}
+            , React.createElement('div', { style:{width:36,height:4,borderRadius:2,background:"var(--b2)",margin:"0 auto 16px"} })
+            , React.createElement('div', { style:{fontSize:15,fontWeight:900,fontFamily:"'Unbounded',sans-serif",color:"var(--tx)",marginBottom:4} },
+              "🛒 Корзина материалов"
+            )
+            , React.createElement('div', { style:{fontSize:12,color:"var(--tx3)",marginBottom:14} },
+              basketCount, " материалов выбрано"
+            )
+
+            /* Material list in basket */
+            , Object.values(matBasket).map(function(entry) {
+              return React.createElement('div', { key: entry.mat.id||entry.mat.name,
+                style:{ display:"flex", alignItems:"center", gap:10, padding:"8px 0", borderBottom:"1px solid var(--b1)" } }
+                , React.createElement('div', { style:{ flex:1, fontSize:12, fontWeight:600, color:"var(--tx)" } }, entry.mat.name)
+                , React.createElement('input', { type:"number", min:"0.01", step:"0.1",
+                    value:entry.qty,
+                    onChange: function(e) {
+                      var v = parseFloat(e.target.value)||1;
+                      setMatBasket(function(prev) {
+                        return { ...prev, [entry.mat.id||entry.mat.name]: { ...entry, qty:v } };
+                      });
+                    },
+                    style:{ width:58, padding:"4px 6px", borderRadius:7, border:"1.5px solid var(--acc)",
+                      background:"var(--s2)", color:"var(--tx)", fontSize:13, fontFamily:"inherit",
+                      outline:"none", textAlign:"center", fontWeight:700 } })
+                , React.createElement('span', { style:{fontSize:11,color:"var(--tx3)",width:28} }, entry.mat.unit)
+                , React.createElement('button', { onClick: function() { toggleBasket(entry.mat); },
+                    style:{ background:"none", border:"none", color:"#ef4444", fontSize:16, cursor:"pointer", padding:"2px 6px" } }, "✕")
+              );
+            })
+
+            /* Project/Section picker */
+            , React.createElement('div', { style:{margin:"14px 0 10px"} }
+              , React.createElement('label', { style:{fontSize:11,fontWeight:700,color:"var(--tx3)",textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:5} }, "Проект")
+              , React.createElement('select', { value:basketPid,
+                  onChange: function(e) {
+                    setBasketPid(e.target.value);
+                    var p = (state.projects||[]).find(function(p){return p.id===e.target.value;});
+                    setBasketSid(_optionalChain([p,'optionalAccess',function(_x){return _x.sections;},'access',function(_x){return _x[0];},'optionalAccess',function(_x){return _x.id;}])||'');
+                  },
+                  style:{width:"100%",padding:"10px 12px",borderRadius:10,border:"1.5px solid var(--b1)",background:"var(--s2)",color:"var(--tx)",fontSize:13,fontFamily:"inherit",outline:"none",marginBottom:8} }
+                , (state.projects||[]).map(function(p){ return React.createElement('option',{key:p.id,value:p.id},p.name); })
+              )
+              , React.createElement('label', { style:{fontSize:11,fontWeight:700,color:"var(--tx3)",textTransform:"uppercase",letterSpacing:"0.06em",display:"block",marginBottom:5} }, "Раздел сметы")
+              , React.createElement('select', { value:basketSid, onChange:function(e){setBasketSid(e.target.value);},
+                  style:{width:"100%",padding:"10px 12px",borderRadius:10,border:"1.5px solid var(--b1)",background:"var(--s2)",color:"var(--tx)",fontSize:13,fontFamily:"inherit",outline:"none"} }
+                , ((state.projects||[]).find(function(p){return p.id===basketPid;})||{sections:[]}).sections.map(function(s){
+                    return React.createElement('option',{key:s.id,value:s.id},s.name);
+                  })
+                , ((state.projects||[]).find(function(p){return p.id===basketPid;})||{sections:[]}).sections.length===0 &&
+                    React.createElement('option',{value:""},"— нет разделов —")
+              )
+            )
+
+            , React.createElement('div', { style:{display:"flex",gap:8} }
+              , React.createElement('button', { onClick:function(){setShowMatBasket(false);},
+                  style:{flex:1,padding:"12px",borderRadius:11,border:"1px solid var(--b1)",
+                    background:"var(--s2)",color:"var(--tx2)",fontWeight:600,fontSize:13,
+                    cursor:"pointer",fontFamily:"inherit"} }, "Продолжить выбор")
+              , React.createElement('button', { onClick:addBasketToEstimate,
+                  disabled:!basketPid||!basketSid,
+                  style:{flex:2,padding:"12px",borderRadius:11,border:"none",
+                    background:(!basketPid||!basketSid)?"var(--s3)":"linear-gradient(135deg,#059669,#10b981)",
+                    color:"#fff",fontWeight:800,fontSize:13,cursor:"pointer",fontFamily:"inherit",
+                    boxShadow:(!basketPid||!basketSid)?"none":"0 4px 16px rgba(5,150,105,0.35)"} },
+                "✅ Добавить ", basketCount, " матер. в смету"
+              )
+            )
+          )
         )
       )
 
