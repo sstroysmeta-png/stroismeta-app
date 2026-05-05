@@ -6391,7 +6391,7 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
   const lang = ctxLang || "ru";
   const [tab, setTab]             = useState("sections");
   const [viewMode, setViewMode]   = useState("edit"); // "edit" | "preview"
-  const [exportGroupBy, setExportGroupBy] = useState("sections"); // "sections" | "rooms"
+  const [exportGroupBy, setExportGroupBy] = useState("rooms"); // "rooms" | "sections"
   const [exporting, setExporting] = useState(null);
   const [exportDone, setExportDone] = useState(null);
 
@@ -6434,150 +6434,126 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
   // -- HTML preview styles --
   // -- Preview HTML (matches М-Ремонт style) ------------------
   const previewCSS = `
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=Playfair+Display:wght@700&display=swap');
-    @page { size: A4; margin: 16mm 14mm 14mm 16mm; }
+    @import url('https://fonts.googleapis.com/css2?family=PT+Sans:wght@400;700&display=swap');
+    @page { size: A4 portrait; margin: 15mm 12mm 12mm 15mm; }
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #f0f6ff; font-family: 'Inter', Arial, sans-serif; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
-    .sw { font-size: 9pt; color: #1e3a5f; background: #fff; padding: 18px 20px 24px; max-width: 210mm; margin: 0 auto; border-radius: 0; }
+    body { background: #fff; font-family: 'PT Sans', Arial, sans-serif;
+           font-size: 8.5pt; color: #000;
+           -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .sw  { max-width: 190mm; margin: 0 auto; }
 
     /* ── Header ── */
-    .sh { text-align: center; margin-bottom: 14px; }
-    .sh-company {
-      font-family: 'Playfair Display', 'Inter', serif;
-      font-size: 15pt; font-weight: 700; color: #1a3a6e;
-      letter-spacing: 0.03em; margin-bottom: 3px;
-    }
-    .sh-line { height: 2.5px; background: linear-gradient(90deg, #4a90d9 0%, #7ab8f5 50%, #4a90d9 100%); margin: 6px 0; border-radius: 2px; }
-    .sh-meta     { font-size: 7.5pt; color: #6b8ab0; margin-bottom: 2px; letter-spacing: 0.02em; }
-    .sh-contract { font-size: 8.5pt; color: #2d5a9b; font-weight: 600; margin: 8px 0 2px; }
-    .sh-address  { font-size: 8pt; color: #7090b0; margin-bottom: 3px; }
-    .sh-title    { font-size: 12pt; font-weight: 700; color: #1a3a6e; margin: 6px 0 1px; }
-    .sh-sub      { font-size: 8pt; color: #6b8ab0; font-style: italic; margin-bottom: 14px; }
-
-    /* ── Table wrapper with rounded corners ── */
-    .st-wrap {
-      border-radius: 14px;
-      overflow: hidden;
-      border: 1.5px solid #cde0f7;
-      box-shadow: 0 2px 16px rgba(74,144,217,0.12);
-      margin-bottom: 0;
-    }
+    .sh  { text-align: center; margin-bottom: 8px; }
+    .sh-company { font-size: 11pt; font-weight: 700; color: #000; margin-bottom: 2px; }
+    .sh-contract { font-size: 8pt; color: #333; margin-bottom: 1px; }
+    .sh-address  { font-size: 8pt; color: #333; margin-bottom: 2px; }
+    .sh-meta     { font-size: 8pt; color: #555; margin-bottom: 2px; }
+    .sh-title    { font-size: 10pt; font-weight: 700; color: #000; margin: 6px 0 1px; }
+    .sh-sub      { font-size: 8pt; color: #555; margin-bottom: 10px; font-style: italic; }
+    .sh-logo img { width: 60px; height: 60px; object-fit: contain; border-radius: 4px; border: 1px solid #ddd; }
 
     /* ── Table ── */
-    .st { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8.5pt; }
+    .st-wrap { border: 1px solid #bbb; border-radius: 0; overflow: hidden; margin-bottom: 0; }
+    .st { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 8.2pt; }
 
-    .st thead tr th:first-child { border-radius: 0; }
+    /* Header */
     .st thead th {
-      background: linear-gradient(135deg, #2d5a9b 0%, #4a90d9 100%);
+      background: #444444;
       color: #ffffff;
-      font-size: 7.5pt;
       font-weight: 700;
-      padding: 8px 5px;
-      border: none;
-      border-right: 1px solid rgba(255,255,255,0.15);
+      font-size: 7.5pt;
+      padding: 5px 4px;
+      border-right: 1px solid #666;
+      border-bottom: 1px solid #888;
       text-align: center;
       vertical-align: middle;
-      line-height: 1.3;
-      letter-spacing: 0.03em;
-      text-transform: uppercase;
+      line-height: 1.2;
     }
     .st thead th:last-child { border-right: none; }
-    .st thead th.left { text-align: left; padding-left: 10px; }
+    .st thead th.left       { text-align: left; padding-left: 5px; }
 
+    /* Column widths — exact match photo */
+    .col-num   { width: 22px; }
+    .col-unit  { width: 42px; }
+    .col-qty   { width: 46px; }
+    .col-price { width: 62px; }
+    .col-sum   { width: 68px; font-weight: 700; }
+
+    /* Data cells */
     .st tbody td {
-      padding: 5px 5px;
-      border-bottom: 1px solid #e8f0fa;
-      border-right: 1px solid #e8f0fa;
-      font-size: 8.5pt;
+      padding: 3px 4px;
+      border-right: 1px solid #ccc;
+      border-bottom: 1px solid #ddd;
       vertical-align: middle;
-      line-height: 1.35;
+      line-height: 1.3;
       word-break: break-word;
-      color: #1e3a5f;
+      overflow: hidden;
+      color: #000;
     }
     .st tbody td:last-child { border-right: none; }
     .st tbody tr:last-child td { border-bottom: none; }
-    .st tbody tr.even td { background: #f5f9ff; }
+
+    /* Alternating rows */
+    .st tbody tr.even td { background: #eef5fd; }
     .st tbody tr.odd  td { background: #ffffff; }
-    .st tbody tr:hover td { background: #eef5ff; }
+    .st tbody tr.mat  td { background: #f8fdf0; }
 
-    /* Section header row — pastel blue */
+    /* Section (room) header row — bold dark */
     .st tbody tr.sr td {
-      background: linear-gradient(90deg, #daeaf9 0%, #e8f3fd 100%);
+      background: #d8d8d8;
       font-weight: 700;
-      font-size: 8.8pt;
-      padding: 7px 10px;
-      border-top: 1.5px solid #b0d0f0;
-      border-bottom: 1px solid #b0d0f0;
+      font-size: 8.5pt;
+      padding: 5px 6px;
       border-right: none;
-      color: #1a3a6e;
-      letter-spacing: 0.01em;
+      border-top: 1px solid #999;
+      border-bottom: 1px solid #999;
+      color: #000;
     }
 
-    /* Section subtotal row */
-    .st tbody tr.st-total td {
-      background: #eef5ff;
-      font-weight: 700;
-      font-size: 8.5pt;
-      border-top: 1px solid #b0d0f0;
-      border-bottom: 1px solid #b0d0f0;
-      color: #2d5a9b;
-      font-style: italic;
-    }
-
-    /* Material row */
-    .st tbody tr.mat td { background: #f9fbff; color: #4a7ab0; }
-
-    /* Room total row */
+    /* Subtotal row */
+    .st tbody tr.st-total td,
     .st tbody tr.room-tot td {
-      background: linear-gradient(90deg, #d0e8ff 0%, #e0f0ff 100%);
+      background: #f0f0f0;
       font-weight: 700;
-      font-size: 8.5pt;
-      border-top: 1.5px solid #7ab0e0;
-      border-bottom: 1.5px solid #7ab0e0;
-      color: #1a3a6e;
+      border-top: 1px solid #aaa;
+      border-bottom: 1px solid #aaa;
+      color: #000;
     }
 
-    .col-num   { width: 24px; text-align: center !important; color: #8aa8c8; font-size: 7.5pt; }
-    .col-unit  { width: 44px; text-align: center !important; }
-    .col-qty   { width: 44px; text-align: center !important; }
-    .col-price { width: 62px; text-align: right !important; padding-right: 8px !important; }
-    .col-sum   { width: 68px; text-align: right !important; padding-right: 8px !important; font-weight: 700; color: #1a3a6e; }
-    .left      { text-align: left !important; padding-left: 10px !important; }
-    .ctr       { text-align: center !important; }
-    .rgt       { text-align: right !important; padding-right: 8px !important; }
+    /* Number alignment */
+    .num  { text-align: center !important; color: #555; font-size: 7.5pt; }
+    .ctr  { text-align: center !important; }
+    .rgt  { text-align: right  !important; padding-right: 5px !important; }
+    .left { text-align: left   !important; padding-left: 5px !important; }
 
-    /* ── Footer totals ── */
-    .sf { margin-top: 12px; }
-    .sf-table { width: auto; min-width: 280px; margin-left: auto; border-collapse: separate; border-spacing: 0; border-radius: 12px; overflow: hidden; border: 1.5px solid #cde0f7; box-shadow: 0 2px 10px rgba(74,144,217,0.1); margin-bottom: 8px; }
-    .sf-table td { padding: 6px 12px; font-size: 9pt; border-bottom: 1px solid #e8f0fa; }
-    .sf-table td:first-child { color: #4a6a9a; }
-    .sf-table td:last-child { text-align: right; font-weight: 700; color: #1a3a6e; }
-    .sf-table tr:last-child td { border-bottom: none; }
-    .sf-table tr.sf-grand td {
-      background: linear-gradient(135deg, #2d5a9b 0%, #4a90d9 100%);
-      color: #fff !important;
-      font-weight: 800;
-      font-size: 10.5pt;
-      padding: 8px 12px;
+    /* ── Footer ── */
+    .sf { margin-top: 6px; }
+    .sf-rows { width: 100%; }
+    .sf-row {
+      display: flex;
+      justify-content: flex-end;
+      align-items: baseline;
+      margin-bottom: 2px;
+      font-size: 9pt;
     }
-    .sf-words { font-size: 7.5pt; color: #6b8ab0; margin: 10px 0 22px; line-height: 1.7; font-style: italic; }
+    .sf-row-label { min-width: 220px; padding-right: 12px; color: #333; text-align: left; }
+    .sf-row-val   { min-width: 90px; text-align: right; font-weight: 700; color: #000; }
+    .sf-row-grand .sf-row-label,
+    .sf-row-grand .sf-row-val   { font-size: 10pt; font-weight: 700; border-top: 1.5px solid #555; padding-top: 4px; margin-top: 3px; }
+    .sf-words { font-size: 8pt; color: #333; margin: 8px 0 22px; line-height: 1.6; }
     .sf-signs { display: flex; justify-content: space-between; margin-top: 28px; }
     .sf-sign  { width: 46%; }
-    .sf-sign-title { font-weight: 700; font-size: 9pt; margin-bottom: 32px; color: #1a3a6e; }
-    .sf-sign-line  { border-bottom: 1.5px solid #b0c8e8; margin-bottom: 5px; }
-    .sf-sign-hint  { font-size: 7.5pt; color: #8aaccc; display: flex; justify-content: space-between; }
-
-    .sh-logo { flex-shrink: 0; }
-    .sh-logo img { width: 72px; height: 72px; object-fit: contain; border: 1.5px solid #cde0f7; border-radius: 10px; }
+    .sf-sign-title { font-weight: 700; font-size: 9pt; margin-bottom: 28px; }
+    .sf-sign-line  { border-bottom: 1px solid #555; margin-bottom: 4px; }
+    .sf-sign-hint  { font-size: 7.5pt; color: #666; display: flex; justify-content: space-between; }
 
     @media print {
-      body { background: #fff; }
       .sw { padding: 0; }
     }
   `;
 
   const fmtN = n => Math.round(n).toLocaleString("ru");
-  const fmtD = n => Number(n).toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, " ");
+  const fmtD = n => Math.round(Number(n)).toLocaleString("ru-RU");
 
   const numToWords = (n) => {
     const ones = ["","один","два","три","четыре","пять","шесть","семь","восемь","девять","десять","одиннадцать","двенадцать","тринадцать","четырнадцать","пятнадцать","шестнадцать","семнадцать","восемнадцать","девятнадцать"];
@@ -6693,21 +6669,21 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
         return `<tr class="sr"><td colspan="6" class="left">${r.name}</td></tr>`;
       }
       if (r.type === "section_total") {
-        return `<tr class="st-total"><td colspan="5" class="rgt" style="padding-right:6px"><b>Итого по разделу:</b></td><td class="col-sum rgt"><b>${fmtD(r.total)}</b></td></tr>`;
+        return `<tr class="st-total"><td class="num"></td><td colspan="3" class="left" style="font-weight:700;padding-left:5px">Итого:</td><td class="col-price rgt"></td><td class="col-sum rgt"><b>${fmtD(r.total)}</b></td></tr>`;
       }
       if (r.type === "room_total") {
-        return `<tr class="room-tot"><td colspan="5" class="rgt" style="padding-right:6px">Итого по помещению «${r.name}»:</td><td class="col-sum rgt">${fmtD(r.total)}</td></tr>`;
+        return `<tr class="room-tot"><td class="num"></td><td colspan="3" class="left" style="font-weight:700;padding-left:5px">Итого:</td><td class="col-price rgt"></td><td class="col-sum rgt">${fmtD(r.total)}</td></tr>`;
       }
       const isMat = r.itemType === "material";
       const cls = isMat ? "mat" : (rowIdx % 2 === 0 ? "even" : "odd");
       rowIdx++;
       return `<tr class="${cls}">` +
-        `<td class="col-num">${r.n}</td>` +
-        `<td class="left">${r.name}${isMat ? ' <i style="font-size:7.5pt;color:#888">(мат.)</i>' : ""}</td>` +
-        `<td class="col-unit">${r.unit}</td>` +
-        `<td class="col-qty">${Number(r.qty).toFixed(2)}</td>` +
-        `<td class="col-price">${fmtD(r.price)}</td>` +
-        `<td class="col-sum">${fmtD(r.total)}</td>` +
+        `<td class="col-num num">${r.n}</td>` +
+        `<td class="left">${r.name}${isMat ? ' <span style="font-size:7pt;color:#777">(мат.)</span>' : ""}</td>` +
+        `<td class="col-unit ctr">${r.unit}</td>` +
+        `<td class="col-qty ctr">${Number(r.qty).toFixed(2)}</td>` +
+        `<td class="col-price rgt">${fmtD(r.price)}</td>` +
+        `<td class="col-sum rgt">${fmtD(r.total)}</td>` +
         `</tr>`;
     }).join("\n");
 
@@ -6742,11 +6718,11 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
     <thead>
       <tr>
         <th class="col-num">№</th>
-        <th class="left" style="min-width:200px">Наименование работ</th>
-        <th class="col-unit">Ед.&nbsp;изм.</th>
+        <th class="left" style="min-width:180px">Наименование работ</th>
+        <th class="col-unit">Ед. изм.</th>
         <th class="col-qty">Кол-во</th>
-        <th class="col-price">Цена,&nbsp;₽</th>
-        <th class="col-sum">Сумма,&nbsp;₽</th>
+        <th class="col-price">Цена</th>
+        <th class="col-sum">Сумма</th>
       </tr>
     </thead>
     <tbody>
@@ -6756,12 +6732,12 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
   </div>
 
   <div class="sf">
-    <table class="sf-table">
-      <tr><td style="min-width:180px">Итого по работам:</td><td class="rgt" style="min-width:90px;font-weight:700">${fmtD(workTotal)} ₽</td></tr>
-      ${matTotal > 0 ? `<tr><td>Итого по материалам:</td><td class="rgt" style="font-weight:700">${fmtD(matTotal)} ₽</td></tr>` : ""}
-      <tr class="sf-grand"><td><b>ИТОГО К ОПЛАТЕ:</b></td><td class="rgt"><b>${fmtD(total)} ₽</b></td></tr>
-    </table>
-    <div class="sf-words">Итоговая сумма составляет ${fmtD(total)} (${totalWords}) рублей 00 копеек</div>
+    <div class="sf-rows">
+      <div class="sf-row"><span class="sf-row-label">Итого по работам:</span><span class="sf-row-val">${fmtD(workTotal)} ₽</span></div>
+      ${matTotal > 0 ? `<div class="sf-row"><span class="sf-row-label">Итого по материалам:</span><span class="sf-row-val">${fmtD(matTotal)} ₽</span></div>` : ""}
+      <div class="sf-row sf-row-grand"><span class="sf-row-label">Итого общее:</span><span class="sf-row-val">${fmtD(total)} ₽</span></div>
+    </div>
+    <div class="sf-words">Итоговая сумма составляет ${fmtD(total)} (${totalWords}) рублей</div>
     <div class="sf-signs">
       <div class="sf-sign">
         <div class="sf-sign-title">Заказчик</div>
@@ -14343,7 +14319,21 @@ function App() {
   `;
 
   const navigate = useCallback((screen, params = {}) => {
-    setNav({ screen, params });
+    if (screen === "back") {
+      setNav(prev => {
+        const hist = (prev.history || []);
+        if (hist.length === 0) return { screen: "home", params: {}, history: [] };
+        const newHist = hist.slice(0, -1);
+        const prevEntry = newHist[newHist.length - 1] || { screen: "home", params: {} };
+        return { screen: prevEntry.screen, params: prevEntry.params, history: newHist };
+      });
+      return;
+    }
+    setNav(prev => ({
+      screen,
+      params,
+      history: [...(prev.history || []), { screen: prev.screen, params: prev.params }].slice(-20),
+    }));
     if (screen === "home") setTab("home");
   }, []);
 
@@ -14467,7 +14457,7 @@ function App() {
             }
           })
         , showAuth && React.createElement(AuthModal, { onClose: () => setShowAuth(false), onAuth: function(user){ saveAuth(user); setShowAuth(false); } })
-        , React.createElement(BottomNav, { tab: nav.screen === "project" || nav.screen === "rooms" || nav.screen === "roomdetail" ? "" : tab, setTab: handleTabChange, lang: lang })
+        , React.createElement(BottomNav, { tab: nav.screen === "project" || nav.screen === "rooms" || nav.screen === "roomdetail" ? "" : tab, setTab: handleTabChange, lang: lang, onBack: () => { if (nav.history && nav.history.length > 0) navigate("back"); else if (history.length > 1) history.back(); } })
       )
     )
     )
