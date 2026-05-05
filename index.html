@@ -4009,35 +4009,17 @@ function RoomCard({ room, projectId, dispatch, navigate, onEdit, onDelete }) {
     { key: "wallsNet",   label: "Стены чист.",  unit: "м²",   accent: "#a78bfa" },
   ];
 
-  const [swipeX, setSwipeX] = useState(0); // -1=delete, 0=normal, 1=edit
-
   return (
-    React.createElement('div', { style: { background: "var(--s1)", borderRadius: "var(--r)", marginBottom: 12, boxShadow: "0 4px 20px rgba(0,0,0,0.3)", border: "1px solid var(--b1)", position:"relative" }}
-
-      /* Swipe left = delete (red) */
-      , React.createElement('div', { style: { position:"absolute", left:0, top:0, bottom:0, width:70, background:"#ef4444", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1, opacity: swipeX === -1 ? 1 : 0, transition:"opacity 0.2s" }}
-        , React.createElement(Icon, { name: "trash", size: 22, color: "#fff"} )
-      )
-
+    React.createElement(SwipeRow, {
+        onSwipeLeft: () => { if (onDelete) onDelete(); },
+        style: { borderRadius: "var(--r)", marginBottom: 12 }
+      }
+      , React.createElement('div', { style: { background: "var(--s1)", borderRadius: "var(--r)", boxShadow: "0 4px 20px rgba(0,0,0,0.3)", border: "1px solid var(--b1)" }}
 
       /* -- Main row — clickable to open room detail -- */
       , React.createElement('div', {
-        onClick: () => swipeX === 0 && navigate("roomdetail", { projectId, roomId: room.id }),
-        onTouchStart: e => { e.currentTarget._tsx = e.touches[0].clientX; },
-        onTouchMove: e => {
-          const dx = e.touches[0].clientX - (e.currentTarget._tsx || 0);
-          if (dx < -70) setSwipeX(-1);
-
-          else setSwipeX(0);
-        },
-        onTouchEnd: e => {
-          if (swipeX === -1) dispatch({ type: "DELETE_ROOM", pid: projectId, rid: room.id });
-
-          setSwipeX(0);
-        },
-        style: { display: "flex", alignItems: "center", padding: "13px 14px", gap: 10, cursor: "pointer", position:"relative", zIndex:2,
-          transform: swipeX === -1 ? "translateX(-60px)" : "translateX(0)",
-          transition: "transform 0.2s", background:"var(--s1)" }}
+        onClick: () => navigate("roomdetail", { projectId, roomId: room.id }),
+        style: { display: "flex", alignItems: "center", padding: "13px 14px", gap: 10, cursor: "pointer" }}
 
         /* Photo / Icon */
         , React.createElement('div', {
@@ -4204,19 +4186,8 @@ function RoomCard({ room, projectId, dispatch, navigate, onEdit, onDelete }) {
         )
       )
 
+      )
     )
-    /* ── Delete confirmation dialog ── */
-    , React.createElement(ConfirmSheet, {
-        open: showDeleteConfirm,
-        title: "Удалить помещение?",
-        subtitle: `«${room.name}» и все работы в нём будут удалены`,
-        danger: true,
-        onCancel: () => setShowDeleteConfirm(false),
-        onConfirm: () => {
-          dispatch({ type: "DELETE_ROOM", pid: projectId, rid: room.id });
-          setShowDeleteConfirm(false);
-        }
-      })
   );
 }
 
@@ -6512,7 +6483,7 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
     .sh-meta     { font-size: 8pt; color: #555; margin-bottom: 2px; }
     .sh-title    { font-size: 10pt; font-weight: 700; color: #000; margin: 6px 0 1px; }
     .sh-sub      { font-size: 8pt; color: #555; margin-bottom: 10px; font-style: italic; }
-    .sh-logo img { width: 60px; height: 60px; object-fit: contain; border-radius: 4px; border: 1px solid #ddd; }
+    .sh-logo img { width: 72px; height: 72px; object-fit: contain; border: none; background: transparent; display: block; }
 
     /* ── Table ── */
     .st-wrap { border: 1px solid #bbb; border-radius: 0; overflow: hidden; margin-bottom: 0; }
@@ -6757,7 +6728,7 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
     ].filter(Boolean).join("  |  ");
 
     const logoHtml = header.logo
-      ? `<div class="sh-logo"><img src="${header.logo}" /></div>`
+      ? `<div class="sh-logo" style="flex-shrink:0;margin-left:12px;"><img src="${header.logo}" style="width:72px;height:72px;object-fit:contain;display:block;border:none;background:transparent;" /></div>`
       : "";
 
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${previewCSS}</style></head><body>
@@ -6845,44 +6816,34 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
   const exportPDF = async () => {
     setExporting("pdf");
     try {
+      const fname = `smeta_${project.name.replace(/[\s/]/g,"_")}`;
       const htmlContent = previewHTML;
-      const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" });
 
-      // On mobile: try Web Share API with HTML file (opens in browser, can be printed/saved)
-      if (navigator.share && navigator.canShare) {
-        const file = new File([blob], `smeta_${project.name.replace(/\s+/g,"_")}.html`, { type:"text/html" });
-        if (navigator.canShare({ files: [file] })) {
-          try {
-            await navigator.share({
-              files: [file],
-              title: `Смета — ${project.name}`,
-              text: "Смета на ремонтные работы"
-            });
-            setExporting(null); setExportDone("pdf"); setTimeout(()=>setExportDone(null),3000);
-            return;
-          } catch(e) {
-            if (e.name === "AbortError") { setExporting(null); return; }
-          }
+      // ── Strategy 1: Web Share API with file attachment ──────────
+      if (navigator.share) {
+        try {
+          const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" });
+          const file = new File([blob], fname + ".html", { type: "text/html" });
+          const shareData = navigator.canShare && navigator.canShare({ files: [file] })
+            ? { files: [file], title: `Смета — ${project.name}`, text: "Смета на ремонтные работы" }
+            : { title: `Смета — ${project.name}`, text: "Смета на ремонтные работы. Сохраните файл ниже." };
+          await navigator.share(shareData);
+          setExporting(null); setExportDone("pdf"); setTimeout(()=>setExportDone(null),3000);
+          return;
+        } catch(e) {
+          if (e.name === "AbortError") { setExporting(null); return; }
+          // Share failed — fall through to download
         }
       }
 
-      // Desktop fallback: open in new tab → system print dialog (Save as PDF)
-      const win = window.open("", "_blank", "width=960,height=700,toolbar=yes,menubar=yes");
-      if (win) {
-        win.document.write(htmlContent);
-        win.document.close();
-        win.focus();
-        setTimeout(() => {
-          win.print();
-          setExporting(null); setExportDone("pdf"); setTimeout(()=>setExportDone(null),3000);
-        }, 800);
-      } else {
-        // Popup blocked — download as HTML
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a"); a.href=url; a.download=`smeta_${project.name.replace(/\s+/g,"_")}.html`; a.click();
-        setTimeout(()=>URL.revokeObjectURL(url),2000);
-        setExporting(null); setExportDone("pdf"); setTimeout(()=>setExportDone(null),3000);
-      }
+      // ── Strategy 2: Download HTML file (user can print/share from Files) ──
+      const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" });
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement("a");
+      a.href = url; a.download = fname + ".html"; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 3000);
+      setExporting(null); setExportDone("pdf"); setTimeout(()=>setExportDone(null),3000);
+
     } catch(e) { setExporting(null); console.error(e); }
   };
 
@@ -6922,7 +6883,25 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
       const csv = rows2.map(r => r.map(c => `"${safeStr(c)}"`).join(",")).join("\r\n");
       const blob = new Blob(["\uFEFF" + csv], { type:"text/csv;charset=utf-8" });
       const fname = `smeta_${project.name.replace(/[\s/\\]/g,"_")}.csv`;
-      const shared = await shareOrDownload(blob, fname, "text/csv");
+      // Try Web Share with file, fall back to download
+      let shared = false;
+      if (navigator.share) {
+        try {
+          const file = new File([blob], fname, { type: "text/csv" });
+          const shareData = navigator.canShare && navigator.canShare({ files: [file] })
+            ? { files: [file], title: `Смета — ${project.name}`, text: "Данные сметы (CSV/Excel)" }
+            : { title: `Смета — ${project.name}`, text: "Данные сметы" };
+          await navigator.share(shareData);
+          shared = true;
+        } catch(e) {
+          if (e.name === "AbortError") { setExporting(null); return; }
+        }
+      }
+      if (!shared) {
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a"); a.href=url; a.download=fname; a.click();
+        setTimeout(()=>URL.revokeObjectURL(url),3000);
+      }
       setExporting(null); setExportDone("xlsx"); setTimeout(()=>setExportDone(null),3000);
     } catch(e) { setExporting(null); console.error(e); }
   };
@@ -13558,40 +13537,38 @@ function AccountScreen({ theme, setTheme, profile, setProfile, lang, setLang, cu
   };
 
   const Field = ({ icon, label, value, onChange, type = "text", placeholder = "" }) => (
-    React.createElement('div', { style: { marginBottom: 12 }}
-      , React.createElement('label', { style: { fontSize: 10, fontWeight: 600, color: "var(--tx3)", letterSpacing: "0.08em", textTransform: "uppercase", display: "block", marginBottom: 5 }}, label)
-      , React.createElement('div', { style: { position: "relative", display: "flex", alignItems: "center" }}
-        , React.createElement('div', { style: { position: "absolute", left: 12, color: "var(--tx3)", display: "flex" }}
-          , React.createElement(Icon, { name: icon, size: 15, color: "var(--tx3)"} )
-        )
-        , React.createElement('input', {
-          type: type, value: value, placeholder: placeholder,
+    React.createElement('div', { style: { marginBottom: 14 }}
+      , React.createElement('label', { style: { fontSize: 11, fontWeight: 700, color: "var(--tx3)", letterSpacing: "0.06em", textTransform: "uppercase", display: "block", marginBottom: 6 }}, label)
+      , React.createElement('input', {
+          type: type,
+          value: value || "",
+          placeholder: placeholder,
+          autoComplete: type === "email" ? "email" : type === "tel" ? "tel" : "off",
           onChange: e => onChange(e.target.value),
           style: {
-            width: "100%", padding: "11px 14px 11px 36px", borderRadius: "var(--rs)",
-            border: "1.5px solid var(--b1)", fontSize: 14, color: "var(--tx)", outline: "none",
-            background: "var(--s2)", fontFamily: "inherit", transition: "border-color 0.2s, box-shadow 0.2s",
-          },
-          onFocus: e => { e.target.style.borderColor = "var(--acc)"; e.target.style.boxShadow = "0 0 0 3px rgba(108,99,255,0.15)"; },
-          onBlur: e => { e.target.style.borderColor = "var(--b1)"; e.target.style.boxShadow = "none"; }}
-        )
+            width: "100%", padding: "12px 14px", borderRadius: "var(--rs)",
+            border: "1.5px solid var(--b1)", fontSize: 15, color: "var(--tx)", outline: "none",
+            background: "var(--s2)", fontFamily: "inherit", boxSizing: "border-box",
+            WebkitAppearance: "none",
+          }
+        }
       )
     )
   );
 
   const Section = ({ id, title, icon, emoji, children }) => {
-    const open = activeSection === id;
+    const [open, setOpen] = React.useState(id === "personal"); // personal open by default
     return (
-      React.createElement('div', { style: { marginBottom: 10, borderRadius: "var(--r)", border: "1px solid var(--b1)", overflow: "hidden", background: "var(--s1)" }}
+      React.createElement('div', { style: { marginBottom: 10, borderRadius: "var(--r)", border: "1px solid var(--b1)", background: "var(--s1)" }}
         , React.createElement('button', {
-          onClick: () => setActiveSection(open ? null : id),
+          onClick: () => setOpen(o => !o),
           style: {
             width: "100%", padding: "14px 16px", display: "flex", alignItems: "center", gap: 12,
             background: "none", border: "none", cursor: "pointer", textAlign: "left",
           }}
           , React.createElement('div', { style: {
             width: 36, height: 36, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center",
-            background: "var(--acc3)", fontSize: 18,
+            background: "var(--acc3)", fontSize: 18, flexShrink: 0,
           }}, emoji)
           , React.createElement('span', { style: { flex: 1, fontSize: 14, fontWeight: 600, color: "var(--tx)" }}, title)
           , React.createElement('div', { style: { transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.25s", color: "var(--tx3)" }}
@@ -13599,7 +13576,7 @@ function AccountScreen({ theme, setTheme, profile, setProfile, lang, setLang, cu
           )
         )
         , open && (
-          React.createElement('div', { style: { padding: "0 16px 16px", borderTop: "1px solid var(--b1)", paddingTop: 16, animation: "fadeIn 0.2s ease" }}
+          React.createElement('div', { style: { padding: "16px 16px", borderTop: "1px solid var(--b1)" }}
             , children
           )
         )
