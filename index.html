@@ -4012,7 +4012,7 @@ function RoomCard({ room, projectId, dispatch, navigate, onEdit, onDelete }) {
   const [swipeX, setSwipeX] = useState(0); // -1=delete, 0=normal, 1=edit
 
   return (
-    React.createElement('div', { style: { background: "var(--s1)", borderRadius: "var(--r)", marginBottom: 12, boxShadow: "0 4px 20px rgba(0,0,0,0.3)", overflow: "hidden", border: "1px solid var(--b1)", position:"relative" }}
+    React.createElement('div', { style: { background: "var(--s1)", borderRadius: "var(--r)", marginBottom: 12, boxShadow: "0 4px 20px rgba(0,0,0,0.3)", border: "1px solid var(--b1)", position:"relative" }}
 
       /* Swipe left = delete (red) */
       , React.createElement('div', { style: { position:"absolute", left:0, top:0, bottom:0, width:70, background:"#ef4444", display:"flex", alignItems:"center", justifyContent:"center", zIndex:1, opacity: swipeX === -1 ? 1 : 0, transition:"opacity 0.2s" }}
@@ -4732,261 +4732,209 @@ function RoomsScreen({ state, dispatch, projectId, navigate }) {
 
 // ==================== PLAN RECOGNITION MODAL ====================
 function PlanRecognitionModal({ open, onClose, onRoomsDetected }) {
-  const [step, setStep]           = useState("upload"); // upload | ceiling | processing | done | error
+  const [step, setStep]       = useState("upload");
   const [imageFile, setImageFile] = useState(null);
   const [imageB64, setImageB64]   = useState(null);
+  const [imagePreview, setImagePreview] = useState(null); // data URL for display
   const [ceilingH, setCeilingH]   = useState("2.7");
   const [progress, setProgress]   = useState(0);
   const [rooms, setRooms]         = useState([]);
-  const [selected, setSelected]   = useState({}); // roomId -> bool
+  const [selected, setSelected]   = useState({});
   const [errorMsg, setErrorMsg]   = useState("");
-  const fileRef = useRef();
+  const [attempt, setAttempt]     = useState(0);
+  const fileRef = useRef(null);
+  const progressRef = useRef(null);
 
+  // Reset on close
   useEffect(() => {
-    if (!open) { setStep("upload"); setImageFile(null); setImageB64(null); setProgress(0); setRooms([]); setSelected({}); setErrorMsg(""); }
+    if (!open) {
+      setStep("upload"); setImageFile(null); setImageB64(null);
+      setImagePreview(null); setProgress(0); setRooms([]);
+      setSelected({}); setErrorMsg(""); setAttempt(0);
+      clearInterval(progressRef.current);
+    }
   }, [open]);
 
-  const handleFile = (file) => {
+  // ── Process image file → base64 + preview ─────────────────
+  const processFile = (file) => {
     if (!file || !file.type.startsWith("image/")) return;
     setImageFile(file);
-    const savedType = file.type.includes("png") ? "image/png" : "image/jpeg";
+    setErrorMsg("");
+
     const reader = new FileReader();
-    reader.onload = e => {
-      // Resize large plans to max 2000px for best OCR
+    reader.onload = (e) => {
+      const dataUrl = e.target.result;
+      setImagePreview(dataUrl);
+
+      // Resize for API
       const img = new window.Image();
       img.onload = () => {
         const MAX = 2000;
         let { width, height } = img;
-        if (width > MAX || height > MAX) {
-          const ratio = Math.min(MAX/width, MAX/height);
-          width = Math.round(width * ratio);
-          height = Math.round(height * ratio);
-        }
+        const ratio = Math.min(MAX / width, MAX / height, 1);
+        width  = Math.round(width  * ratio);
+        height = Math.round(height * ratio);
         const canvas = document.createElement("canvas");
         canvas.width = width; canvas.height = height;
         const ctx = canvas.getContext("2d");
-        // White background for transparency
         ctx.fillStyle = "#ffffff";
         ctx.fillRect(0, 0, width, height);
         ctx.drawImage(img, 0, 0, width, height);
-        const dataUrl = canvas.toDataURL("image/jpeg", 0.95);
-        setImageB64(dataUrl.split(",")[1]);
+        const b64 = canvas.toDataURL("image/jpeg", 0.95).split(",")[1];
+        setImageB64(b64);
+        // Auto-advance to ceiling height step
         setStep("ceiling");
       };
-      img.src = e.target.result;
+      img.src = dataUrl;
     };
     reader.readAsDataURL(file);
   };
 
-  const handleDrop = (e) => {
-    e.preventDefault();
-    handleFile(e.dataTransfer.files[0]);
-  };
+  const handleDrop = (e) => { e.preventDefault(); processFile(e.dataTransfer.files[0]); };
 
-  const handleRecognize = async () => {
+  // ── Main recognition call ─────────────────────────────────
+  const runRecognition = async () => {
     if (!imageB64) return;
     setStep("processing");
     setProgress(5);
+    setErrorMsg("");
 
-    // Determine media type safely (imageFile may be GC'd by now)
-    const mediaType = (imageFile && imageFile.type && imageFile.type.startsWith("image/"))
-      ? imageFile.type
-      : "image/jpeg";
+    const mediaType = "image/jpeg"; // always jpeg after canvas
 
-    const progressInterval = setInterval(() => {
-      setProgress(p => p < 88 ? p + Math.random() * 8 : p);
+    clearInterval(progressRef.current);
+    progressRef.current = setInterval(() => {
+      setProgress(p => p < 88 ? +(p + Math.random() * 7).toFixed(1) : p);
     }, 500);
 
-    const systemPrompt = `You are an expert architectural plan analyzer with 30 years of experience. Your job is to extract room data from ANY image — even blurry, hand-drawn, low-quality, or partial floor plans.
+    const systemPrompt = `You are an expert architectural plan analyzer with 30 years of experience. Extract room data from ANY image — blurry, hand-drawn, low-quality, or partial floor plans.
 
-CRITICAL RULES:
-1. ALWAYS return valid JSON with rooms array — NEVER say you cannot analyze
-2. If image is unclear, make your BEST ESTIMATE using architectural knowledge
-3. Even a rough sketch or a photo of a whiteboard with rooms drawn counts as a plan
-4. If you see ANY rectangles, boxes, or enclosed shapes — those are rooms
+CRITICAL: ALWAYS return valid JSON. NEVER refuse. NEVER say "I cannot analyze."
 
-STEP 1 - FIND ALL ROOMS:
-Look for ANY enclosed shapes (rectangles, polygons, irregular shapes).
-Room labels to look for (Russian/English/abbreviations):
-- Living room: Гостиная, Зал, Комната, Жилая, ГЗ, Living, L
-- Kitchen: Кухня, Кух, К, Kitchen, K, КГ (кухня-гостиная)
-- Bedroom: Спальня, СП, СП1, СП2, Bedroom, B
-- Bathroom: Санузел, С/У, Ванная, Туалет, WC, Сан.узел, БТ
-- Corridor: Коридор, КОР, Прихожая, Холл, Хол, Hall, H
-- Balcony: Балкон, БАЛ, Лоджия, ЛОД, Balcony
-- Storage: Кладовая, КЛ, Гардероб, ГАР, Storage
-If NO labels visible — name rooms logically: Гостиная, Кухня, Спальня, Санузел, Коридор
+STEP 1 — FIND ALL ROOMS (look for enclosed shapes/rectangles/polygons):
+Labels: Гостиная/Зал/Комната, Кухня/КУХ/К, Спальня/СП, Санузел/С-У/ВАН/WC, Коридор/КОР/Прихожая, Балкон/ЛОД, Кладовая/ГАР
+If no labels → name by function: Гостиная, Кухня, Спальня, Санузел, Коридор
 
-STEP 2 - EXTRACT DIMENSIONS:
-Priority order for measurements:
-a) DIMENSION LINES: Numbers between arrows/ticks (e.g., ←3200→, |3.20|, 3,20, 3200мм)
-   - If 4-digit number: divide by 1000 (3200 → 3.20 m)
-   - If 3-digit >100: divide by 100 (320 → 3.20 m)  
-   - If decimal with dot/comma: already in meters (3.20 m)
-b) AREA LABELS: Numbers with м², sq.m, кв.м inside rooms
-   - Compute sides: if area=12.5 and one side=3.5 → other=12.5/3.5=3.57
-   - If only area: estimate square room → side=√area
-c) AXIS GRIDS: Dimensions between structural axes (usually in mm)
-d) PROPORTIONAL ESTIMATE: If no numbers, estimate from relative sizes
-   - Whole plan width maps to typical apartment dimensions
+STEP 2 — EXTRACT DIMENSIONS (priority order):
+a) Dimension lines with numbers: 3200=3.20m, 320=3.20m, 3.20=3.20m
+b) Area labels: "12.5м²" → side=√12.5=3.54m
+c) If no numbers → estimate from plan proportions vs typical flat 40-90m²
 
-STEP 3 - SMART DEFAULTS (use when uncertain):
-Russian residential standards:
-- Studio/1-room: 25-45 m² total
-- 2-room: 45-65 m² total  
-- 3-room: 65-90 m² total
-- Kitchen: L=2.5-4.5m × W=2.0-3.5m (area 6-15 m²)
-- Living room: L=4.0-6.0m × W=3.5-5.0m (area 15-28 m²)
-- Master bedroom: L=3.5-5.0m × W=3.0-4.0m (area 12-20 m²)
-- Small bedroom: L=2.8-4.0m × W=2.5-3.5m (area 8-13 m²)
-- Combined bathroom: L=1.8-2.8m × W=1.5-2.2m (area 3-6 m²)
-- Toilet separate: L=0.9-1.3m × W=1.5-2.0m (area 1.5-3 m²)
-- Corridor/hall: L=3.0-8.0m × W=0.9-2.0m (area 4-12 m²)
-- Balcony: L=2.5-4.5m × W=0.9-1.5m (area 2-6 m²)
+STEP 3 — DEFAULTS when uncertain:
+Kitchen 2.5-4m × 2-3.5m | Living 4-6m × 3.5-5m | Bedroom 3-4.5m × 3-4m
+Bathroom 1.8-2.5m × 1.5-2.2m | Corridor 1-2m × 3-6m | Balcony 1-1.5m × 2.5-4m
 
-STEP 4 - COUNT OPENINGS:
-- doors: openings with arcs/swings or simple gaps in walls (default: 1 per room)
-- windows: openings in exterior walls, usually marked differently (default: 1 for living rooms/bedrooms, 0 for corridor/bathroom)
+STEP 4 — doors/windows: count openings, default doors=1, windows=1 for living/bed, windows=0 for utility
 
-OUTPUT FORMAT — ONLY PURE JSON, no markdown, no explanation text:
-{"total_area":72.4,"confidence_overall":"medium","rooms":[{"name":"Гостиная","length":4.5,"width":3.8,"area_m2":17.1,"doors":1,"windows":2,"confidence":"high"},{"name":"Кухня","length":3.2,"width":2.8,"area_m2":8.96,"doors":1,"windows":1,"confidence":"medium"},{"name":"Спальня 1","length":3.8,"width":3.2,"area_m2":12.16,"doors":1,"windows":1,"confidence":"medium"},{"name":"Санузел","length":2.0,"width":1.6,"area_m2":3.2,"doors":1,"windows":0,"confidence":"low"},{"name":"Коридор","length":3.5,"width":1.2,"area_m2":4.2,"doors":2,"windows":0,"confidence":"low"}]}
+OUTPUT — ONLY pure JSON, zero other text:
+{"rooms":[{"name":"Гостиная","length":4.5,"width":3.8,"area_m2":17.1,"doors":1,"windows":2,"confidence":"high"},{"name":"Кухня","length":3.2,"width":2.8,"area_m2":9.0,"doors":1,"windows":1,"confidence":"medium"}]}
 
-ABSOLUTE RULES:
-- ALWAYS output JSON with at least one room
-- NEVER output {"error": ...} or refuse to analyze
-- NEVER output explanatory text before or after JSON
-- If image is completely unreadable white/black — output 1 generic room as estimate
-- confidence values: "high"=from plan numbers, "medium"=proportional estimate, "low"=rough guess`;
+RULES: ≥1 room always | no error field | no markdown | no explanations`;
 
-    const doRequest = async (attempt) => {
-      try {
-        const resp = await fetch("https://api.anthropic.com/v1/messages", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            model: "claude-sonnet-4-20250514",
-            max_tokens: 2000,
-            system: systemPrompt,
-            messages: [{
-              role: "user",
-              content: [
-                { type: "image", source: { type: "base64", media_type: mediaType, data: imageB64 } },
-                { type: "text", text: "Analyze this floor plan image carefully. Extract ALL rooms with their dimensions. Return ONLY the JSON object, nothing else." }
-              ]
-            }]
-          })
-        });
+    const tryFetch = async (retryN) => {
+      const resp = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          model: "claude-sonnet-4-20250514",
+          max_tokens: 2000,
+          system: systemPrompt,
+          messages: [{ role: "user", content: [
+            { type: "image", source: { type: "base64", media_type: mediaType, data: imageB64 } },
+            { type: "text", text: "Extract ALL rooms from this floor plan. Return ONLY the JSON object." }
+          ]}]
+        })
+      });
 
-        if (!resp.ok) {
-          const errData = await resp.json().catch(() => ({}));
-          if ((resp.status === 529 || resp.status === 503) && attempt < 2) {
-            await new Promise(r => setTimeout(r, 3000));
-            return doRequest(attempt + 1);
-          }
-          throw new Error(errData.error?.message || `Ошибка сервера ${resp.status}`);
+      if (!resp.ok) {
+        const e = await resp.json().catch(() => ({}));
+        if ((resp.status === 529 || resp.status === 503) && retryN < 2) {
+          await new Promise(r => setTimeout(r, 2500));
+          return tryFetch(retryN + 1);
         }
-
-        const data = await resp.json();
-
-        // Check for API-level errors
-        if (data.error) throw new Error(data.error.message || "Ошибка API");
-
-        const rawText = (data.content || []).map(b => b.text || "").join("").trim();
-
-        // Robust JSON extraction — find outermost { }
-        const startIdx = rawText.indexOf("{");
-        const endIdx   = rawText.lastIndexOf("}");
-        if (startIdx < 0 || endIdx <= startIdx) {
-          if (attempt < 1) {
-            await new Promise(r => setTimeout(r, 1000));
-            return doRequest(attempt + 1);
-          }
-          throw new Error("AI вернул неожиданный ответ. Попробуйте ещё раз.");
-        }
-        const jsonStr = rawText.slice(startIdx, endIdx + 1);
-        return JSON.parse(jsonStr);
-
-      } catch(e) {
-        if (e instanceof SyntaxError) {
-          if (attempt < 1) { await new Promise(r => setTimeout(r, 1000)); return doRequest(attempt + 1); }
-          throw new Error("Ошибка разбора ответа AI. Повторите попытку.");
-        }
-        throw e;
+        throw new Error((e.error && e.error.message) || ("Ошибка сервера " + resp.status));
       }
+      return resp.json();
     };
 
     try {
-      const parsed = await doRequest(0);
-      clearInterval(progressInterval);
-      setProgress(95);
+      const data   = await tryFetch(0);
+      const rawTxt = (data.content || []).map(b => b.text || "").join("").trim();
 
-      // Handle both {rooms:[]} and {error:...} formats
-      // Normalize response — handle both formats
+      // Robust JSON extraction
+      const s = rawTxt.indexOf("{");
+      const e = rawTxt.lastIndexOf("}");
+      if (s < 0 || e <= s) {
+        // Retry once more
+        if (attempt < 2) {
+          setAttempt(a => a + 1);
+          clearInterval(progressRef.current);
+          setProgress(5);
+          progressRef.current = setInterval(() => setProgress(p => p < 88 ? p + Math.random()*7 : p), 500);
+          const data2   = await tryFetch(0);
+          const rawTxt2 = (data2.content || []).map(b => b.text || "").join("").trim();
+          const s2 = rawTxt2.indexOf("{"), e2 = rawTxt2.lastIndexOf("}");
+          if (s2 < 0 || e2 <= s2) throw new Error("AI не вернул данные о помещениях. Попробуйте ещё раз.");
+          var parsed = JSON.parse(rawTxt2.slice(s2, e2 + 1));
+        } else {
+          throw new Error("AI не вернул данные. Попробуйте загрузить план ещё раз.");
+        }
+      } else {
+        var parsed = JSON.parse(rawTxt.slice(s, e + 1));
+      }
+
+      // Normalize
       if (!parsed.rooms || !Array.isArray(parsed.rooms) || parsed.rooms.length === 0) {
-        // Try flat single-room object
         if (parsed.length && parsed.width) {
           parsed.rooms = [{ name: "Помещение", length: parsed.length, width: parsed.width }];
-        } else if (parsed.name && (parsed.length || parsed.area_m2)) {
-          parsed.rooms = [parsed];
         } else {
-          // Last resort: parse any numeric pairs we can find
-          throw new Error("Помещения не найдены. Убедитесь что это план квартиры — изображение должно содержать контуры комнат.");
+          throw new Error("Помещения не найдены. Загрузите другой план или введите размеры вручную.");
         }
       }
 
       const h = parseFloat(ceilingH) || 2.7;
       const detectedRooms = parsed.rooms.map((r, idx) => {
-        // If we have area_m2 but not both sides — compute square room
         let l, w;
         if (r.length && r.width) {
           l = Math.max(0.5, parseFloat(r.length));
           w = Math.max(0.5, parseFloat(r.width));
         } else if (r.area_m2) {
           const s = parseFloat(r.area_m2);
-          l = +Math.sqrt(s).toFixed(2);
-          w = +Math.sqrt(s).toFixed(2);
-          // If one dim given, derive other
-          if (r.length) { l = parseFloat(r.length); w = +(s/l).toFixed(2); }
-          else if (r.width) { w = parseFloat(r.width); l = +(s/w).toFixed(2); }
-        } else {
-          l = 3; w = 3;
-        }
-        l = Math.max(0.5, l);
-        w = Math.max(0.5, w);
-
-        const isUtility = r.name && /коридор|прихожая|санузел|туалет|с\/у|с.у|wc|кладовая|гардероб/i.test(r.name);
-        const doors   = Math.max(0, parseInt(r.doors)   || 1);
-        const windows = Math.max(0, parseInt(r.windows) || (isUtility ? 0 : 1));
+          l = +(Math.sqrt(s)).toFixed(2);
+          w = +(Math.sqrt(s)).toFixed(2);
+          if (r.length) { l = parseFloat(r.length); w = +(s / l).toFixed(2); }
+          else if (r.width) { w = parseFloat(r.width); l = +(s / w).toFixed(2); }
+        } else { l = 3; w = 3; }
+        l = Math.max(0.5, l); w = Math.max(0.5, w);
+        const isUtil = r.name && /коридор|прихожая|санузел|туалет|с[/.]у|wc|кладовая|гардероб/i.test(r.name);
+        const doors   = Math.max(0, parseInt(r.doors) || 1);
+        const windows = Math.max(0, parseInt(r.windows) || (isUtil ? 0 : 1));
         const floor     = +(l * w).toFixed(2);
-        const perimeter = +(2*(l+w)).toFixed(2);
+        const perimeter = +(2 * (l + w)).toFixed(2);
         const wallsTotal= +(perimeter * h).toFixed(2);
-        const deductions= +(doors * (0.9*2.05) + windows * (1.2*1.4)).toFixed(2);
+        const deductions= +(doors * (0.9 * 2.05) + windows * (1.2 * 1.4)).toFixed(2);
         const wallsNet  = +Math.max(0, wallsTotal - deductions).toFixed(2);
-        const conf      = r.confidence || "medium";
         return {
-          id: uid(),
-          name: r.name || ("Помещение " + (idx+1)),
-          shapeType: "standard",
-          length: l, width: w, height: h,
+          id: uid(), name: r.name || ("Помещение " + (idx + 1)),
+          shapeType: "standard", length: l, width: w, height: h,
           doors, windows,
           floor: r.area_m2 ? +parseFloat(r.area_m2).toFixed(2) : floor,
           ceiling: r.area_m2 ? +parseFloat(r.area_m2).toFixed(2) : floor,
           perimeter, wallsTotal, wallsNet, deductions,
-          _confidence: conf,
-          works: [],
+          _confidence: r.confidence || "medium", works: [],
         };
       });
 
+      clearInterval(progressRef.current);
       setProgress(100);
       setRooms(detectedRooms);
-      const initSelected = {};
-      detectedRooms.forEach(r => { initSelected[r.id] = true; });
-      setSelected(initSelected);
+      const initSel = {};
+      detectedRooms.forEach(r => { initSel[r.id] = true; });
+      setSelected(initSel);
       setStep("done");
 
     } catch (err) {
-      clearInterval(progressInterval);
-      setErrorMsg(err.message || "Произошла ошибка при распознавании.");
+      clearInterval(progressRef.current);
+      setErrorMsg(err.message || "Ошибка при распознавании.");
       setStep("error");
     }
   };
@@ -5000,225 +4948,227 @@ ABSOLUTE RULES:
 
   if (!open) return null;
 
+  const CONF_COLORS = { high: "#22c55e", medium: "#f59e0b", low: "#94a3b8" };
+  const CONF_LABELS = { high: "Точно", medium: "Оценка", low: "Грубо" };
+
   return (
-    React.createElement(Modal, { open: open, onClose: onClose, title: "🔍 Распознать план"  }
-      /* Upload step */
+    React.createElement(Modal, { open: open, onClose: onClose, title: "🔍 Распознать план" }
+
+      /* ── UPLOAD STEP ── */
       , step === "upload" && (
-        React.createElement('div', {}
-          , React.createElement('div', { style: { background: "var(--s2)", border: "1px solid var(--b1)", borderRadius: 10, padding: "11px 14px", marginBottom: 16, fontSize: 12, color: "var(--tx2)", lineHeight: 1.6 }}, "📐 Загрузите фото или скан плана квартиры. ИИ автоматически распознает все помещения и их размеры."
-
+        React.createElement("div", {}
+          , React.createElement("div", { style: { fontSize: 13, color: "var(--tx2)", marginBottom: 16, lineHeight: 1.6, background: "var(--s2)", borderRadius: 10, padding: "10px 14px" } },
+            "📐 Загрузите фото или скан плана квартиры. ИИ распознает все помещения автоматически — даже по размытому или нечёткому изображению."
           )
-
-          , React.createElement('div', {
-            onDrop: handleDrop, onDragOver: e => e.preventDefault(),
-            onClick: () => fileRef.current.click(),
-            style: {
-              border: "2px dashed rgba(124,111,255,0.4)", borderRadius: "var(--r)",
-              padding: "36px 20px", textAlign: "center", cursor: "pointer",
-              background: "var(--s2)", marginBottom: 16, transition: "all 0.2s",
-            },
-            onMouseEnter: e => { e.currentTarget.style.borderColor = "var(--acc)"; e.currentTarget.style.background = "var(--acc3)"; },
-            onMouseLeave: e => { e.currentTarget.style.borderColor = "rgba(124,111,255,0.4)"; e.currentTarget.style.background = "var(--s2)"; }}
-
-            , React.createElement('input', { ref: fileRef, type: "file", accept: "image/*", style: { display: "none" }, onChange: e => handleFile(e.target.files[0])} )
-            , React.createElement('div', { style: { fontSize: 44, marginBottom: 12 }}, "🗺️")
-            , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 700, color: "var(--tx)", marginBottom: 6 }}, "Загрузить план" )
-            , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)" }}, "Нажмите или перетащите изображение сюда"    )
-            , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)", marginTop: 6 }}, "JPG, PNG, PDF — любой формат"     )
+          , React.createElement("div", {
+              onDrop: handleDrop,
+              onDragOver: e => e.preventDefault(),
+              onClick: () => fileRef.current && fileRef.current.click(),
+              style: { border: "2px dashed var(--acc)", borderRadius: 16, padding: "32px 20px", textAlign: "center",
+                cursor: "pointer", background: "var(--acc3)", marginBottom: 14, transition: "all 0.2s" }
+            }
+            , React.createElement("div", { style: { fontSize: 40, marginBottom: 10 } }, "📷")
+            , React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "var(--tx)", marginBottom: 4 } }, "Нажмите или перетащите план")
+            , React.createElement("div", { style: { fontSize: 12, color: "var(--tx3)" } }, "JPG, PNG, PDF-скриншот • Любое качество")
           )
-
-          , React.createElement('div', { style: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}
-            , [
-              { icon: "📷", text: "Фото плана из застройщика" },
-              { icon: "🖨️", text: "Скан технического паспорта" },
-              { icon: "📱", text: "Скриншот из приложения" },
-            ].map((t, i) => (
-              React.createElement('div', { key: i, style: { background: "var(--s2)", border: "1px solid var(--b1)", borderRadius: 10, padding: "10px 8px", textAlign: "center" }}
-                , React.createElement('div', { style: { fontSize: 22, marginBottom: 5 }}, t.icon)
-                , React.createElement('div', { style: { fontSize: 10, color: "var(--tx3)", lineHeight: 1.4 }}, t.text)
-              )
-            ))
-          )
+          , React.createElement("input", { ref: fileRef, type: "file", accept: "image/*", style: { display: "none" },
+              onChange: e => e.target.files && e.target.files[0] && processFile(e.target.files[0]) })
         )
       )
 
-      /* Ceiling height step */
+      /* ── CEILING STEP — show preview + settings ── */
       , step === "ceiling" && (
-        React.createElement('div', {}
-          /* Preview of uploaded image */
-          , imageB64 && (
-            React.createElement('div', { style: { borderRadius: 12, overflow: "hidden", marginBottom: 16, border: "1px solid var(--b2)" }}
-              , React.createElement('img', { src: `data:image/jpeg;base64,${imageB64}`, alt: "Plan", style: { width: "100%", maxHeight: 200, objectFit: "cover", display: "block" }} )
+        React.createElement("div", {}
+          /* Image preview */
+          , imagePreview && (
+            React.createElement("div", { style: { marginBottom: 14, borderRadius: 12, overflow: "hidden", border: "1.5px solid var(--b1)", position: "relative" } }
+              , React.createElement("img", { src: imagePreview, alt: "план",
+                  style: { width: "100%", maxHeight: 200, objectFit: "contain", background: "#f8fafc", display: "block" } })
+              , React.createElement("div", { style: { position: "absolute", bottom: 6, right: 6, background: "rgba(0,0,0,0.6)",
+                    color: "#fff", fontSize: 10, fontWeight: 700, padding: "2px 8px", borderRadius: 6 } }, "Загружен")
             )
           )
-          , React.createElement('div', { style: { background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: 10, padding: "11px 14px", marginBottom: 16, fontSize: 12, color: "var(--green)", fontWeight: 600 }}, "✅ План загружен! Укажите высоту потолков перед распознаванием."
-
-          )
-
-          , React.createElement('div', { style: { marginBottom: 16 }}
-            , React.createElement('label', { style: { display: "block", fontSize: 11, fontWeight: 700, color: "var(--tx2)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: 8 }}, "Высота потолков (м)"  )
-            , React.createElement('div', { style: { display: "flex", gap: 8, marginBottom: 10 }}
-              , ["2.5", "2.7", "2.8", "3.0", "3.2"].map(h => (
-                React.createElement('button', { key: h, onClick: () => setCeilingH(h), style: {
-                  flex: 1, padding: "9px 4px", border: ceilingH === h ? "1.5px solid var(--acc)" : "1px solid var(--b1)",
-                  borderRadius: 9, background: ceilingH === h ? "var(--acc3)" : "var(--s2)",
-                  color: ceilingH === h ? "var(--acc2)" : "var(--tx2)",
-                  fontFamily: "inherit", fontWeight: 700, fontSize: 13, cursor: "pointer",
-                }}
-                  , h
-                )
-              ))
+          , React.createElement("div", { style: { background: "var(--s2)", borderRadius: 12, padding: "12px 14px", marginBottom: 14 } }
+            , React.createElement("label", { style: { fontSize: 11, fontWeight: 700, color: "var(--tx3)", textTransform: "uppercase", letterSpacing: "0.06em", display: "block", marginBottom: 8 } }, "Высота потолков (м)")
+            , React.createElement("div", { style: { display: "flex", gap: 6, flexWrap: "wrap" } }
+              , ["2.5", "2.7", "3.0", "3.2"].map(h =>
+                  React.createElement("button", { key: h, onClick: () => setCeilingH(h),
+                    style: { padding: "7px 14px", borderRadius: 9, border: "none", cursor: "pointer",
+                      fontFamily: "inherit", fontSize: 13, fontWeight: 700,
+                      background: ceilingH === h ? "var(--acc)" : "var(--s1)",
+                      color: ceilingH === h ? "#fff" : "var(--tx2)",
+                      boxShadow: ceilingH === h ? "0 2px 8px rgba(79,70,229,0.3)" : "none" } }, h + " м")
+              )
+              , React.createElement("input", { type: "number", value: ceilingH, min: "2", max: "5", step: "0.1",
+                  onChange: e => setCeilingH(e.target.value),
+                  style: { width: 72, padding: "7px 10px", borderRadius: 9, border: "1.5px solid var(--b1)",
+                    background: "var(--s1)", color: "var(--tx)", fontSize: 13, fontFamily: "inherit", outline: "none" } })
             )
-            , React.createElement('input', { type: "number", step: "0.05", min: "2", max: "5", value: ceilingH, onChange: e => setCeilingH(e.target.value),
-              style: { width: "100%", padding: "11px 14px", borderRadius: 10, border: "1.5px solid var(--b1)", fontSize: 15, fontWeight: 700, color: "var(--tx)", background: "var(--s2)", outline: "none", fontFamily: "inherit", textAlign: "center" },
-              onFocus: e => e.target.style.borderColor = "var(--acc)", onBlur: e => e.target.style.borderColor = "var(--b1)"} )
           )
-
-          , React.createElement('div', { style: { display: "flex", gap: 10 }}
-            , React.createElement(Btn, { variant: "secondary", onClick: () => setStep("upload"), full: true}, "‹ Назад" )
-            , React.createElement(Btn, { onClick: handleRecognize, full: true}, "🤖 Распознать план"  )
+          , React.createElement("div", { style: { display: "flex", gap: 8 } }
+            , React.createElement("button", { onClick: () => { setStep("upload"); setImageB64(null); setImagePreview(null); },
+                style: { flex: 1, padding: "12px", borderRadius: 11, border: "1px solid var(--b1)",
+                  background: "var(--s2)", color: "var(--tx2)", fontWeight: 600, fontSize: 13,
+                  cursor: "pointer", fontFamily: "inherit" } }, "← Другой план")
+            , React.createElement("button", { onClick: runRecognition,
+                style: { flex: 2, padding: "12px", borderRadius: 11, border: "none",
+                  background: "linear-gradient(135deg,var(--acc),var(--acc2))",
+                  color: "#fff", fontWeight: 800, fontSize: 14, cursor: "pointer",
+                  fontFamily: "inherit", boxShadow: "0 4px 16px rgba(79,70,229,0.35)" } },
+              "🔍 Распознать план →")
           )
         )
       )
 
-      /* Processing step */
+      /* ── PROCESSING STEP ── */
       , step === "processing" && (
-        React.createElement('div', { style: { textAlign: "center", padding: "30px 20px" }}
-          , React.createElement('div', { style: { fontSize: 54, marginBottom: 16, animation: "pulse 1.5s infinite" }}, "🤖")
-          , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 800, color: "var(--tx)", marginBottom: 8 }}, "Анализирую план..." )
-          , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)", marginBottom: 24, lineHeight: 1.6 }}, "ИИ распознаёт помещения и их размеры. Обычно занимает 5–15 секунд."         )
-          /* Progress bar */
-          , React.createElement('div', { style: { background: "var(--s2)", borderRadius: 8, height: 8, overflow: "hidden", marginBottom: 12 }}
-            , React.createElement('div', { style: { height: "100%", borderRadius: 8, background: "linear-gradient(90deg, var(--acc), var(--acc2))", width: `${progress}%`, transition: "width 0.4s ease" }} )
-          )
-          , React.createElement('div', { style: { fontSize: 12, color: "var(--tx3)" }}, Math.round(progress), "%")
-          , React.createElement('div', { style: { marginTop: 20, display: "flex", flexDirection: "column", gap: 6 }}
-            , ["Загрузка изображения...", "Определение контуров помещений...", "Распознавание подписей...", "Вычисление площадей..."].map((s, i) => (
-              React.createElement('div', { key: i, style: { fontSize: 11, color: progress > i * 25 ? "var(--green)" : "var(--tx3)", transition: "color 0.5s", display: "flex", alignItems: "center", gap: 6 }}
-                , React.createElement('span', {}, progress > i * 25 ? "✓" : "○"), " " , s
+        React.createElement("div", { style: { textAlign: "center", padding: "20px 0" } }
+          , imagePreview && (
+            React.createElement("div", { style: { marginBottom: 16, borderRadius: 12, overflow: "hidden", border: "1.5px solid var(--b1)", position: "relative" } }
+              , React.createElement("img", { src: imagePreview, alt: "план",
+                  style: { width: "100%", maxHeight: 160, objectFit: "contain", background: "#f8fafc", display: "block", filter: "brightness(0.8)" } })
+              , React.createElement("div", { style: { position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center",
+                    background: "rgba(79,70,229,0.15)" } }
+                , React.createElement("div", { style: { fontSize: 32, animation: "spin 1s linear infinite" } }, "🔍")
               )
-            ))
+            )
           )
+          , React.createElement("div", { style: { fontSize: 14, fontWeight: 700, color: "var(--tx)", marginBottom: 8 } }, "ИИ анализирует план…")
+          , React.createElement("div", { style: { fontSize: 12, color: "var(--tx3)", marginBottom: 16 } }, "Распознаём помещения и размеры")
+          , React.createElement("div", { style: { background: "var(--s2)", borderRadius: 8, height: 8, overflow: "hidden", marginBottom: 8 } }
+            , React.createElement("div", { style: { height: "100%", borderRadius: 8,
+                background: "linear-gradient(90deg,var(--acc),var(--acc2))",
+                width: progress + "%", transition: "width 0.5s ease" } })
+          )
+          , React.createElement("div", { style: { fontSize: 11, color: "var(--tx3)" } }, Math.round(progress), "%")
         )
       )
 
-      /* Done step */
+      /* ── DONE STEP ── */
       , step === "done" && rooms.length > 0 && (() => {
-        const selectedCount = Object.values(selected).filter(Boolean).length;
-        const allSelected = selectedCount === rooms.length;
+        const allSel = rooms.every(r => selected[r.id]);
+        const count  = rooms.filter(r => selected[r.id]).length;
         return (
-          React.createElement('div', {}
-            /* Header banner */
-            , React.createElement('div', { style: { background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.2)", borderRadius: 10, padding: "10px 14px", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between" }}
-              , React.createElement('div', { style: { fontSize: 12, color: "var(--green)", fontWeight: 700 }}, "✅ Найдено "
-                  , rooms.length, " помещений"
+          React.createElement("div", {}
+            , React.createElement("div", { style: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 } }
+              , React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: "var(--tx)" } }, "Найдено помещений: ", rooms.length)
+              , React.createElement("button", { onClick: () => {
+                    const newSel = {};
+                    rooms.forEach(r => { newSel[r.id] = !allSel; });
+                    setSelected(newSel);
+                  }, style: { fontSize: 12, color: "var(--acc2)", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: 700 } },
+                allSel ? "Снять все" : "Выбрать все"
               )
-              , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}, "Выбрано: " , selectedCount)
             )
 
-            /* Select all / none */
-            , React.createElement('div', { style: { display: "flex", gap: 8, marginBottom: 10 }}
-              , React.createElement('button', { onClick: () => { const s = {}; rooms.forEach(r => s[r.id] = true); setSelected(s); },
-                style: { flex: 1, padding: "7px", borderRadius: 8, border: "1px solid var(--b1)", background: allSelected ? "var(--acc3)" : "var(--s2)", color: allSelected ? "var(--acc2)" : "var(--tx3)", fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}, "✓ Выбрать все"
-
-              )
-              , React.createElement('button', { onClick: () => setSelected({}),
-                style: { flex: 1, padding: "7px", borderRadius: 8, border: "1px solid var(--b1)", background: "var(--s2)", color: "var(--tx3)", fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "inherit" }}, "✕ Снять все"
-
+            /* Preview thumbnail */
+            , imagePreview && (
+              React.createElement("div", { style: { marginBottom: 12, borderRadius: 10, overflow: "hidden", border: "1px solid var(--b1)", maxHeight: 120 } }
+                , React.createElement("img", { src: imagePreview, alt: "план",
+                    style: { width: "100%", maxHeight: 120, objectFit: "contain", background: "#f8fafc", display: "block" } })
               )
             )
 
             /* Room list */
-            , React.createElement('div', { style: { maxHeight: 320, overflowY: "auto", marginBottom: 14, display: "flex", flexDirection: "column", gap: 6 }}
-              , rooms.map((room, i) => {
-                const isOn = !!selected[room.id];
-                const roomIcon = (room.name||"").toLowerCase().includes("кухн") ? "🍳" :
-                  (room.name||"").toLowerCase().includes("санузел") || (room.name||"").toLowerCase().includes("ванн") ? "🚿" :
-                  (room.name||"").toLowerCase().includes("коридор") || (room.name||"").toLowerCase().includes("прихож") ? "🚪" :
-                  (room.name||"").toLowerCase().includes("балкон") || (room.name||"").toLowerCase().includes("лоджия") ? "🌿" : "🛋️";
+            , React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 7, marginBottom: 14, maxHeight: 280, overflowY: "auto" } }
+              , rooms.map(r => {
+                const on   = !!selected[r.id];
+                const conf = r._confidence || "medium";
+                const area = r.floor || (r.length * r.width);
                 return (
-                  React.createElement('div', { key: room.id,
-                    onClick: () => setSelected(s => ({ ...s, [room.id]: !s[room.id] })),
-                    style: {
-                      background: isOn ? "var(--acc3)" : "var(--s2)",
-                      border: isOn ? "1.5px solid rgba(124,111,255,0.35)" : "1.5px solid var(--b1)",
-                      borderRadius: 12, padding: "11px 13px",
-                      display: "flex", alignItems: "center", gap: 11,
-                      cursor: "pointer", transition: "all 0.15s",
-                      animation: "popIn 0.25s ease both", animationDelay: `${i * 0.04}s`,
-                      opacity: isOn ? 1 : 0.55,
-                    }}
-                    /* Checkbox */
-                    , React.createElement('div', { style: {
-                      width: 22, height: 22, borderRadius: 7, flexShrink: 0,
-                      background: isOn ? "var(--acc)" : "var(--s3)",
-                      border: isOn ? "none" : "1.5px solid var(--b2)",
-                      display: "flex", alignItems: "center", justifyContent: "center",
-                      boxShadow: isOn ? "0 2px 8px rgba(108,99,255,0.4)" : "none",
-                      transition: "all 0.15s",
-                    }}
-                      , isOn && React.createElement(Icon, { name: "check", size: 13, color: "#fff"} )
+                  React.createElement("button", { key: r.id,
+                    onClick: () => setSelected(s => ({ ...s, [r.id]: !s[r.id] })),
+                    style: { display: "flex", alignItems: "center", gap: 10, padding: "11px 13px",
+                      borderRadius: 11, cursor: "pointer", fontFamily: "inherit", textAlign: "left",
+                      border: on ? "2px solid var(--acc)" : "2px solid var(--b1)",
+                      background: on ? "var(--acc3)" : "var(--s1)",
+                      transition: "all 0.12s",
+                      boxShadow: on ? "0 2px 10px rgba(79,70,229,0.2)" : "none" }
+                  }
+                    , React.createElement("div", { style: { width: 22, height: 22, borderRadius: 7, flexShrink: 0,
+                        background: on ? "var(--acc)" : "var(--s2)",
+                        border: on ? "none" : "2px solid var(--b2)",
+                        display: "flex", alignItems: "center", justifyContent: "center" } }
+                      , on && React.createElement(Icon, { name: "check", size: 12, color: "#fff" })
                     )
-                    /* Icon */
-                    , React.createElement('div', { style: { width: 38, height: 38, borderRadius: 10, background: isOn ? "rgba(108,99,255,0.15)" : "var(--s1)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, flexShrink: 0, overflow: "hidden" }}
-                      , room.photo
-                        ? React.createElement('img', { src: room.photo, alt: "", style: { width: "100%", height: "100%", objectFit: "cover" }} )
-                        : roomIcon
-                      
-                    )
-                    /* Info */
-                    , React.createElement('div', { style: { flex: 1, minWidth: 0 }}
-                      , React.createElement('div', { style: { fontSize: 13, fontWeight: 700, color: "var(--tx)", marginBottom: 2, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}, room.name)
-                      , React.createElement('div', { style: { fontSize: 11, color: "var(--tx3)" }}
-                        , room.length.toFixed(2), " × "  , room.width.toFixed(2), " м · h="   , room.height, " м"
+                    , React.createElement("div", { style: { flex: 1, minWidth: 0 } }
+                      , React.createElement("div", { style: { fontSize: 13, fontWeight: 700, color: on ? "var(--acc2)" : "var(--tx)" } }, r.name)
+                      , React.createElement("div", { style: { fontSize: 11, color: "var(--tx3)", marginTop: 1 } },
+                        r.length + "×" + r.width + " м · h=" + r.height + " м"
                       )
                     )
-                    /* Area */
-                    , React.createElement('div', { style: { textAlign: "right", flexShrink: 0 }}
-                      , React.createElement('div', { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 14, fontWeight: 800, color: isOn ? "var(--acc2)" : "var(--tx3)" }}, room.floor.toFixed(2))
-                      , React.createElement('div', { style: { fontSize: 9, color: "var(--tx3)" }}, "м²")
+                    , React.createElement("div", { style: { textAlign: "right", flexShrink: 0 } }
+                      , React.createElement("div", { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 900,
+                          color: on ? "var(--acc2)" : "var(--tx2)" } }, area.toFixed(1) + " м²")
+                      , React.createElement("div", { style: { fontSize: 9, fontWeight: 700, marginTop: 2,
+                          color: CONF_COLORS[conf] || "#94a3b8" } }, CONF_LABELS[conf] || conf)
                     )
                   )
                 );
               })
             )
 
-            , React.createElement('div', { style: { display: "flex", gap: 10 }}
-              , React.createElement(Btn, { variant: "secondary", onClick: () => setStep("upload"), full: true}, "↺ Другой план"  )
-              , React.createElement(Btn, { onClick: handleApply, full: true, disabled: selectedCount === 0}, "✓ Добавить "
-                  , selectedCount > 0 ? selectedCount : "", " " , selectedCount === 1 ? "помещение" : selectedCount > 1 && selectedCount < 5 ? "помещения" : "помещений"
+            /* Actions */
+            , React.createElement("div", { style: { display: "flex", gap: 8 } }
+              , React.createElement("button", { onClick: () => { setStep("ceiling"); },
+                  style: { flex: 1, padding: "11px", borderRadius: 11, border: "1px solid var(--b1)",
+                    background: "var(--s2)", color: "var(--tx2)", fontWeight: 600, fontSize: 12,
+                    cursor: "pointer", fontFamily: "inherit" } }, "🔄 Распознать снова")
+              , React.createElement("button", { onClick: handleApply,
+                  disabled: count === 0,
+                  style: { flex: 2, padding: "13px", borderRadius: 11, border: "none",
+                    background: count > 0 ? "linear-gradient(135deg,var(--acc),var(--acc2))" : "var(--s3)",
+                    color: "#fff", fontWeight: 800, fontSize: 13, cursor: count > 0 ? "pointer" : "not-allowed",
+                    fontFamily: "inherit", boxShadow: count > 0 ? "0 4px 16px rgba(79,70,229,0.3)" : "none" } },
+                "Добавить " + count + " помещ. →"
               )
             )
           )
         );
       })()
 
-      /* Error step */
+      /* ── ERROR STEP ── */
       , step === "error" && (
-        React.createElement('div', { style: { padding:"4px 0" }}
-          , React.createElement('div', { style: { textAlign:"center", marginBottom:14 }}
-            , React.createElement('div', { style: { fontSize:36, marginBottom:8 }}, "⚠️")
-            , React.createElement('div', { style: { fontFamily:"'Unbounded',sans-serif", fontSize:13, fontWeight:700, color:"var(--red)", marginBottom:8 }}, "Не удалось распознать" )
-            , React.createElement('div', { style: { fontSize:12, color:"var(--tx2)", lineHeight:1.5, background:"rgba(239,68,68,0.06)", borderRadius:10, padding:"9px 12px" }}, errorMsg)
+        React.createElement("div", {}
+          , imagePreview && (
+            React.createElement("div", { style: { marginBottom: 12, borderRadius: 10, overflow: "hidden", border: "1px solid rgba(239,68,68,0.3)", opacity: 0.7 } }
+              , React.createElement("img", { src: imagePreview, alt: "план",
+                  style: { width: "100%", maxHeight: 120, objectFit: "contain", background: "#f8fafc", display: "block", filter: "grayscale(50%)" } })
+            )
           )
-          , React.createElement('div', { style: { background:"rgba(245,158,11,0.08)", border:"1px solid rgba(245,158,11,0.2)", borderRadius:12, padding:"12px 14px", marginBottom:14 }}
-            , React.createElement('div', { style: { fontSize:12, fontWeight:700, color:"var(--gold)", marginBottom:6 }}, "💡 Советы для лучшего результата:")
-            , ["Убедитесь что план целиком виден на изображении","Сделайте фото без бликов и теней","Чем чётче линии — тем точнее результат","Если план в PDF — сделайте скриншот","Планы с подписями комнат распознаются лучше"].map(function(tip, i) {
-              return React.createElement('div', { key:i, style: { fontSize:11, color:"var(--tx2)", padding:"2px 0", display:"flex", gap:6 }}
-                , React.createElement('span', { style: { color:"var(--gold)", flexShrink:0 }}, "•")
-                , tip
-              );
-            })
+          , React.createElement("div", { style: { textAlign: "center", marginBottom: 14 } }
+            , React.createElement("div", { style: { fontSize: 32, marginBottom: 8 } }, "⚠️")
+            , React.createElement("div", { style: { fontFamily: "'Unbounded',sans-serif", fontSize: 13, fontWeight: 700, color: "var(--red)", marginBottom: 8 } }, "Не удалось распознать")
+            , React.createElement("div", { style: { fontSize: 12, color: "var(--tx2)", lineHeight: 1.5,
+                background: "rgba(239,68,68,0.06)", borderRadius: 10, padding: "9px 12px" } }, errorMsg)
           )
-          , React.createElement('div', { style: { display:"flex", gap:8 }}
-            , React.createElement('button', { onClick: () => { setStep("upload"); setErrorMsg(""); setImageB64(null); setImageFile(null); }, style: { flex:1, padding:"12px", borderRadius:11, border:"1px solid var(--b1)", background:"var(--s2)", color:"var(--tx2)", fontWeight:600, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}, "← Другой план")
-            , React.createElement('button', { onClick: () => { if(imageB64) { setStep("ceiling"); } else { setStep("upload"); } setErrorMsg(""); }, style: { flex:1, padding:"12px", borderRadius:11, border:"none", background:"var(--acc)", color:"#fff", fontWeight:700, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}, "🔄 Снова")
+          , React.createElement("div", { style: { background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.2)",
+              borderRadius: 12, padding: "10px 14px", marginBottom: 14 } }
+            , React.createElement("div", { style: { fontSize: 12, fontWeight: 700, color: "var(--gold)", marginBottom: 6 } }, "💡 Советы:")
+            , ["Снимайте план целиком без обрезки","Хорошее освещение, нет бликов","Четкие линии распознаются лучше","Можно загрузить скриншот экрана с планом"].map(function(tip, i) {
+                return React.createElement("div", { key: i, style: { fontSize: 11, color: "var(--tx2)", padding: "2px 0", display: "flex", gap: 6 } }
+                  , React.createElement("span", { style: { color: "var(--gold)", flexShrink: 0 } }, "•")
+                  , tip
+                );
+              })
+          )
+          , React.createElement("div", { style: { display: "flex", flexDirection: "column", gap: 8 } }
+            , React.createElement("button", { onClick: runRecognition,
+                style: { width: "100%", padding: "13px", borderRadius: 11, border: "none",
+                  background: "linear-gradient(135deg,var(--acc),var(--acc2))",
+                  color: "#fff", fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "inherit",
+                  boxShadow: "0 4px 16px rgba(79,70,229,0.3)" } }, "🔄 Повторить распознавание")
+            , React.createElement("button", { onClick: () => { setStep("upload"); setImageB64(null); setImagePreview(null); setImageFile(null); setErrorMsg(""); },
+                style: { width: "100%", padding: "11px", borderRadius: 11, border: "1px solid var(--b1)",
+                  background: "var(--s2)", color: "var(--tx2)", fontWeight: 600, fontSize: 13,
+                  cursor: "pointer", fontFamily: "inherit" } }, "← Загрузить другой план")
           )
         )
       )
     )
   );
 }
+
 
 // ==================== ADD SECTION PANEL ====================
 // Which room measurement field to auto-use as qty for each stage
@@ -7164,7 +7114,7 @@ function RoomEstimateCard({ room, roomIcon, roomTotal, matTotal, stageGroups, di
   const confirmDeleteWork = () => { if(confirmDeleteWid) { dispatch({ type: "DELETE_ROOM_WORK", pid: projectId, rid: room.id, wid: confirmDeleteWid }); setConfirmDeleteWid(null); } };
 
   return (
-    React.createElement('div', { style: { background: "var(--s1)", borderRadius: "var(--r)", marginBottom: 12, overflow: "hidden", boxShadow: "0 4px 20px rgba(0,0,0,0.3)", border: "1px solid var(--b1)" }}
+    React.createElement('div', { style: { background: "var(--s1)", borderRadius: "var(--r)", marginBottom: 12, boxShadow: "0 4px 20px rgba(0,0,0,0.3)", border: "1px solid var(--b1)" }}
       /* Room header — always readable layout */
       , React.createElement('div', { style: { borderBottom: collapsed ? "none" : "1px solid var(--b1)" }}
         /* Room card header */
@@ -10819,7 +10769,7 @@ function CatalogScreen({ state, dispatch, navigate, prevTab, setTab, lang }) {
 
       /* Create/Edit user group full-screen modal */
       , showCreateGroup && (
-        React.createElement('div', { style: { position:"absolute", inset:0, zIndex:500, background:"var(--bg)", display:"flex", flexDirection:"column" }}
+        React.createElement('div', { style: { position:"fixed", inset:0, zIndex:5000, background:"var(--bg)", display:"flex", flexDirection:"column" }}
           , React.createElement('div', { style: { background:"var(--hdr-bg,linear-gradient(135deg,#5b52e8,#7c6fff))", padding:"52px 16px 16px", flexShrink:0 }}
             , React.createElement('button', { onClick: () => setShowCreateGroup(false), style: { background:"rgba(255,255,255,0.15)", border:"1px solid rgba(255,255,255,0.3)", borderRadius:10, padding:"6px 12px", cursor:"pointer", display:"flex", alignItems:"center", gap:6, marginBottom:12 }}
               , React.createElement(Icon, { name: "back", size: 14, color: "#fff"} )
@@ -12898,7 +12848,7 @@ function HelpModal({ open, onClose }) {
   };
 
   return (
-    <div style={{ position:"absolute", inset:0, background:"rgba(0,0,0,0.75)", zIndex:600, display:"flex", flexDirection:"column", justifyContent:"flex-end" }}>
+    <div style={{ position:"fixed", inset:0, background:"rgba(0,0,0,0.75)", zIndex:6000, display:"flex", flexDirection:"column", justifyContent:"flex-end" }}>
       <div style={{ background:"var(--s1)", borderRadius:"24px 24px 0 0", width:"100%", maxHeight:"94vh", display:"flex", flexDirection:"column" }}>
 
         {/* Header */}
