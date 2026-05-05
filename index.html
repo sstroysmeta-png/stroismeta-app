@@ -4731,449 +4731,505 @@ function RoomsScreen({ state, dispatch, projectId, navigate }) {
 // --- Project Detail ---
 
 // ==================== PLAN RECOGNITION MODAL ====================
+
+// ==================== PLAN RECOGNITION MODAL ====================
+// Smart room wizard: tries AI recognition (Claude artifact mode),
+// falls back to guided manual entry that always works offline.
 function PlanRecognitionModal({ open, onClose, onRoomsDetected }) {
-  // ── steps: upload → processing → done | error | manual ──────────
-  const [step, setStep]           = useState("upload");
-  const [imgPreview, setImgPreview] = useState(null);   // data-URL for display
-  const [imgB64, setImgB64]       = useState(null);     // compressed jpeg base64
-  const [ceilingH, setCeilingH]   = useState("2.7");
-  const [progress, setProgress]   = useState(0);
-  const [rooms, setRooms]         = useState([]);
-  const [selected, setSelected]   = useState({});
-  const [errMsg, setErrMsg]       = useState("");
-  // manual entry state
-  const [manRooms, setManRooms]   = useState([
-    { id: "m1", name: "Гостиная",  l: "", w: "" },
-    { id: "m2", name: "Кухня",     l: "", w: "" },
-    { id: "m3", name: "Спальня",   l: "", w: "" },
-    { id: "m4", name: "Санузел",   l: "", w: "" },
-    { id: "m5", name: "Коридор",   l: "", w: "" },
+
+  // ── State ────────────────────────────────────────────────────────
+  const [step, setStep]       = useState("start");  // start | photo | ai_load | done | manual
+  const [imgPreview, setImg]  = useState(null);
+  const [imgB64, setB64]      = useState(null);
+  const [ceilingH, setCeil]   = useState("2.7");
+  const [rooms, setRooms]     = useState([]);
+  const [selected, setSel]    = useState({});
+  const [progress, setProgress] = useState(0);
+  const [errMsg, setErr]      = useState("");
+  const [aiStatus, setAiStatus] = useState(""); // status text during AI attempt
+  const [manRooms, setManRooms] = useState([
+    { id:"r1", name:"Гостиная",  l:"4.5", w:"3.8" },
+    { id:"r2", name:"Кухня",     l:"3.2", w:"2.8" },
+    { id:"r3", name:"Спальня",   l:"3.5", w:"3.0" },
+    { id:"r4", name:"Санузел",   l:"2.0", w:"1.6" },
+    { id:"r5", name:"Коридор",   l:"3.5", w:"1.2" },
   ]);
+  const [flatType, setFlatType] = useState("");
   const fileRef  = useRef(null);
   const timerRef = useRef(null);
 
-  // Reset when closed
+  // Reset on close
   useEffect(() => {
     if (!open) {
       clearInterval(timerRef.current);
-      setStep("upload"); setImgPreview(null); setImgB64(null);
-      setProgress(0); setRooms([]); setSelected({}); setErrMsg("");
+      setStep("start"); setImg(null); setB64(null);
+      setProgress(0); setRooms([]); setSel({}); setErr(""); setAiStatus("");
     }
   }, [open]);
 
-  // ── Compress image to small JPEG (max 1024px, quality 0.7) ──────
-  const compressImage = (file, cb) => {
+  // ── Flat type presets ─────────────────────────────────────────────
+  const PRESETS = {
+    "1к": [
+      { id:"p1", name:"Жилая комната", l:"5.0", w:"3.5" },
+      { id:"p2", name:"Кухня",         l:"3.0", w:"2.6" },
+      { id:"p3", name:"Санузел",       l:"2.2", w:"1.5" },
+      { id:"p4", name:"Прихожая",      l:"3.0", w:"1.2" },
+    ],
+    "2к": [
+      { id:"p1", name:"Гостиная",  l:"4.8", w:"3.8" },
+      { id:"p2", name:"Спальня",   l:"3.8", w:"3.2" },
+      { id:"p3", name:"Кухня",     l:"3.5", w:"2.8" },
+      { id:"p4", name:"Санузел",   l:"2.2", w:"1.6" },
+      { id:"p5", name:"Коридор",   l:"4.0", w:"1.3" },
+    ],
+    "3к": [
+      { id:"p1", name:"Гостиная",   l:"5.5", w:"4.0" },
+      { id:"p2", name:"Спальня 1",  l:"4.2", w:"3.5" },
+      { id:"p3", name:"Спальня 2",  l:"3.8", w:"3.2" },
+      { id:"p4", name:"Кухня",      l:"4.0", w:"3.0" },
+      { id:"p5", name:"С/У совм.",  l:"2.5", w:"1.8" },
+      { id:"p6", name:"Коридор",    l:"5.0", w:"1.4" },
+    ],
+    "4к": [
+      { id:"p1", name:"Гостиная",   l:"6.0", w:"4.5" },
+      { id:"p2", name:"Спальня 1",  l:"4.5", w:"3.8" },
+      { id:"p3", name:"Спальня 2",  l:"4.0", w:"3.5" },
+      { id:"p4", name:"Спальня 3",  l:"3.8", w:"3.2" },
+      { id:"p5", name:"Кухня",      l:"4.5", w:"3.2" },
+      { id:"p6", name:"С/У совм.",  l:"2.8", w:"1.8" },
+      { id:"p7", name:"Туалет",     l:"1.2", w:"1.8" },
+      { id:"p8", name:"Коридор",    l:"6.0", w:"1.5" },
+    ],
+  };
+
+  // ── Image processing ──────────────────────────────────────────────
+  const loadFile = file => {
+    if (!file || !file.type.startsWith("image/")) return;
+    setErr("");
     const reader = new FileReader();
     reader.onload = ev => {
+      const src = ev.target.result;
+      setImg(src);
+      // Compress for API
       const img = new window.Image();
       img.onload = () => {
-        const MAX = 1024;
-        const ratio = Math.min(MAX / img.width, MAX / img.height, 1);
-        const w = Math.round(img.width  * ratio);
-        const h = Math.round(img.height * ratio);
-        const c = document.createElement("canvas");
-        c.width = w; c.height = h;
-        const ctx = c.getContext("2d");
-        ctx.fillStyle = "#ffffff";
-        ctx.fillRect(0, 0, w, h);
+        const MAX = 800; // small = fast + fits within any limit
+        const r = Math.min(MAX / img.width, MAX / img.height, 1);
+        const w = Math.round(img.width * r), h = Math.round(img.height * r);
+        const cv = document.createElement("canvas");
+        cv.width = w; cv.height = h;
+        const ctx = cv.getContext("2d");
+        ctx.fillStyle = "#fff"; ctx.fillRect(0, 0, w, h);
         ctx.drawImage(img, 0, 0, w, h);
-        cb(ev.target.result, c.toDataURL("image/jpeg", 0.70).split(",")[1]);
+        setB64(cv.toDataURL("image/jpeg", 0.65).split(",")[1]);
+        setStep("photo");
       };
-      img.onerror = () => cb(ev.target.result, null);
-      img.src = ev.target.result;
+      img.onerror = () => { setImg(src); setB64(null); setStep("photo"); };
+      img.src = src;
     };
-    reader.onerror = () => cb(null, null);
     reader.readAsDataURL(file);
   };
 
-  const handleFile = file => {
-    if (!file || !file.type.startsWith("image/")) return;
-    setErrMsg("");
-    compressImage(file, (preview, b64) => {
-      setImgPreview(preview);
-      setImgB64(b64);
-      setStep("confirm");
-    });
-  };
-
-  // ── Main recognition ─────────────────────────────────────────────
-  const recognize = async () => {
-    if (!imgB64) { setErrMsg("Изображение не загружено"); return; }
-    setStep("processing"); setProgress(5); setErrMsg("");
+  // ── AI Recognition (works in Claude artifact, fails gracefully elsewhere) ──
+  const runAI = async () => {
+    setStep("ai_load"); setProgress(5); setErr(""); setAiStatus("Отправляем план на анализ…");
     clearInterval(timerRef.current);
-    timerRef.current = setInterval(() => setProgress(p => p < 85 ? p + 6 : p), 600);
+    timerRef.current = setInterval(() => {
+      setProgress(p => p < 80 ? p + 5 : p);
+    }, 700);
 
-    const prompt = `You are an expert at reading floor plans. Analyze this image carefully.
+    const PROMPT = `You are a floor plan analyzer. Look at this floor plan image.
+Find ALL rooms. Return ONLY valid JSON, no other text:
+{"rooms":[{"name":"Гостиная","length":4.5,"width":3.8},{"name":"Кухня","length":3.2,"width":2.8}]}
+Rules: always return JSON with at least 1 room. Use Russian room names. Estimate sizes if no numbers visible.`;
 
-This is a floor plan image. Your job: find ALL rooms and estimate their dimensions.
-
-RULES (follow strictly):
-1. ALWAYS return valid JSON - never refuse, never explain
-2. Find every enclosed space: living room, bedroom, kitchen, bathroom, corridor, balcony, storage
-3. If no text labels visible, name rooms by typical function based on their size and position
-4. For dimensions: read numbers if visible (3200mm=3.20m, 3.20=3.20m). If no numbers, estimate from proportions
-5. Typical Russian flat: kitchen 6-15m², living 15-25m², bedroom 10-18m², bathroom 3-7m², corridor 4-12m²
-
-Return ONLY this JSON, nothing else:
-{"rooms":[{"name":"Гостиная","length":4.5,"width":3.8,"area":17.1,"doors":1,"windows":2},{"name":"Кухня","length":3.2,"width":2.8,"area":9.0,"doors":1,"windows":1},{"name":"Спальня","length":3.5,"width":3.0,"area":10.5,"doors":1,"windows":1},{"name":"Санузел","length":2.2,"width":1.6,"area":3.5,"doors":1,"windows":0},{"name":"Коридор","length":4.0,"width":1.2,"area":4.8,"doors":2,"windows":0}]}
-
-Even if image is blurry/dark/rotated - give your best estimate. At minimum 1 room.`;
-
-    let lastError = "";
     for (let attempt = 0; attempt < 3; attempt++) {
       try {
+        setAiStatus(attempt > 0 ? ("Попытка " + (attempt+1) + " из 3…") : "Анализируем план…");
         const resp = await fetch("https://api.anthropic.com/v1/messages", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             model: "claude-sonnet-4-20250514",
-            max_tokens: 1500,
+            max_tokens: 1000,
             messages: [{ role: "user", content: [
               { type: "image", source: { type: "base64", media_type: "image/jpeg", data: imgB64 } },
-              { type: "text",  text: prompt }
+              { type: "text", text: PROMPT }
             ]}]
           })
         });
 
+        if (resp.status === 529 || resp.status === 503) {
+          setAiStatus("Сервер занят, ждём…");
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+
         if (!resp.ok) {
           const e = await resp.json().catch(() => ({}));
-          if (resp.status === 529 || resp.status === 503) {
-            await new Promise(r => setTimeout(r, 2000 * (attempt + 1)));
-            lastError = "Сервер перегружен, повторяю...";
-            continue;
-          }
-          throw new Error((e.error && e.error.message) || ("Ошибка " + resp.status));
+          throw new Error((e.error && e.error.message) || ("HTTP " + resp.status));
         }
 
         const data = await resp.json();
-        const raw  = (data.content || []).map(b => b.text || "").join("").trim();
-
-        // Extract JSON
-        const s = raw.indexOf("{"), e = raw.lastIndexOf("}");
-        if (s < 0 || e <= s) {
-          if (attempt < 2) { lastError = "Повторяю запрос..."; continue; }
-          throw new Error("Не получил данные о помещениях. Попробуйте ещё раз или введите вручную.");
+        const raw  = ((data.content || []).map(b => b.text||"").join("")).trim();
+        const s = raw.indexOf("{"), e2 = raw.lastIndexOf("}");
+        if (s < 0 || e2 <= s) {
+          if (attempt < 2) { setAiStatus("Переспрашиваем ИИ…"); continue; }
+          throw new Error("no_json");
         }
 
-        const parsed = JSON.parse(raw.slice(s, e + 1));
-        const list   = parsed.rooms || (parsed.length && parsed.width ? [parsed] : null);
-
-        if (!list || list.length === 0) {
-          if (attempt < 2) { continue; }
-          throw new Error("Помещения не обнаружены. Введите размеры вручную.");
+        const parsed = JSON.parse(raw.slice(s, e2+1));
+        const list   = (parsed.rooms && parsed.rooms.length > 0) ? parsed.rooms : null;
+        if (!list) {
+          if (attempt < 2) continue;
+          throw new Error("no_rooms");
         }
 
-        clearInterval(timerRef.current);
-        setProgress(100);
-
-        const h = parseFloat(ceilingH) || 2.7;
-        const detected = list.map((r, i) => {
-          const l = Math.max(0.5, parseFloat(r.length || r.l) || 3);
-          const w = Math.max(0.5, parseFloat(r.width  || r.w) || 3);
-          const area = r.area ? parseFloat(r.area) : +(l * w).toFixed(2);
-          const perim = +(2*(l+w)).toFixed(2);
-          const wt    = +(perim * h).toFixed(2);
-          const dr    = Math.max(0, parseInt(r.doors)   || 1);
-          const wi    = Math.max(0, parseInt(r.windows) || (/(коридор|санузел|туалет|кладовая)/i.test(r.name||"") ? 0 : 1));
-          const ded   = +(dr * (0.9*2.05) + wi * (1.2*1.4)).toFixed(2);
-          return {
-            id: uid(), name: r.name || ("Помещение " + (i+1)),
-            shapeType: "standard", length: l, width: w, height: h,
-            doors: dr, windows: wi,
-            floor: +area.toFixed(2), ceiling: +area.toFixed(2),
-            perimeter: perim, wallsTotal: wt,
-            wallsNet: +Math.max(0, wt - ded).toFixed(2), deductions: ded,
-            works: []
-          };
-        });
-
-        setRooms(detected);
-        const sel = {};
-        detected.forEach(r => { sel[r.id] = true; });
-        setSelected(sel);
+        // Success!
+        clearInterval(timerRef.current); setProgress(100);
+        const h = parseFloat(ceilingH)||2.7;
+        const det = list.map((r, i) => buildRoom(r.name||("Помещение "+(i+1)),
+          parseFloat(r.length||r.l)||3, parseFloat(r.width||r.w)||3, h));
+        setRooms(det);
+        const sel = {}; det.forEach(r => { sel[r.id]=true; });
+        setSel(sel);
         setStep("done");
-        return; // success
+        return;
 
       } catch(err) {
-        clearInterval(timerRef.current);
-        const msg = err.message || "Ошибка сети";
-        // "Failed to fetch" = network/CORS issue
-        if (msg.toLowerCase().includes("failed to fetch") || msg.toLowerCase().includes("network")) {
-          setErrMsg("Ошибка сети. Проверьте интернет-соединение и попробуйте снова.");
-        } else {
-          setErrMsg(msg);
+        const msg = String(err.message||err);
+        // CORS/Network error = not running as Claude artifact
+        if (msg.toLowerCase().includes("fetch") || msg.toLowerCase().includes("network") ||
+            msg.toLowerCase().includes("failed") || msg === "no_json" || msg === "no_rooms") {
+          // Show manual entry with image visible
+          clearInterval(timerRef.current);
+          setErr("");
+          setStep("manual");
+          return;
         }
-        setStep("error");
-        return;
+        if (attempt === 2) {
+          clearInterval(timerRef.current);
+          setStep("manual");
+          return;
+        }
       }
     }
-    // All retries exhausted
     clearInterval(timerRef.current);
-    setErrMsg(lastError || "Не удалось распознать план. Введите размеры вручную.");
-    setStep("error");
+    setStep("manual");
   };
 
-  // ── Apply detected rooms ──────────────────────────────────────────
-  const apply = () => {
+  // ── Build room object ────────────────────────────────────────────
+  const buildRoom = (name, l, w, h) => {
+    l = Math.max(0.5, l); w = Math.max(0.5, w);
+    const perim = +(2*(l+w)).toFixed(2);
+    const wt    = +(perim*h).toFixed(2);
+    const dr    = /(санузел|туалет|кладовая)/i.test(name) ? 1 : 1;
+    const wi    = /(санузел|туалет|кладовая|коридор|прихожая)/i.test(name) ? 0 : 1;
+    const ded   = +(dr*1.845 + wi*1.68).toFixed(2);
+    return {
+      id:uid(), name, shapeType:"standard", length:l, width:w, height:h,
+      doors:dr, windows:wi,
+      floor:+(l*w).toFixed(2), ceiling:+(l*w).toFixed(2),
+      perimeter:perim, wallsTotal:wt,
+      wallsNet:+Math.max(0,wt-ded).toFixed(2), deductions:ded,
+      works:[]
+    };
+  };
+
+  // ── Apply selection ──────────────────────────────────────────────
+  const applySelected = () => {
     const toAdd = rooms.filter(r => selected[r.id]);
     if (!toAdd.length) return;
-    onRoomsDetected(toAdd);
-    onClose();
+    onRoomsDetected(toAdd); onClose();
   };
 
-  // ── Apply manual rooms ──────────────────────────────────────────
   const applyManual = () => {
-    const h = parseFloat(ceilingH) || 2.7;
-    const valid = manRooms.filter(r => r.name.trim() && parseFloat(r.l) > 0 && parseFloat(r.w) > 0);
-    if (!valid.length) { setErrMsg("Заполните хотя бы одно помещение (название и размеры)"); return; }
-    const toAdd = valid.map(r => {
-      const l = +parseFloat(r.l).toFixed(2), w = +parseFloat(r.w).toFixed(2);
-      const perim = +(2*(l+w)).toFixed(2);
-      const wt    = +(perim * h).toFixed(2);
-      return {
-        id: uid(), name: r.name.trim(),
-        shapeType: "standard", length: l, width: w, height: h,
-        doors: 1, windows: 1,
-        floor: +(l*w).toFixed(2), ceiling: +(l*w).toFixed(2),
-        perimeter: perim, wallsTotal: wt,
-        wallsNet: +Math.max(0, wt - 1.845 - 1.68).toFixed(2), deductions: +(1.845+1.68).toFixed(2),
-        works: []
-      };
-    });
-    onRoomsDetected(toAdd);
+    const h = parseFloat(ceilingH)||2.7;
+    const valid = manRooms.filter(r => r.name.trim() && parseFloat(r.l)>0 && parseFloat(r.w)>0);
+    if (!valid.length) { setErr("Заполните хотя бы одно помещение"); return; }
+    onRoomsDetected(valid.map(r => buildRoom(r.name.trim(), parseFloat(r.l), parseFloat(r.w), h)));
     onClose();
   };
 
   if (!open) return null;
 
-  const IS = { width:"100%", padding:"9px 11px", borderRadius:9, border:"1.5px solid var(--b1)",
-    background:"var(--s2)", color:"var(--tx)", fontSize:14, fontFamily:"inherit", outline:"none",
-    boxSizing:"border-box" };
-  const BTN = (bg) => ({ width:"100%", padding:"13px", borderRadius:12, border:"none",
-    background: bg || "linear-gradient(135deg,var(--acc),var(--acc2))",
-    color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer", fontFamily:"inherit",
-    boxShadow:"0 4px 16px rgba(79,70,229,0.28)" });
-  const BTN2 = { width:"100%", padding:"12px", borderRadius:12, border:"1px solid var(--b1)",
-    background:"var(--s2)", color:"var(--tx2)", fontWeight:600, fontSize:13,
-    cursor:"pointer", fontFamily:"inherit", marginTop:8 };
+  // ── Common styles ────────────────────────────────────────────────
+  const IS = { width:"100%", padding:"8px 10px", borderRadius:9, border:"1.5px solid var(--b1)",
+    background:"var(--s2)", color:"var(--tx)", fontSize:13, fontFamily:"inherit",
+    outline:"none", boxSizing:"border-box" };
+  const PrimaryBtn = (label, onClick, disabled) =>
+    React.createElement("button", { onClick, disabled, style:{
+      width:"100%", padding:"13px", borderRadius:12, border:"none",
+      background: disabled ? "var(--s3)" : "linear-gradient(135deg,var(--acc),var(--acc2))",
+      color:"#fff", fontWeight:800, fontSize:14, cursor: disabled?"not-allowed":"pointer",
+      fontFamily:"inherit", boxShadow: disabled ? "none" : "0 4px 16px rgba(79,70,229,0.28)",
+      marginBottom:8 } }, label);
+  const SecBtn = (label, onClick) =>
+    React.createElement("button", { onClick, style:{
+      width:"100%", padding:"11px", borderRadius:12, border:"1px solid var(--b1)",
+      background:"var(--s2)", color:"var(--tx2)", fontWeight:600, fontSize:13,
+      cursor:"pointer", fontFamily:"inherit", marginBottom:8 } }, label);
 
-  return React.createElement(Modal, { open, onClose, title: "🔍 Распознать план" }
+  const CeilPicker = () =>
+    React.createElement("div", { style:{ background:"var(--s2)", borderRadius:10, padding:"10px 12px", marginBottom:12 } }
+      , React.createElement("div", { style:{ fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:7 } }, "Высота потолков")
+      , React.createElement("div", { style:{ display:"flex", gap:6 } }
+        , ["2.5","2.7","3.0","3.2"].map(hv =>
+          React.createElement("button", { key:hv, onClick:()=>setCeil(hv), style:{
+            flex:1, padding:"7px 0", borderRadius:9, border:"none", cursor:"pointer",
+            fontFamily:"inherit", fontSize:13, fontWeight:700,
+            background: ceilingH===hv ? "var(--acc)" : "var(--s1)",
+            color: ceilingH===hv ? "#fff" : "var(--tx2)",
+            boxShadow: ceilingH===hv ? "0 2px 8px rgba(79,70,229,0.3)" : "none" } }, hv+" м")
+        )
+      )
+    );
 
-    /* ══ UPLOAD ══════════════════════════════════════════════════ */
-    , step === "upload" && React.createElement("div", {}
-      , React.createElement("div", { style:{ fontSize:13, color:"var(--tx2)", marginBottom:14,
-            background:"var(--s2)", borderRadius:10, padding:"10px 14px", lineHeight:1.6 } },
-          "📐 Загрузите фото или скан плана квартиры. ИИ распознает все помещения — даже на размытом изображении."
+  const ImgThumb = () => imgPreview
+    ? React.createElement("div", { style:{ borderRadius:12, overflow:"hidden", border:"1.5px solid var(--b1)", marginBottom:12, maxHeight:180 } }
+        , React.createElement("img", { src:imgPreview, alt:"план", style:{ width:"100%", maxHeight:180, objectFit:"contain", background:"#f8fafc", display:"block" } })
       )
-      , React.createElement("div", {
-          onDrop: e => { e.preventDefault(); handleFile(e.dataTransfer.files[0]); },
-          onDragOver: e => e.preventDefault(),
-          onClick: () => fileRef.current && fileRef.current.click(),
-          style:{ border:"2px dashed var(--acc)", borderRadius:16, padding:"36px 20px",
-            textAlign:"center", cursor:"pointer", background:"var(--acc3)", marginBottom:12 }
-        }
-        , React.createElement("div", { style:{ fontSize:48, marginBottom:10 } }, "📷")
-        , React.createElement("div", { style:{ fontSize:14, fontWeight:700, color:"var(--tx)", marginBottom:4 } }, "Нажмите или перетащите план")
-        , React.createElement("div", { style:{ fontSize:12, color:"var(--tx3)" } }, "JPG, PNG • Любое качество и разрешение")
+    : null;
+
+  return React.createElement(Modal, { open, onClose, title:"🏠 Добавить помещения" }
+
+    // ════ START ════════════════════════════════════════════════════
+    , step === "start" && React.createElement("div", {}
+      , React.createElement("div", { style:{ fontSize:13, color:"var(--tx2)", lineHeight:1.6, marginBottom:18 } },
+          "Как хотите добавить помещения?"
+        )
+
+      // Option 1: Upload photo with AI
+      , React.createElement("div", { style:{ border:"2px solid var(--acc)", borderRadius:14, padding:"14px 16px", marginBottom:10, cursor:"pointer",
+          background:"var(--acc3)" }, onClick:()=>{ fileRef.current && fileRef.current.click(); } }
+        , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:12 } }
+          , React.createElement("div", { style:{ fontSize:32, flexShrink:0 } }, "📷")
+          , React.createElement("div", {}
+            , React.createElement("div", { style:{ fontSize:14, fontWeight:700, color:"var(--tx)", marginBottom:2 } }, "Загрузить план и распознать")
+            , React.createElement("div", { style:{ fontSize:12, color:"var(--tx3)" } }, "Фото, скриншот, скан — любое изображение плана")
+          )
+        )
       )
-      , React.createElement("input", { ref:fileRef, type:"file", accept:"image/*",
-          style:{ display:"none" },
-          onChange: e => e.target.files && e.target.files[0] && handleFile(e.target.files[0]) })
-      , React.createElement("button", { onClick: () => setStep("manual"), style: BTN2 }, "✏️ Ввести размеры вручную")
+      , React.createElement("input", { ref:fileRef, type:"file", accept:"image/*", style:{ display:"none" },
+          onChange: e => e.target.files && e.target.files[0] && loadFile(e.target.files[0]) })
+
+      // Option 2: Preset by flat type
+      , React.createElement("div", { style:{ border:"2px solid var(--b1)", borderRadius:14, padding:"14px 16px", marginBottom:10, cursor:"pointer" },
+          onClick:()=>setStep("preset") }
+        , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:12 } }
+          , React.createElement("div", { style:{ fontSize:32, flexShrink:0 } }, "🏢")
+          , React.createElement("div", {}
+            , React.createElement("div", { style:{ fontSize:14, fontWeight:700, color:"var(--tx)", marginBottom:2 } }, "Выбрать тип квартиры")
+            , React.createElement("div", { style:{ fontSize:12, color:"var(--tx3)" } }, "1к, 2к, 3к, 4к — стандартный набор помещений")
+          )
+        )
+      )
+
+      // Option 3: Manual entry
+      , React.createElement("div", { style:{ border:"2px solid var(--b1)", borderRadius:14, padding:"14px 16px", cursor:"pointer" },
+          onClick:()=>setStep("manual") }
+        , React.createElement("div", { style:{ display:"flex", alignItems:"center", gap:12 } }
+          , React.createElement("div", { style:{ fontSize:32, flexShrink:0 } }, "✏️")
+          , React.createElement("div", {}
+            , React.createElement("div", { style:{ fontSize:14, fontWeight:700, color:"var(--tx)", marginBottom:2 } }, "Ввести размеры вручную")
+            , React.createElement("div", { style:{ fontSize:12, color:"var(--tx3)" } }, "Заполните таблицу с размерами помещений")
+          )
+        )
+      )
     )
 
-    /* ══ CONFIRM (image loaded, choose ceiling) ══════════════════ */
-    , step === "confirm" && React.createElement("div", {}
-      , imgPreview && React.createElement("div", { style:{ borderRadius:12, overflow:"hidden",
-            border:"1.5px solid var(--b1)", marginBottom:12 } }
-          , React.createElement("img", { src:imgPreview, alt:"план",
-              style:{ width:"100%", maxHeight:200, objectFit:"contain",
-                background:"#f8fafc", display:"block" } })
-        )
-      , React.createElement("div", { style:{ background:"var(--s2)", borderRadius:12,
-            padding:"12px 14px", marginBottom:12 } }
-          , React.createElement("div", { style:{ fontSize:11, fontWeight:700, color:"var(--tx3)",
-                textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:8 } },
-              "Высота потолков"
+    // ════ PHOTO loaded — choose action ════════════════════════════
+    , step === "photo" && React.createElement("div", {}
+      , React.createElement(ImgThumb)
+      , React.createElement(CeilPicker)
+
+      // AI button
+      , imgB64
+        ? React.createElement("button", { onClick:runAI, style:{
+            width:"100%", padding:"14px", borderRadius:12, border:"none",
+            background:"linear-gradient(135deg,var(--acc),var(--acc2))",
+            color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer",
+            fontFamily:"inherit", boxShadow:"0 4px 16px rgba(79,70,229,0.28)", marginBottom:8 } },
+            "🔍 Распознать помещения с ИИ"
           )
-          , React.createElement("div", { style:{ display:"flex", gap:6, flexWrap:"wrap" } }
-            , ["2.5","2.7","3.0","3.2"].map(h =>
-                React.createElement("button", { key:h, onClick:()=>setCeilingH(h),
-                  style:{ padding:"7px 14px", borderRadius:9, border:"none", cursor:"pointer",
-                    fontFamily:"inherit", fontSize:13, fontWeight:700,
-                    background: ceilingH===h ? "var(--acc)" : "var(--s1)",
-                    color: ceilingH===h ? "#fff" : "var(--tx2)",
-                    boxShadow: ceilingH===h ? "0 2px 8px rgba(79,70,229,0.3)" : "none" } }, h+" м")
-            )
-            , React.createElement("input", { type:"number", min:"2", max:"5", step:"0.1",
-                value:ceilingH, onChange:e=>setCeilingH(e.target.value),
-                style:{ width:72, padding:"7px 10px", borderRadius:9,
-                  border:"1.5px solid var(--b1)", background:"var(--s1)",
-                  color:"var(--tx)", fontSize:13, fontFamily:"inherit", outline:"none" } })
+        : React.createElement("div", { style:{ fontSize:12, color:"var(--gold)", background:"rgba(245,158,11,0.1)", borderRadius:10, padding:"10px 12px", marginBottom:8 } },
+            "⚠️ Изображение не удалось обработать — введите размеры вручную."
           )
+      , React.createElement("button", { onClick:()=>setStep("manual"), style:{
+          width:"100%", padding:"12px", borderRadius:12, border:"1px solid var(--b1)",
+          background:"var(--s2)", color:"var(--tx2)", fontWeight:600, fontSize:13,
+          cursor:"pointer", fontFamily:"inherit", marginBottom:8 } },
+          "✏️ Ввести размеры вручную"
         )
-      , React.createElement("button", { onClick:recognize, style:BTN() }, "🔍 Распознать план →")
-      , React.createElement("div", { style:{ display:"flex", gap:8, marginTop:8 } }
-          , React.createElement("button", { onClick:()=>{ setStep("upload"); setImgPreview(null); setImgB64(null); }, style:{...BTN2,width:"auto",flex:1,marginTop:0} }, "← Другой план")
-          , React.createElement("button", { onClick:()=>setStep("manual"), style:{...BTN2,width:"auto",flex:1,marginTop:0} }, "✏️ Вручную")
+      , React.createElement("button", { onClick:()=>{ setImg(null); setB64(null); setStep("start"); }, style:{
+          width:"100%", padding:"11px", borderRadius:12, border:"none",
+          background:"transparent", color:"var(--tx3)", fontWeight:500, fontSize:12,
+          cursor:"pointer", fontFamily:"inherit" } },
+          "← Назад"
         )
     )
 
-    /* ══ PROCESSING ══════════════════════════════════════════════ */
-    , step === "processing" && React.createElement("div", { style:{ textAlign:"center", padding:"10px 0" } }
-      , imgPreview && React.createElement("div", { style:{ borderRadius:12, overflow:"hidden",
-            border:"1.5px solid var(--b1)", marginBottom:16, position:"relative" } }
-          , React.createElement("img", { src:imgPreview, alt:"план",
-              style:{ width:"100%", maxHeight:180, objectFit:"contain",
-                background:"#f8fafc", display:"block", filter:"brightness(0.75)" } })
-          , React.createElement("div", { style:{ position:"absolute", inset:0,
-                display:"flex", alignItems:"center", justifyContent:"center",
-                background:"rgba(79,70,229,0.12)" } }
-              , React.createElement("div", { style:{ fontSize:36 } }, "🔍")
-          )
-        )
+    // ════ AI LOADING ═══════════════════════════════════════════════
+    , step === "ai_load" && React.createElement("div", { style:{ textAlign:"center", padding:"8px 0" } }
+      , React.createElement(ImgThumb)
       , React.createElement("div", { style:{ fontSize:15, fontWeight:700, color:"var(--tx)", marginBottom:6 } }, "Анализирую план…")
-      , React.createElement("div", { style:{ fontSize:12, color:"var(--tx3)", marginBottom:16 } }, "Распознаю помещения и размеры")
+      , React.createElement("div", { style:{ fontSize:12, color:"var(--tx3)", marginBottom:16, minHeight:20 } }, aiStatus)
       , React.createElement("div", { style:{ background:"var(--s2)", borderRadius:8, height:10, overflow:"hidden", marginBottom:6 } }
-          , React.createElement("div", { style:{ height:"100%", borderRadius:8,
-              background:"linear-gradient(90deg,var(--acc),var(--acc2))",
-              width:progress+"%", transition:"width 0.5s" } })
+        , React.createElement("div", { style:{ height:"100%", borderRadius:8,
+            background:"linear-gradient(90deg,var(--acc),var(--acc2))",
+            width:progress+"%", transition:"width 0.6s" } })
       )
-      , React.createElement("div", { style:{ fontSize:11, color:"var(--tx3)" } }, Math.round(progress), "%")
+      , React.createElement("div", { style:{ fontSize:11, color:"var(--tx3)", marginBottom:16 } }, Math.round(progress)+"%")
+      , React.createElement("button", { onClick:()=>{ clearInterval(timerRef.current); setStep("manual"); }, style:{
+          background:"none", border:"none", color:"var(--tx3)", fontSize:12,
+          cursor:"pointer", fontFamily:"inherit" } },
+          "Пропустить и ввести вручную →"
+        )
     )
 
-    /* ══ DONE ════════════════════════════════════════════════════ */
+    // ════ DONE (AI success) ════════════════════════════════════════
     , step === "done" && React.createElement("div", {}
-      , React.createElement("div", { style:{ display:"flex", justifyContent:"space-between",
-            alignItems:"center", marginBottom:10 } }
-          , React.createElement("div", { style:{ fontSize:13, fontWeight:700, color:"var(--tx)" } },
-              "✅ Найдено помещений: ", rooms.length)
-          , React.createElement("button", { onClick:()=>{
-                const allOn = rooms.every(r=>selected[r.id]);
-                const s={}; rooms.forEach(r=>{ s[r.id]=!allOn; }); setSelected(s);
-              }, style:{ background:"none", border:"none", color:"var(--acc2)",
-                fontSize:12, cursor:"pointer", fontFamily:"inherit", fontWeight:700 } },
-              rooms.every(r=>selected[r.id]) ? "Снять все" : "Выбрать все"
+      , React.createElement("div", { style:{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:10 } }
+        , React.createElement("div", { style:{ fontSize:13, fontWeight:700, color:"var(--green)" } }, "✅ Распознано: "+rooms.length+" помещений")
+        , React.createElement("button", { onClick:()=>{ const s={}; rooms.forEach(r=>{ s[r.id]=!rooms.every(x=>selected[x.id]); }); setSel(s); },
+            style:{ background:"none", border:"none", color:"var(--acc2)", fontSize:12, cursor:"pointer", fontFamily:"inherit", fontWeight:700 } },
+            rooms.every(r=>selected[r.id]) ? "Снять все" : "Выбрать все"
           )
         )
-      , imgPreview && React.createElement("div", { style:{ borderRadius:10, overflow:"hidden",
-            border:"1px solid var(--b1)", maxHeight:110, marginBottom:10 } }
-          , React.createElement("img", { src:imgPreview, alt:"план",
-              style:{ width:"100%", maxHeight:110, objectFit:"contain", background:"#f8fafc", display:"block" } })
-        )
-      , React.createElement("div", { style:{ display:"flex", flexDirection:"column", gap:6,
-            marginBottom:12, maxHeight:260, overflowY:"auto" } }
-          , rooms.map(r => {
-              const on = !!selected[r.id];
-              return React.createElement("button", { key:r.id,
-                onClick:()=>setSelected(s=>({...s,[r.id]:!s[r.id]})),
-                style:{ display:"flex", alignItems:"center", gap:10, padding:"11px 13px",
-                  borderRadius:11, cursor:"pointer", fontFamily:"inherit", textAlign:"left",
-                  border: on?"2px solid var(--acc)":"2px solid var(--b1)",
-                  background: on?"var(--acc3)":"var(--s1)",
-                  transition:"all 0.12s",
-                  boxShadow: on?"0 2px 10px rgba(79,70,229,0.2)":"none" }
-              }
-                , React.createElement("div", { style:{ width:22, height:22, borderRadius:7, flexShrink:0,
-                    background: on?"var(--acc)":"var(--s2)",
-                    border: on?"none":"2px solid var(--b2)",
-                    display:"flex", alignItems:"center", justifyContent:"center" } }
-                    , on && React.createElement(Icon, { name:"check", size:12, color:"#fff" })
-                )
-                , React.createElement("div", { style:{ flex:1, minWidth:0 } }
-                    , React.createElement("div", { style:{ fontSize:13, fontWeight:700,
-                          color: on?"var(--acc2)":"var(--tx)" } }, r.name)
-                    , React.createElement("div", { style:{ fontSize:11, color:"var(--tx3)", marginTop:1 } },
-                        r.length+"×"+r.width+" м  ·  "+r.floor.toFixed(1)+" м²"
-                    )
-                )
-              );
-            })
-        )
-      , React.createElement("button", {
-            onClick:apply,
-            disabled: !rooms.some(r=>selected[r.id]),
-            style: BTN(rooms.some(r=>selected[r.id]) ? undefined : "var(--s3)") },
-          "Добавить ", rooms.filter(r=>selected[r.id]).length, " помещений →"
-        )
-      , React.createElement("div", { style:{ display:"flex", gap:8, marginTop:8 } }
-          , React.createElement("button", { onClick:()=>setStep("confirm"), style:{...BTN2,marginTop:0} }, "🔄 Распознать снова")
-        )
-    )
-
-    /* ══ ERROR ════════════════════════════════════════════════════ */
-    , step === "error" && React.createElement("div", {}
-      , imgPreview && React.createElement("div", { style:{ borderRadius:10, overflow:"hidden",
-            border:"1px solid rgba(239,68,68,0.3)", marginBottom:12, opacity:0.75 } }
-          , React.createElement("img", { src:imgPreview, alt:"план",
-              style:{ width:"100%", maxHeight:130, objectFit:"contain", background:"#f8fafc",
-                display:"block", filter:"grayscale(40%)" } })
-        )
-      , React.createElement("div", { style:{ textAlign:"center", marginBottom:14 } }
-          , React.createElement("div", { style:{ fontSize:36, marginBottom:8 } }, "⚠️")
-          , React.createElement("div", { style:{ fontFamily:"'Unbounded',sans-serif", fontSize:13,
-                fontWeight:700, color:"var(--red)", marginBottom:8 } }, "Не удалось распознать")
-          , React.createElement("div", { style:{ fontSize:12, color:"var(--tx2)", lineHeight:1.5,
-                background:"rgba(239,68,68,0.06)", borderRadius:10, padding:"9px 12px" } }, errMsg)
-        )
-      , React.createElement("button", { onClick:recognize, style:BTN() }, "🔄 Повторить распознавание")
-      , React.createElement("button", { onClick:()=>setStep("manual"), style:BTN2 }, "✏️ Ввести размеры вручную")
-      , React.createElement("button", { onClick:()=>{ setStep("upload"); setImgPreview(null); setImgB64(null); setErrMsg(""); }, style:BTN2 }, "← Загрузить другой план")
-    )
-
-    /* ══ MANUAL ENTRY ════════════════════════════════════════════ */
-    , step === "manual" && React.createElement("div", {}
-      , React.createElement("div", { style:{ fontSize:12, color:"var(--tx2)", marginBottom:12,
-            background:"var(--s2)", borderRadius:10, padding:"9px 12px", lineHeight:1.5 } },
-          "Введите размеры помещений вручную. Оставьте пустыми ненужные."
+      , React.createElement(ImgThumb)
+      , React.createElement("div", { style:{ display:"flex", flexDirection:"column", gap:6, marginBottom:12, maxHeight:260, overflowY:"auto" } }
+        , rooms.map(r => {
+            const on = !!selected[r.id];
+            return React.createElement("button", { key:r.id, onClick:()=>setSel(s=>({...s,[r.id]:!s[r.id]})), style:{
+              display:"flex", alignItems:"center", gap:10, padding:"11px 13px",
+              borderRadius:11, cursor:"pointer", fontFamily:"inherit", textAlign:"left",
+              border: on?"2px solid var(--acc)":"2px solid var(--b1)",
+              background: on?"var(--acc3)":"var(--s1)", transition:"all 0.12s",
+              boxShadow: on?"0 2px 10px rgba(79,70,229,0.2)":"none" } }
+              , React.createElement("div", { style:{ width:22, height:22, borderRadius:7, flexShrink:0,
+                  background:on?"var(--acc)":"var(--s2)", border:on?"none":"2px solid var(--b2)",
+                  display:"flex", alignItems:"center", justifyContent:"center" } }
+                , on && React.createElement(Icon, { name:"check", size:12, color:"#fff" })
+              )
+              , React.createElement("div", { style:{ flex:1 } }
+                , React.createElement("div", { style:{ fontSize:13, fontWeight:700, color:on?"var(--acc2)":"var(--tx)" } }, r.name)
+                , React.createElement("div", { style:{ fontSize:11, color:"var(--tx3)", marginTop:1 } }, r.length+"×"+r.width+" м · "+r.floor.toFixed(1)+" м²")
+              )
+            );
+          })
       )
-      , React.createElement("div", { style:{ background:"var(--s2)", borderRadius:10, padding:"8px 10px", marginBottom:10 } }
-          , React.createElement("div", { style:{ fontSize:11, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.06em", marginBottom:6 } }, "Высота потолков")
-          , React.createElement("div", { style:{ display:"flex", gap:5 } }
-              , ["2.5","2.7","3.0","3.2"].map(h =>
-                  React.createElement("button", { key:h, onClick:()=>setCeilingH(h),
-                    style:{ flex:1, padding:"5px 0", borderRadius:8, border:"none", cursor:"pointer",
-                      fontFamily:"inherit", fontSize:12, fontWeight:700,
-                      background: ceilingH===h ? "var(--acc)" : "var(--s1)",
-                      color: ceilingH===h ? "#fff" : "var(--tx2)" } }, h)
-              )
+      , React.createElement(PrimaryBtn, null,
+          React.createElement("button", { onClick:applySelected, disabled:!rooms.some(r=>selected[r.id]), style:{
+            width:"100%", padding:"13px", borderRadius:12, border:"none",
+            background:rooms.some(r=>selected[r.id])?"linear-gradient(135deg,var(--acc),var(--acc2))":"var(--s3)",
+            color:"#fff", fontWeight:800, fontSize:14, cursor:rooms.some(r=>selected[r.id])?"pointer":"not-allowed",
+            fontFamily:"inherit", boxShadow:rooms.some(r=>selected[r.id])?"0 4px 16px rgba(79,70,229,0.28)":"none", marginBottom:8 } },
+            "Добавить "+rooms.filter(r=>selected[r.id]).length+" помещений →"
+          )
+      )
+      , React.createElement("button", { onClick:()=>setStep("photo"), style:{
+          width:"100%", padding:"11px", borderRadius:12, border:"1px solid var(--b1)",
+          background:"var(--s2)", color:"var(--tx2)", fontWeight:600, fontSize:13,
+          cursor:"pointer", fontFamily:"inherit" } },
+          "🔄 Распознать снова"
+        )
+    )
+
+    // ════ PRESET selector ═════════════════════════════════════════
+    , step === "preset" && React.createElement("div", {}
+      , React.createElement(CeilPicker)
+      , React.createElement("div", { style:{ fontSize:12, fontWeight:700, color:"var(--tx2)", marginBottom:10 } }, "Выберите тип квартиры:")
+      , React.createElement("div", { style:{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:8, marginBottom:14 } }
+        , Object.keys(PRESETS).map(key =>
+            React.createElement("button", { key, onClick:()=>{
+                setFlatType(key);
+                const prs = PRESETS[key].map((p,i)=>({ ...p, id:"pr"+i }));
+                setManRooms(prs);
+                setStep("manual");
+              }, style:{
+                padding:"14px 8px", borderRadius:12, border:"2px solid var(--b1)",
+                background:"var(--s1)", cursor:"pointer", fontFamily:"inherit",
+                fontSize:13, fontWeight:700, color:"var(--tx)", textAlign:"center",
+                transition:"all 0.12s" } },
+              key+" квартира\n", React.createElement("div", { style:{ fontSize:10, color:"var(--tx3)", fontWeight:400, marginTop:2 } },
+                PRESETS[key].length+" помещений")
+            )
           )
         )
-      , React.createElement("div", { style:{ display:"flex", flexDirection:"column", gap:6, marginBottom:10 } }
-          , React.createElement("div", { style:{ display:"grid", gridTemplateColumns:"1.8fr 1fr 1fr", gap:5 } }
-              , React.createElement("div", { style:{ fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.05em", padding:"0 4px" } }, "Помещение")
-              , React.createElement("div", { style:{ fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.05em", textAlign:"center" } }, "Длина м")
-              , React.createElement("div", { style:{ fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", letterSpacing:"0.05em", textAlign:"center" } }, "Ширина м")
+      , React.createElement("button", { onClick:()=>setStep("start"), style:{
+          width:"100%", padding:"11px", borderRadius:12, border:"1px solid var(--b1)",
+          background:"var(--s2)", color:"var(--tx2)", fontWeight:600, fontSize:13,
+          cursor:"pointer", fontFamily:"inherit" } },
+          "← Назад"
+        )
+    )
+
+    // ════ MANUAL ENTRY ════════════════════════════════════════════
+    , step === "manual" && React.createElement("div", {}
+      , imgPreview && React.createElement("div", { style:{ borderRadius:10, overflow:"hidden",
+            border:"1px solid var(--b1)", marginBottom:10, maxHeight:120 } }
+          , React.createElement("img", { src:imgPreview, alt:"план",
+              style:{ width:"100%", maxHeight:120, objectFit:"contain", background:"#f8fafc", display:"block" } })
+        )
+      , React.createElement(CeilPicker)
+      , React.createElement("div", { style:{ fontSize:12, color:"var(--tx2)", marginBottom:10, lineHeight:1.5 } },
+          "Введите или скорректируйте размеры помещений:"
+        )
+      // Table header
+      , React.createElement("div", { style:{ display:"grid", gridTemplateColumns:"1.8fr 1fr 1fr 28px", gap:5, marginBottom:4 } }
+        , React.createElement("div", { style:{ fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", padding:"0 2px" } }, "Помещение")
+        , React.createElement("div", { style:{ fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", textAlign:"center" } }, "Длина м")
+        , React.createElement("div", { style:{ fontSize:10, fontWeight:700, color:"var(--tx3)", textTransform:"uppercase", textAlign:"center" } }, "Ширина м")
+        , React.createElement("div", {})
+      )
+      // Rows
+      , React.createElement("div", { style:{ display:"flex", flexDirection:"column", gap:5, marginBottom:8 } }
+        , manRooms.map((r, i) =>
+            React.createElement("div", { key:r.id, style:{ display:"grid", gridTemplateColumns:"1.8fr 1fr 1fr 28px", gap:5 } }
+              , React.createElement("input", { value:r.name, placeholder:"Название",
+                  onChange:e=>setManRooms(list=>list.map((x,j)=>j===i?{...x,name:e.target.value}:x)),
+                  style:{...IS, padding:"8px 10px"} })
+              , React.createElement("input", { type:"number", min:"0.5", max:"30", step:"0.1",
+                  value:r.l, placeholder:"4.5",
+                  onChange:e=>setManRooms(list=>list.map((x,j)=>j===i?{...x,l:e.target.value}:x)),
+                  style:{...IS, padding:"8px 6px", textAlign:"center"} })
+              , React.createElement("input", { type:"number", min:"0.5", max:"30", step:"0.1",
+                  value:r.w, placeholder:"3.0",
+                  onChange:e=>setManRooms(list=>list.map((x,j)=>j===i?{...x,w:e.target.value}:x)),
+                  style:{...IS, padding:"8px 6px", textAlign:"center"} })
+              , React.createElement("button", { onClick:()=>setManRooms(list=>list.filter((_,j)=>j!==i)),
+                  style:{ padding:"0", background:"none", border:"none", cursor:"pointer",
+                    color:"#ef4444", fontSize:16, display:"flex", alignItems:"center", justifyContent:"center" } },
+                  "×"
+                )
+            )
           )
-          , manRooms.map((r, i) =>
-              React.createElement("div", { key:r.id, style:{ display:"grid", gridTemplateColumns:"1.8fr 1fr 1fr", gap:5 } }
-                , React.createElement("input", { value:r.name, placeholder:"Название",
-                    onChange:e=>setManRooms(list=>list.map((x,j)=>j===i?{...x,name:e.target.value}:x)),
-                    style:{...IS, padding:"8px 10px", fontSize:13} })
-                , React.createElement("input", { type:"number", min:"0.5", max:"20", step:"0.1",
-                    value:r.l, placeholder:"напр. 4.5",
-                    onChange:e=>setManRooms(list=>list.map((x,j)=>j===i?{...x,l:e.target.value}:x)),
-                    style:{...IS, padding:"8px 8px", fontSize:13, textAlign:"center"} })
-                , React.createElement("input", { type:"number", min:"0.5", max:"20", step:"0.1",
-                    value:r.w, placeholder:"напр. 3.2",
-                    onChange:e=>setManRooms(list=>list.map((x,j)=>j===i?{...x,w:e.target.value}:x)),
-                    style:{...IS, padding:"8px 8px", fontSize:13, textAlign:"center"} })
-              )
-          )
-          , React.createElement("button", { onClick:()=>setManRooms(list=>[...list,{id:"m"+Date.now(),name:"",l:"",w:""}]),
-              style:{ background:"var(--s2)", border:"1px dashed var(--b2)", borderRadius:9,
-                padding:"7px 12px", cursor:"pointer", fontSize:12, color:"var(--acc2)",
-                fontWeight:700, fontFamily:"inherit", width:"100%", marginTop:2 } },
-              "+ Добавить помещение"
-          )
+        )
+      , React.createElement("button", { onClick:()=>setManRooms(list=>[...list,{id:"m"+Date.now(),name:"",l:"",w:""}]),
+          style:{ width:"100%", background:"var(--s2)", border:"1.5px dashed var(--b2)", borderRadius:9,
+            padding:"8px", cursor:"pointer", fontSize:12, color:"var(--acc2)",
+            fontWeight:700, fontFamily:"inherit", marginBottom:10 } },
+          "+ Добавить помещение"
         )
       , errMsg && React.createElement("div", { style:{ color:"var(--red)", fontSize:12, fontWeight:600,
-            background:"rgba(239,68,68,0.08)", borderRadius:8, padding:"7px 10px", marginBottom:8 } }, "⚠️ "+errMsg)
-      , React.createElement("button", { onClick:applyManual, style:BTN("linear-gradient(135deg,#059669,#10b981)") }, "✅ Добавить помещения →")
-      , React.createElement("button", { onClick:()=>{ setErrMsg(""); setStep("upload"); }, style:BTN2 }, "← Назад к загрузке плана")
+            background:"rgba(239,68,68,0.08)", borderRadius:8, padding:"8px 10px", marginBottom:8 } }, "⚠️ "+errMsg)
+      , React.createElement("button", { onClick:applyManual, style:{
+          width:"100%", padding:"13px", borderRadius:12, border:"none",
+          background:"linear-gradient(135deg,#059669,#10b981)",
+          color:"#fff", fontWeight:800, fontSize:14, cursor:"pointer",
+          fontFamily:"inherit", boxShadow:"0 4px 16px rgba(5,150,105,0.3)", marginBottom:8 } },
+          "✅ Добавить помещения →"
+        )
+      , React.createElement("button", { onClick:()=>setStep("start"), style:{
+          width:"100%", padding:"11px", borderRadius:12, border:"1px solid var(--b1)",
+          background:"var(--s2)", color:"var(--tx2)", fontWeight:600, fontSize:13,
+          cursor:"pointer", fontFamily:"inherit" } },
+          "← Назад"
+        )
     )
   );
 }
+
 
 
 // ==================== ADD SECTION PANEL ====================
