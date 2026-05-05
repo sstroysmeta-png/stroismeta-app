@@ -32,8 +32,17 @@
 </head>
 <body>
   <div id="root"></div>
+  <div id="app-error" style="display:none;padding:20px;background:#1a1a2e;color:#ef4444;font-family:monospace;font-size:13px;position:fixed;inset:0;overflow:auto;z-index:99999;">
+    <div style="font-size:18px;font-weight:bold;margin-bottom:12px;">⚠️ Ошибка загрузки</div>
+    <div id="app-error-msg"></div>
+  </div>
 
   <script>
+window.onerror = function(msg, src, line, col, err) {
+  var d = document.getElementById("app-error");
+  var m = document.getElementById("app-error-msg");
+  if (d && m) { d.style.display="block"; m.textContent = msg + "\nLine: " + line + "\n" + (err&&err.stack||""); }
+};
 const {
   useState,
   useReducer,
