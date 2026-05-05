@@ -6483,7 +6483,7 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
     .sh-meta     { font-size: 8pt; color: #555; margin-bottom: 2px; }
     .sh-title    { font-size: 10pt; font-weight: 700; color: #000; margin: 6px 0 1px; }
     .sh-sub      { font-size: 8pt; color: #555; margin-bottom: 10px; font-style: italic; }
-    .sh-logo img { width: 72px; height: 72px; object-fit: contain; border: none; background: transparent; display: block; }
+    .sh-logo img { width: 80px; height: 80px; object-fit: contain; border: none !important; box-shadow: none !important; background: transparent; display: block; }
 
     /* ── Table ── */
     .st-wrap { border: 1px solid #bbb; border-radius: 0; overflow: hidden; margin-bottom: 0; }
@@ -6728,7 +6728,7 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
     ].filter(Boolean).join("  |  ");
 
     const logoHtml = header.logo
-      ? `<div class="sh-logo" style="flex-shrink:0;margin-left:12px;"><img src="${header.logo}" style="width:72px;height:72px;object-fit:contain;display:block;border:none;background:transparent;" /></div>`
+      ? `<div style="flex-shrink:0;margin-left:14px;align-self:center;"><img src="${header.logo}" style="width:80px;height:80px;object-fit:contain;display:block;border:none;box-shadow:none;background:transparent;" /></div>`
       : "";
 
     return `<!DOCTYPE html><html><head><meta charset="utf-8"><style>${previewCSS}</style></head><body>
@@ -6813,38 +6813,38 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
   };
 
   // ── Export PDF (HTML → share/print dialog) ───────────────────────
-  const exportPDF = async () => {
-    setExporting("pdf");
-    try {
-      const fname = `smeta_${project.name.replace(/[\s/]/g,"_")}`;
-      const htmlContent = previewHTML;
+  const exportPDF = () => {
+    const fname = project.name.replace(/[\s/\\:*?"<>|]/g,"_");
+    const htmlContent = previewHTML;
+    const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" });
 
-      // ── Strategy 1: Web Share API with file attachment ──────────
-      if (navigator.share) {
-        try {
-          const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" });
-          const file = new File([blob], fname + ".html", { type: "text/html" });
-          const shareData = navigator.canShare && navigator.canShare({ files: [file] })
-            ? { files: [file], title: `Смета — ${project.name}`, text: "Смета на ремонтные работы" }
-            : { title: `Смета — ${project.name}`, text: "Смета на ремонтные работы. Сохраните файл ниже." };
-          await navigator.share(shareData);
-          setExporting(null); setExportDone("pdf"); setTimeout(()=>setExportDone(null),3000);
-          return;
-        } catch(e) {
-          if (e.name === "AbortError") { setExporting(null); return; }
-          // Share failed — fall through to download
-        }
-      }
+    // Try Web Share API IMMEDIATELY (must be synchronous from click)
+    if (typeof navigator !== "undefined" && navigator.share) {
+      const file = new File([blob], fname + ".html", { type: "text/html" });
+      const canFile = navigator.canShare && navigator.canShare({ files: [file] });
+      const sharePromise = canFile
+        ? navigator.share({ files: [file], title: "Смета — " + project.name })
+        : navigator.share({ title: "Смета — " + project.name, text: "Смета на ремонтные работы" });
 
-      // ── Strategy 2: Download HTML file (user can print/share from Files) ──
-      const blob = new Blob([htmlContent], { type: "text/html;charset=utf-8" });
-      const url  = URL.createObjectURL(blob);
-      const a    = document.createElement("a");
-      a.href = url; a.download = fname + ".html"; a.click();
-      setTimeout(() => URL.revokeObjectURL(url), 3000);
-      setExporting(null); setExportDone("pdf"); setTimeout(()=>setExportDone(null),3000);
+      sharePromise
+        .then(() => { setExportDone("pdf"); setTimeout(()=>setExportDone(null),3000); })
+        .catch(e => {
+          if (e.name !== "AbortError") {
+            // Share failed — download instead
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a"); a.href=url; a.download=fname+".html"; a.click();
+            setTimeout(()=>URL.revokeObjectURL(url),3000);
+            setExportDone("pdf"); setTimeout(()=>setExportDone(null),3000);
+          }
+        });
+      return;
+    }
 
-    } catch(e) { setExporting(null); console.error(e); }
+    // Fallback: download
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a"); a.href=url; a.download=fname+".html"; a.click();
+    setTimeout(()=>URL.revokeObjectURL(url),3000);
+    setExportDone("pdf"); setTimeout(()=>setExportDone(null),3000);
   };
 
   // ── Export Excel (CSV with BOM → share/download) ─────────────────
@@ -6883,25 +6883,23 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
       const csv = rows2.map(r => r.map(c => `"${safeStr(c)}"`).join(",")).join("\r\n");
       const blob = new Blob(["\uFEFF" + csv], { type:"text/csv;charset=utf-8" });
       const fname = `smeta_${project.name.replace(/[\s/\\]/g,"_")}.csv`;
-      // Try Web Share with file, fall back to download
-      let shared = false;
-      if (navigator.share) {
-        try {
-          const file = new File([blob], fname, { type: "text/csv" });
-          const shareData = navigator.canShare && navigator.canShare({ files: [file] })
-            ? { files: [file], title: `Смета — ${project.name}`, text: "Данные сметы (CSV/Excel)" }
-            : { title: `Смета — ${project.name}`, text: "Данные сметы" };
-          await navigator.share(shareData);
-          shared = true;
-        } catch(e) {
-          if (e.name === "AbortError") { setExporting(null); return; }
-        }
+      // Share or download
+      if (typeof navigator !== "undefined" && navigator.share) {
+        const file = new File([blob], fname, { type: "text/csv" });
+        const canFile = navigator.canShare && navigator.canShare({ files: [file] });
+        const sp = canFile
+          ? navigator.share({ files: [file], title: "Смета — " + project.name })
+          : navigator.share({ title: "Смета — " + project.name, text: "Данные сметы" });
+        sp.then(() => { setExporting(null); setExportDone("xlsx"); setTimeout(()=>setExportDone(null),3000); })
+          .catch(e => {
+            if (e.name !== "AbortError") {
+              const url = URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download=fname; a.click(); setTimeout(()=>URL.revokeObjectURL(url),3000);
+            }
+            setExporting(null); setExportDone("xlsx"); setTimeout(()=>setExportDone(null),3000);
+          });
+        return;
       }
-      if (!shared) {
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a"); a.href=url; a.download=fname; a.click();
-        setTimeout(()=>URL.revokeObjectURL(url),3000);
-      }
+      const url = URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download=fname; a.click(); setTimeout(()=>URL.revokeObjectURL(url),3000);
       setExporting(null); setExportDone("xlsx"); setTimeout(()=>setExportDone(null),3000);
     } catch(e) { setExporting(null); console.error(e); }
   };
@@ -7061,7 +7059,7 @@ function EstimateModal({ open, onClose, project, isEst, total, workTotal, matTot
             )
 
             /* 📄 PDF → Share */
-            , React.createElement('button', { onClick: exportPDF, disabled: !!exporting, style: {
+            , React.createElement('button', { onClick: exportPDF, style: {
                 flex:2, padding:"11px 6px", borderRadius:12, border:"none",
                 background: exporting==="pdf" ? "#93c5fd" : "linear-gradient(135deg,#1e40af,#3b82f6)",
                 color:"#fff", fontWeight:800, fontSize:11, cursor: exporting?"not-allowed":"pointer",
@@ -13557,7 +13555,7 @@ function AccountScreen({ theme, setTheme, profile, setProfile, lang, setLang, cu
   );
 
   const Section = ({ id, title, icon, emoji, children }) => {
-    const [open, setOpen] = React.useState(id === "personal"); // personal open by default
+    const [open, setOpen] = React.useState(id === "personal");
     return (
       React.createElement('div', { style: { marginBottom: 10, borderRadius: "var(--r)", border: "1px solid var(--b1)", background: "var(--s1)" }}
         , React.createElement('button', {
@@ -13571,12 +13569,17 @@ function AccountScreen({ theme, setTheme, profile, setProfile, lang, setLang, cu
             background: "var(--acc3)", fontSize: 18, flexShrink: 0,
           }}, emoji)
           , React.createElement('span', { style: { flex: 1, fontSize: 14, fontWeight: 600, color: "var(--tx)" }}, title)
-          , React.createElement('div', { style: { transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.25s", color: "var(--tx3)" }}
+          , React.createElement('div', { style: { transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.25s" }}
             , React.createElement(Icon, { name: "chevronDown", size: 16, color: "var(--tx3)"} )
           )
         )
-        , open && (
-          React.createElement('div', { style: { padding: "16px 16px", borderTop: "1px solid var(--b1)" }}
+        /* Always render children — never unmount — just hide visually */
+        , React.createElement('div', { style: {
+            overflow: "hidden",
+            maxHeight: open ? "2000px" : "0px",
+            transition: "max-height 0.3s ease",
+          }}
+          , React.createElement('div', { style: { padding: "16px 16px", borderTop: "1px solid var(--b1)" }}
             , children
           )
         )
