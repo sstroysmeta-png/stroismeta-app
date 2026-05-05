@@ -13507,6 +13507,58 @@ function ChangePasswordModal({ open, onClose, authUser, saveAuth }) {
 }
 
 
+// ── AccountField — top-level to prevent remounting on parent re-render ─────
+function AccountField({ label, value, onChange, type, placeholder }) {
+  return (
+    React.createElement('div', { style: { marginBottom: 14 } }
+      , React.createElement('label', { style: {
+          fontSize: 11, fontWeight: 700, color: "var(--tx3)",
+          letterSpacing: "0.06em", textTransform: "uppercase",
+          display: "block", marginBottom: 6
+        }}, label)
+      , React.createElement('input', {
+          type: type || "text",
+          value: value || "",
+          placeholder: placeholder || "",
+          autoComplete: type === "email" ? "email" : type === "tel" ? "tel" : "off",
+          inputMode: type === "tel" ? "tel" : type === "email" ? "email" : type === "number" ? "numeric" : "text",
+          onChange: e => onChange(e.target.value),
+          style: {
+            width: "100%", padding: "13px 14px", borderRadius: "var(--rs)",
+            border: "1.5px solid var(--b1)", fontSize: 15, color: "var(--tx)",
+            outline: "none", background: "var(--s2)", fontFamily: "inherit",
+            boxSizing: "border-box", WebkitAppearance: "none",
+          }
+        })
+    )
+  );
+}
+
+// ── AccountSection — top-level to prevent remounting on parent re-render ────
+function AccountSection({ defaultOpen, emoji, title, children }) {
+  const [open, setOpen] = useState(defaultOpen !== false);
+  return (
+    React.createElement('div', { style: { marginBottom: 10, borderRadius: "var(--r)", border: "1px solid var(--b1)", background: "var(--s1)" }}
+      , React.createElement('button', {
+          onClick: () => setOpen(o => !o),
+          style: { width: "100%", padding: "14px 16px", display: "flex", alignItems: "center", gap: 12, background: "none", border: "none", cursor: "pointer", textAlign: "left" }
+        }
+        , React.createElement('div', { style: { width: 36, height: 36, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", background: "var(--acc3)", fontSize: 18, flexShrink: 0 } }, emoji)
+        , React.createElement('span', { style: { flex: 1, fontSize: 14, fontWeight: 600, color: "var(--tx)" } }, title)
+        , React.createElement('div', { style: { transform: open ? "rotate(180deg)" : "none", transition: "transform 0.25s" } }
+          , React.createElement(Icon, { name: "chevronDown", size: 16, color: "var(--tx3)" })
+        )
+      )
+      , React.createElement('div', { style: { overflow: "hidden", maxHeight: open ? "3000px" : "0px", transition: "max-height 0.35s ease" } }
+        , React.createElement('div', { style: { padding: "16px", borderTop: "1px solid var(--b1)" } }
+          , children
+        )
+      )
+    )
+  );
+}
+
+
 function AccountScreen({ theme, setTheme, profile, setProfile, lang, setLang, currency, setCurrency, setTab, subPlan: subPlanProp, setSubPlan: setSubPlanProp, authUser, saveAuth, setShowAuth }) {
   const [showChangePwd, setShowChangePwd] = useState(false);
   const [showHelp, setShowHelp] = useState(false);
@@ -13527,65 +13579,28 @@ function AccountScreen({ theme, setTheme, profile, setProfile, lang, setLang, cu
   const [showLangPicker, setShowLangPicker] = useState(false);
   const currentLang = LANGUAGES.find(l => l.id === lang) || LANGUAGES[0];
 
-
+  // ── Local form state — prevents re-render on every keystroke ───────
+  const [form, setForm] = useState({
+    name:           profile.name           || "",
+    phone:          profile.phone          || "",
+    email:          profile.email          || "",
+    companyName:    profile.companyName    || "",
+    companyInn:     profile.companyInn     || "",
+    companyOgrn:    profile.companyOgrn    || "",
+    companyAddress: profile.companyAddress || "",
+    phone2:         profile.phone2         || "",
+    site:           profile.site           || "",
+    executor:       profile.executor       || "",
+  });
+  const setF = (key) => (val) => setForm(f => ({ ...f, [key]: val }));
 
   const save = () => {
+    setProfile(p => ({ ...p, ...form }));
     setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    setTimeout(() => setSaved(false), 2500);
   };
 
-  const Field = ({ icon, label, value, onChange, type = "text", placeholder = "" }) => (
-    React.createElement('div', { style: { marginBottom: 14 }}
-      , React.createElement('label', { style: { fontSize: 11, fontWeight: 700, color: "var(--tx3)", letterSpacing: "0.06em", textTransform: "uppercase", display: "block", marginBottom: 6 }}, label)
-      , React.createElement('input', {
-          type: type,
-          value: value || "",
-          placeholder: placeholder,
-          autoComplete: type === "email" ? "email" : type === "tel" ? "tel" : "off",
-          onChange: e => onChange(e.target.value),
-          style: {
-            width: "100%", padding: "12px 14px", borderRadius: "var(--rs)",
-            border: "1.5px solid var(--b1)", fontSize: 15, color: "var(--tx)", outline: "none",
-            background: "var(--s2)", fontFamily: "inherit", boxSizing: "border-box",
-            WebkitAppearance: "none",
-          }
-        }
-      )
-    )
-  );
-
-  const Section = ({ id, title, icon, emoji, children }) => {
-    const [open, setOpen] = React.useState(id === "personal");
-    return (
-      React.createElement('div', { style: { marginBottom: 10, borderRadius: "var(--r)", border: "1px solid var(--b1)", background: "var(--s1)" }}
-        , React.createElement('button', {
-          onClick: () => setOpen(o => !o),
-          style: {
-            width: "100%", padding: "14px 16px", display: "flex", alignItems: "center", gap: 12,
-            background: "none", border: "none", cursor: "pointer", textAlign: "left",
-          }}
-          , React.createElement('div', { style: {
-            width: 36, height: 36, borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center",
-            background: "var(--acc3)", fontSize: 18, flexShrink: 0,
-          }}, emoji)
-          , React.createElement('span', { style: { flex: 1, fontSize: 14, fontWeight: 600, color: "var(--tx)" }}, title)
-          , React.createElement('div', { style: { transform: open ? "rotate(180deg)" : "rotate(0deg)", transition: "transform 0.25s" }}
-            , React.createElement(Icon, { name: "chevronDown", size: 16, color: "var(--tx3)"} )
-          )
-        )
-        /* Always render children — never unmount — just hide visually */
-        , React.createElement('div', { style: {
-            overflow: "hidden",
-            maxHeight: open ? "2000px" : "0px",
-            transition: "max-height 0.3s ease",
-          }}
-          , React.createElement('div', { style: { padding: "16px 16px", borderTop: "1px solid var(--b1)" }}
-            , children
-          )
-        )
-      )
-    );
-  };
+  // Field and Section are defined as top-level components above AccountScreen
 
   const isDark = theme === "dark";
 
@@ -13803,14 +13818,14 @@ function AccountScreen({ theme, setTheme, profile, setProfile, lang, setLang, cu
         )
 
         /* Profile section */
-        , React.createElement(Section, { id: "personal", title: "Личные данные" , emoji: "👤"}
-          , React.createElement(Field, { icon: "user", label: "Имя и фамилия"  , value: profile.name, onChange: v => setProfile(p => ({ ...p, name: v })), placeholder: "Иван Петров" } )
-          , React.createElement(Field, { icon: "phone", label: "Телефон", value: profile.phone, onChange: v => setProfile(p => ({ ...p, phone: v })), type: "tel", placeholder: "+7 900 000-00-00"  } )
-          , React.createElement(Field, { icon: "mail", label: "Email", value: profile.email, onChange: v => setProfile(p => ({ ...p, email: v })), type: "email", placeholder: "you@mail.ru"} )
+        , React.createElement(AccountSection, { defaultOpen: true, emoji: "👤", title: "Личные данные"}
+          , React.createElement(AccountField, { label: "Имя и фамилия", value: form.name, onChange: setF("name"), placeholder: "Иван Петров" })
+          , React.createElement(AccountField, { label: "Телефон", value: form.phone, onChange: setF("phone"), type: "tel", placeholder: "+7 900 000-00-00" })
+          , React.createElement(AccountField, { label: "Email", value: form.email, onChange: setF("email"), type: "email", placeholder: "you@mail.ru" })
         )
 
         /* Company section */
-        , React.createElement(Section, { id: "company", title: "Компания / ИП"  , emoji: "🏢"}
+        , React.createElement(AccountSection, { defaultOpen: false, emoji: "🏢", title: "Компания / ИП"}
           , React.createElement('div', { style: { background:"var(--s2)", borderRadius:"var(--r)", padding:14, marginBottom:14, border:"1px solid var(--b1)" } }
             , React.createElement('div', { style: { display:"flex", alignItems:"center", justifyContent:"space-between", marginBottom:10 } }
               , React.createElement('div', null
@@ -13854,14 +13869,14 @@ function AccountScreen({ theme, setTheme, profile, setProfile, lang, setLang, cu
               })
           )
 
-          , React.createElement(Field, { icon: "building", label: "Название компании" , value: profile.companyName, onChange: v => setProfile(p => ({ ...p, companyName: v })), placeholder: "ООО Строитель" } )
-          , React.createElement(Field, { icon: "card", label: "ИНН", value: profile.companyInn, onChange: v => setProfile(p => ({ ...p, companyInn: v })), placeholder: "000000000000"} )
-          , React.createElement(Field, { icon: "card", label: "ОГРН / ОГРНИП"  , value: profile.companyOgrn, onChange: v => setProfile(p => ({ ...p, companyOgrn: v })), placeholder: "000000000000000"} )
-          , React.createElement(Field, { icon: "home", label: "Юридический адрес" , value: profile.companyAddress, onChange: v => setProfile(p => ({ ...p, companyAddress: v })), placeholder: "г. Москва"    } )
+          , React.createElement(AccountField, { label: "Название компании", value: form.companyName, onChange: setF("companyName"), placeholder: "ООО Строитель" })
+          , React.createElement(AccountField, { label: "ИНН", value: form.companyInn, onChange: setF("companyInn"), placeholder: "000000000000" })
+          , React.createElement(AccountField, { label: "ОГРН / ОГРНИП", value: form.companyOgrn, onChange: setF("companyOgrn"), placeholder: "000000000000000" })
+          , React.createElement(AccountField, { label: "Юридический адрес", value: form.companyAddress, onChange: setF("companyAddress"), placeholder: "г. Москва" })
         )
 
         /* Bank section */
-        , React.createElement(Section, { id: "bank", title: "Реквизиты", emoji: "🏦"}
+        , React.createElement(AccountSection, { defaultOpen: false, emoji: "🏦", title: "Реквизиты"})
           , React.createElement(Field, { icon: "building", label: "Название банка" , value: profile.bankName, onChange: v => setProfile(p => ({ ...p, bankName: v })), placeholder: "Сбербанк"} )
           , React.createElement(Field, { icon: "card", label: "Расчётный счёт" , value: profile.bankAccount, onChange: v => setProfile(p => ({ ...p, bankAccount: v })), placeholder: "00000000000000000000"} )
           , React.createElement(Field, { icon: "card", label: "БИК", value: profile.bankBik, onChange: v => setProfile(p => ({ ...p, bankBik: v })), placeholder: "000000000"} )
