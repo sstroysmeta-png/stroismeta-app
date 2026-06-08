@@ -19,6 +19,12 @@
 
   <link rel="manifest" href="manifest.json">
   <meta name="theme-color" content="#7c6fff">
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="СтройСмета">
+  <meta name="application-name" content="СтройСмета">
 
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -334,7 +340,7 @@ CRITICAL: ALWAYS include balconies if visible. ALWAYS return at minimum 1 room. 
           button { border-radius: 4px !important; }
           ::-webkit-scrollbar-thumb { background: #e5393533 !important; }
         `:""}
-      `),React.createElement('div',{style:{width:"100%",maxWidth:appMaxWidth,height:"100vh",background:"var(--bg)",position:"relative",overflow:"visible",display:"flex",flexDirection:"column"}},React.createElement('div',{id:"scrollContainer",style:{flex:1,overflowY:"auto",paddingBottom:80,position:"relative",minHeight:0}},React.createElement(ErrorBoundary,null,screen)),firstLaunch&&React.createElement(OnboardingScreen,{onDone:function(selectedLang){setLang(selectedLang);setFirstLaunch(false);}}),showGuestWarn&&!authUser&&React.createElement(GuestWarningModal,{onLogin:function(){setShowGuestWarn(false);setShowAuth(true);},onDismiss:function(){setShowGuestWarn(false);try{localStorage.setItem("sm_guest_dismissed","1");}catch(e){}}}),showAuth&&React.createElement(AuthModal,{onClose:()=>setShowAuth(false),onAuth:function(user){saveAuth(user);setShowAuth(false);}}),React.createElement(BottomNav,{tab:nav.screen==="project"||nav.screen==="rooms"||nav.screen==="roomdetail"?"":tab,setTab:handleTabChange,lang:lang}))));}if(typeof window!=="undefined"&&"serviceWorker"in navigator){window.addEventListener("load",function(){navigator.serviceWorker.register("/sw.js").catch(function(){});});}const rootEl=document.getElementById("root");const root=ReactDOM.createRoot(rootEl);root.render(React.createElement(App));
+      `),React.createElement('div',{style:{width:"100%",maxWidth:appMaxWidth,height:"100vh",background:"var(--bg)",position:"relative",overflow:"visible",display:"flex",flexDirection:"column"}},React.createElement('div',{id:"scrollContainer",style:{flex:1,overflowY:"auto",paddingBottom:80,position:"relative",minHeight:0}},React.createElement(ErrorBoundary,null,screen)),firstLaunch&&React.createElement(OnboardingScreen,{onDone:function(selectedLang){setLang(selectedLang);setFirstLaunch(false);}}),showGuestWarn&&!authUser&&React.createElement(GuestWarningModal,{onLogin:function(){setShowGuestWarn(false);setShowAuth(true);},onDismiss:function(){setShowGuestWarn(false);try{localStorage.setItem("sm_guest_dismissed","1");}catch(e){}}}),showAuth&&React.createElement(AuthModal,{onClose:()=>setShowAuth(false),onAuth:function(user){saveAuth(user);setShowAuth(false);}}),React.createElement(BottomNav,{tab:nav.screen==="project"||nav.screen==="rooms"||nav.screen==="roomdetail"?"":tab,setTab:handleTabChange,lang:lang}))));}if(typeof window!=="undefined"&&"serviceWorker"in navigator){window.addEventListener("load",function(){navigator.serviceWorker.register("sw.js").catch(function(){});});}const rootEl=document.getElementById("root");const root=ReactDOM.createRoot(rootEl);root.render(React.createElement(App));
 </script>
 
 </body>

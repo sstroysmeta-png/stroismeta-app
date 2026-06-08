@@ -1,39 +1,75 @@
-const CACHE = 'stroismeta-v1';
-const ASSETS = ['/', '/index.html', '/manifest.json', '/icons/icon-192.png', '/icons/icon-512.png'];
+/* СтройСмета — Service Worker (относительные пути, для GitHub Pages и корня).
+ * HTML: network-first. Статика: cache-first. CDN: stale-while-revalidate.
+ * Firebase и прокси Claude: НЕ кэшируются (живые данные). Не-GET: пропускаем.
+ */
+const VERSION = 'v2.0.0';
+const APP_CACHE = `stroismeta-app-${VERSION}`;
+const CDN_CACHE = `stroismeta-cdn-${VERSION}`;
 
-self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(ASSETS)).then(() => self.skipWaiting()));
-});
+const APP_SHELL = ['./', './index.html', './manifest.json', './icon-192.png', './icon-512.png'];
 
-self.addEventListener('activate', e => {
+const NO_CACHE = [
+  'workers.dev', 'identitytoolkit.googleapis.com', 'securetoken.googleapis.com',
+  'firestore.googleapis.com', 'firebaseinstallations.googleapis.com',
+  'firebase.googleapis.com', 'google.com/recaptcha', 'gstatic.com/recaptcha'
+];
+
+self.addEventListener('install', (e) => {
   e.waitUntil(
-    caches.keys().then(keys =>
-      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
-    ).then(() => self.clients.claim())
+    caches.open(APP_CACHE)
+      .then((c) => Promise.allSettled(APP_SHELL.map((u) => c.add(u))))
+      .then(() => self.skipWaiting())
   );
 });
 
-self.addEventListener('fetch', e => {
-  if (e.request.method !== 'GET' || !e.request.url.startsWith('http')) return;
-  const isCDN = /googleapis\.com|cloudflare\.com|gstatic\.com/.test(e.request.url);
-  if (isCDN) {
+self.addEventListener('activate', (e) => {
+  e.waitUntil(
+    caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== APP_CACHE && k !== CDN_CACHE).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim())
+  );
+});
+
+self.addEventListener('message', (e) => { if (e.data === 'SKIP_WAITING') self.skipWaiting(); });
+
+self.addEventListener('fetch', (e) => {
+  const req = e.request;
+  if (req.method !== 'GET') return;
+  let url; try { url = new URL(req.url); } catch (_) { return; }
+  if (url.protocol !== 'http:' && url.protocol !== 'https:') return;
+
+  const full = url.host + url.pathname;
+  if (NO_CACHE.some((h) => url.host.includes(h) || full.includes(h))) return;
+
+  const isNav = req.mode === 'navigate' || (req.headers.get('accept') || '').includes('text/html');
+  if (isNav) {
     e.respondWith(
-      fetch(e.request).then(r => {
-        caches.open(CACHE).then(c => c.put(e.request, r.clone()));
+      fetch(req).then((r) => {
+        const copy = r.clone();
+        caches.open(APP_CACHE).then((c) => c.put('./index.html', copy)).catch(() => {});
         return r;
-      }).catch(() => caches.match(e.request))
+      }).catch(() => caches.match('./index.html').then((r) => r || caches.match('./')))
     );
-  } else {
-    e.respondWith(
-      caches.match(e.request).then(cached => {
-        if (cached) return cached;
-        return fetch(e.request).then(r => {
-          if (r && r.status === 200 && r.type !== 'opaque') {
-            caches.open(CACHE).then(c => c.put(e.request, r.clone()));
-          }
-          return r;
-        });
-      })
-    );
+    return;
   }
+
+  if (url.origin === self.location.origin) {
+    e.respondWith(
+      caches.match(req).then((cached) => cached || fetch(req).then((r) => {
+        if (r && r.status === 200) { const copy = r.clone(); caches.open(APP_CACHE).then((c) => c.put(req, copy)).catch(() => {}); }
+        return r;
+      }))
+    );
+    return;
+  }
+
+  e.respondWith(
+    caches.open(CDN_CACHE).then((cache) => cache.match(req).then((cached) => {
+      const net = fetch(req).then((r) => {
+        if (r && (r.status === 200 || r.type === 'opaque')) cache.put(req, r.clone()).catch(() => {});
+        return r;
+      }).catch(() => cached);
+      return cached || net;
+    }))
+  );
 });

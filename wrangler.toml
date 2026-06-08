@@ -1,0 +1,11 @@
+name = "stroismeta-proxy"
+main = "worker.js"
+compatibility_date = "2025-01-01"
+
+[vars]
+# Разрешённые домены (защита от чужих трат). Pages-домен + резервный Vercel + локальная разработка.
+ALLOWED_ORIGINS = "https://sstroysmeta-png.github.io,https://remont-app-v2.vercel.app,http://localhost:3000,http://localhost:5173"
+ALLOWED_MODELS = "claude-sonnet-4-20250514"
+MAX_TOKENS_CAP = "4096"
+
+# Секрет задаётся командой:  wrangler secret put ANTHROPIC_API_KEY
