@@ -31,7 +31,9 @@ function parseList(str, fallback) {
 }
 
 function corsHeaders(origin, allowedOrigins) {
-  const allow = allowedOrigins.includes(origin) ? origin : '';
+  // Если список не задан — отражаем Origin (CORS работает «из коробки»).
+  // Если задан — отдаём заголовок только для разрешённых доменов.
+  const allow = allowedOrigins.length === 0 ? (origin || '*') : (allowedOrigins.includes(origin) ? origin : '');
   const h = {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
@@ -125,6 +127,9 @@ export default {
 
     // --- Проброс ответа с теми же кодами статуса + CORS ---
     const text = await upstream.text();
+    if (upstream.status !== 200) {
+      console.log('Anthropic error', upstream.status, text.slice(0, 500));
+    }
     return new Response(text, {
       status: upstream.status,
       headers: {
